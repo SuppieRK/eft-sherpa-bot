@@ -26,6 +26,12 @@ describe("single-community MVP configuration", () => {
     }
   });
 
+  it("configures four help recipients per raid before map capacity limits", () => {
+    for (const contents of [localTemplate, mvpTemplate]) {
+      expect(contents).toContain('"RECIPIENT_LIMIT": "4"');
+    }
+  });
+
   it("keeps deployable platform IDs out of committed live configuration", () => {
     expect(mvpTemplate).toContain("<TWITCH_BROADCASTER_USER_ID>");
     expect(mvpTemplate).toContain("<DISCORD_PUBLIC_KEY>");

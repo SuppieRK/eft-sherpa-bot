@@ -93,7 +93,7 @@ deployment.
 | `DISCORD_STAFF_CHANNEL_ID` | Discord **Copy Channel ID** | Yes | Environment variable | Discord validation |
 | `DISCORD_VOLUNTEER_ROLE_ID` | Discord **Copy Role ID** | Yes | Environment variable | Discord validation |
 | `DISCORD_STREAMER_USER_ID` | Discord **Copy User ID** | Yes | Environment variable | Discord validation |
-| `RECIPIENT_LIMIT` | Use `3` | Yes | Environment variable | Configuration check |
+| `RECIPIENT_LIMIT` | Use `4` | Yes | Environment variable | Configuration check |
 | `ATTEMPT_LIMIT` | Use `3` | Yes | Environment variable | Configuration check |
 
 ## Add GitHub environment secrets
