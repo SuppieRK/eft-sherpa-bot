@@ -1,0 +1,33 @@
+# Bot operation
+
+## Viewer commands
+
+Twitch is the primary request path.
+
+- Use `!request [map] [goal]` to ask for help.
+- Use `!queue` to see your next request and the raids before it.
+- Use `/request` in Discord to open the request form.
+- Use `/queue` in Discord to see your next request.
+- Use `/link-twitch` in Discord to link your Discord account to your Twitch name.
+
+The Twitch goal is optional. The bot uses `General raid help` when the viewer does not give a goal.
+
+The Discord form asks for a Twitch name, an Escape from Tarkov name, a map, a goal, and optional notes. The goal has a limit of 150 characters. The notes have a limit of 250 characters.
+
+## Staff controls
+
+Use `/board` in the staff channel. The board shows up to three priority raids and seven ordinary raids.
+
+Select **Start a raid** to assign the caller as the leader. The bot sends a Discord call. The bot also sends a Twitch call when the streamer is the leader.
+
+The raid message has these controls:
+
+- **Record a raid result**;
+- **Postpone requester**;
+- **Remove requester**.
+
+The default attempt limit is three. Before the last attempt, staff can record **Helped** or **Record unsuccessful attempt**. On the last attempt, staff can record **Helped** or **Postpone raid**.
+
+**Postpone raid** moves the same raid to the end of the priority queue. **Postpone requester** moves one requester to a dedicated raid after the current raid. **Remove requester** cancels the help request.
+
+Staff can use the board at any time. The Twitch schedule does not hide the board or stop requests.

@@ -1,0 +1,24 @@
+{
+  "source": "https://json.tarkov.dev/pve/maps?lang=en",
+  "retrievedOn": "2026-08-14",
+  "rawResponseSha256": "b778d4233760c546d7359304ab27cd02f2646bdead0a29863e26d66d4046d061",
+  "maps": [
+    { "id": "55f2d3fd4bdc2d5f408b4567", "normalizedName": "factory" },
+    { "id": "56f40101d2720b2a4d8b45d6", "normalizedName": "customs" },
+    { "id": "5704e3c2d2720bac5b8b4567", "normalizedName": "woods" },
+    { "id": "5704e4dad2720bb55b8b4567", "normalizedName": "lighthouse" },
+    { "id": "5704e554d2720bac5b8b456e", "normalizedName": "shoreline" },
+    { "id": "5704e5fad2720bc05b8b4567", "normalizedName": "reserve" },
+    { "id": "5714dbc024597771384a510d", "normalizedName": "interchange" },
+    { "id": "5714dc692459777137212e12", "normalizedName": "streets-of-tarkov" },
+    { "id": "59fc81d786f774390775787e", "normalizedName": "night-factory" },
+    { "id": "5b0fc42d86f7744a585f9105", "normalizedName": "the-lab" },
+    { "id": "653e6760052c01c1c805532f", "normalizedName": "ground-zero" },
+    { "id": "65b8d6f5cdde2479cb2a3125", "normalizedName": "ground-zero-21" },
+    { "id": "65cc8f81a9aac3e77d0cfd3e", "normalizedName": "terminal" },
+    { "id": "6733700029c367a3d40b02af", "normalizedName": "the-labyrinth" },
+    { "id": "68236e8153654e8c1200798a", "normalizedName": "ground-zero-tutorial" },
+    { "id": "69af492a4819ea4ba10a69c5", "normalizedName": "icebreaker" },
+    { "id": "6a294a5b5eb5f9a1700417b7", "normalizedName": "the-lab-dark" }
+  ]
+}

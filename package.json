@@ -1,0 +1,65 @@
+{
+  "name": "eft-sherpa-bot",
+  "version": "0.1.0",
+  "description": "A Discord and Twitch bot that plans Escape from Tarkov sherpa raids.",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SuppieRK/eft-sherpa-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SuppieRK/eft-sherpa-bot/issues"
+  },
+  "homepage": "https://github.com/SuppieRK/eft-sherpa-bot#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=26.0.0 <27"
+  },
+  "packageManager": "npm@12.0.2",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "benchmark:d1": "node scripts/run-d1-benchmark.mjs",
+    "cf-typegen": "wrangler types src/worker-configuration.d.ts",
+    "check": "biome check .",
+    "check:community": "node scripts/check-community-config.mjs",
+    "check:deadcode": "knip",
+    "check:docs": "node scripts/check-docs.mjs",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:workflows": "node scripts/check-workflows.mjs",
+    "discord:validate": "node scripts/discord/validate-setup.mjs",
+    "discord:configure": "node scripts/discord/configure-commands.mjs",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "npm run lint:biome && npm run lint:oxlint",
+    "lint:biome": "biome lint .",
+    "lint:oxlint": "oxlint --report-unused-disable-directives .",
+    "migrations:record": "node scripts/check-migrations.mjs --record",
+    "test": "vitest run",
+    "test:deployment": "node scripts/test-deployment-helpers.mjs",
+    "test:integration": "vitest run test/integration",
+    "test:unit": "vitest run test/unit",
+    "twitch:authorize": "node scripts/twitch/authorize-bot.mjs",
+    "twitch:token": "node scripts/twitch/authorize-bot.mjs --app-token-only",
+    "twitch:subscribe": "node scripts/twitch/create-chat-subscription.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm run check:deadcode && npm run check:migrations && npm run check:docs && npm run check:workflows && npm run test:deployment && npm run test && npm run build && npm run check:secrets"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "@cloudflare/vitest-pool-workers": "0.21.3",
+    "@types/node": "26.2.0",
+    "knip": "6.32.2",
+    "oxlint": "1.78.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.123.0",
+    "yaml": "2.9.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260811.1": true
+  }
+}

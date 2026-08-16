@@ -1,0 +1,9 @@
+# Append to .dev.vars.operator for Discord provisioning. Never commit the copied values.
+DISCORD_APPLICATION_ID=replace-with-the-public-application-id
+DISCORD_PUBLIC_KEY=replace-with-the-public-interaction-key
+DISCORD_BOT_TOKEN=replace-with-the-private-bot-token
+DISCORD_GUILD_ID=replace-with-the-test-server-id
+DISCORD_REQUEST_CHANNEL_ID=replace-with-the-request-channel-id
+DISCORD_STAFF_CHANNEL_ID=replace-with-the-staff-channel-id
+DISCORD_VOLUNTEER_ROLE_ID=replace-with-the-volunteer-role-id
+DISCORD_STREAMER_USER_ID=replace-with-the-test-streamer-user-id

@@ -1,0 +1,1215 @@
+import {
+  type QueueCaller,
+  type QueueFacts,
+  type QueueQueryRepository,
+  QUEUE_RAID_EXACT_LIMIT,
+  QUEUE_REQUEST_EXACT_LIMIT,
+} from "../../domain/queue-queries";
+import { resolveTarkovMap } from "../../domain/maps/catalog";
+import {
+  type CreateHelpRequest,
+  type CreateHelpRequestOutcome,
+  RepositoryInvariantError,
+  type UserMapping,
+} from "../../domain/sherpa-repository";
+import { normalizeTwitchLogin } from "../../domain/user-identity";
+import type {
+  CallStatus,
+  QueueKind,
+  StaffBoardMember,
+  StaffBoardRaid,
+  StaffBoardSnapshot,
+} from "../../domain/staff-board";
+
+const PLATFORM = { discord: 0, twitch: 1 } as const;
+const LEADER_TYPE = { streamer: 0, volunteer: 1 } as const;
+const CALL_STATUS = { pending: 0, sent: 1, failed: 2, not_requested: 3 } as const;
+const MEMBER_STATE = { planned: 0, completed: 1, removed: 2 } as const;
+const SORT_STEP = 1_000_000;
+const RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
+
+interface RequestRow {
+  id: number;
+  state: "waiting" | "planned" | "completed" | "canceled";
+}
+
+interface RaidRow {
+  id: number;
+  queueKind: QueueKind;
+  mapId: string;
+  state: "planned" | "active" | "completed" | "canceled";
+  outcome: "helped" | "not_run" | null;
+  requesterCapacity: number;
+  leaderDiscordUserId: string | null;
+  leaderType: "streamer" | "volunteer" | null;
+  automaticFill: number;
+  attemptCount: number;
+  discordCallStatus: CallStatus;
+  twitchCallStatus: CallStatus;
+  staffMessageId: string | null;
+  memberId: number | null;
+  memberState: number | null;
+  requestId: number | null;
+  twitchLogin: string | null;
+  inGameName: string | null;
+  discordUserId: string | null;
+  objective: string | null;
+  notes: string | null;
+  memberPosition: number | null;
+}
+
+interface CommunityStateRow {
+  staffBoardMessageId: string | null;
+  priorityRaidCount: number;
+  ordinaryRaidCount: number;
+}
+
+interface UserMappingRow {
+  twitchLogin: string;
+  twitchUserId: string | null;
+  discordUserId: string | null;
+  discordDisplayName: string | null;
+  inGameName: string | null;
+}
+
+interface TwitchReceiptRow {
+  replyText: string | null;
+  replyToMessageId: string | null;
+  replyStatus: "pending" | "sent" | "failed" | null;
+}
+
+interface WaitingRow {
+  requestId: number;
+  mapId: string;
+  isPriority: number;
+}
+
+interface OpenGroupRow {
+  groupId: number;
+  mapId: string;
+  isPriority: number;
+  sortKey: number;
+  requesterCapacity: number;
+  memberCount: number;
+}
+
+interface MaterializedGroup extends OpenGroupRow {
+  actionKey?: string;
+}
+
+interface QueueSelectionRow {
+  requestId: number;
+  mapId: string;
+  isPriority: number;
+  groupId: number | null;
+  sortKey: number | null;
+}
+
+interface RequesterFollowUpWindow {
+  sourceSortKey: number;
+  anchorSortKey: number;
+  nextSortKey: number | null;
+  followUpCount: number;
+  reusableGroupId: number | null;
+}
+
+function epoch(date: Date): number {
+  return date.getTime();
+}
+
+function requestProjection(): string {
+  return `id, 'C' || id AS reference, id AS queueSequence,
+          CASE state WHEN 0 THEN 'waiting' WHEN 1 THEN 'planned'
+                     WHEN 2 THEN 'completed' ELSE 'canceled' END AS state`;
+}
+
+function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
+  const raids = new Map<number, StaffBoardRaid>();
+  for (const row of rows) {
+    let raid = raids.get(row.id);
+    if (raid === undefined) {
+      raid = {
+        id: row.id,
+        queueKind: row.queueKind,
+        mapId: row.mapId,
+        state: row.state,
+        ...(row.outcome === null ? {} : { outcome: row.outcome }),
+        requesterCapacity: row.requesterCapacity,
+        ...(row.leaderDiscordUserId === null
+          ? {}
+          : { leaderDiscordUserId: row.leaderDiscordUserId }),
+        ...(row.leaderType === null ? {} : { leaderType: row.leaderType }),
+        automaticFill: row.automaticFill === 1,
+        attemptCount: row.attemptCount,
+        discordCallStatus: row.discordCallStatus,
+        twitchCallStatus: row.twitchCallStatus,
+        ...(row.staffMessageId === null ? {} : { staffMessageId: row.staffMessageId }),
+        members: [],
+      };
+      raids.set(row.id, raid);
+    }
+    const includeMember =
+      row.memberId !== null &&
+      row.requestId !== null &&
+      row.twitchLogin !== null &&
+      row.inGameName !== null &&
+      row.objective !== null &&
+      row.memberPosition !== null &&
+      (raid.state === "planned" || raid.state === "active"
+        ? row.memberState === MEMBER_STATE.planned
+        : raid.outcome === "helped"
+          ? row.memberState === MEMBER_STATE.completed
+          : row.memberState !== MEMBER_STATE.removed);
+    if (includeMember) {
+      const member: StaffBoardMember = {
+        id: row.memberId as number,
+        requestId: row.requestId as number,
+        twitchLogin: row.twitchLogin as string,
+        inGameName: row.inGameName as string,
+        ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+        objective: row.objective as string,
+        ...(row.notes === null ? {} : { notes: row.notes }),
+        position: row.memberPosition as number,
+      };
+      raid.members.push(member);
+    }
+  }
+  return [...raids.values()];
+}
+
+function raidSelectSql(where: string): string {
+  return `SELECT raid.id,
+                 CASE raid.is_priority WHEN 1 THEN 'priority' ELSE 'ordinary' END AS queueKind,
+                 raid.map_id AS mapId,
+                 CASE raid.state WHEN 0 THEN 'planned' WHEN 1 THEN 'active'
+                                 WHEN 2 THEN 'completed' ELSE 'canceled' END AS state,
+                 CASE raid.outcome WHEN 0 THEN 'helped' WHEN 1 THEN 'not_run' END AS outcome,
+                 raid.requester_capacity AS requesterCapacity,
+                 raid.leader_discord_user_id AS leaderDiscordUserId,
+                 CASE raid.leader_type WHEN 0 THEN 'streamer' WHEN 1 THEN 'volunteer' END AS leaderType,
+                 raid.automatic_fill AS automaticFill, raid.attempt_count AS attemptCount,
+                 CASE raid.discord_call_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
+                   WHEN 2 THEN 'failed' ELSE 'not_requested' END AS discordCallStatus,
+                 CASE raid.twitch_call_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
+                   WHEN 2 THEN 'failed' ELSE 'not_requested' END AS twitchCallStatus,
+                 raid.staff_message_id AS staffMessageId,
+                 member.id AS memberId, member.state AS memberState,
+                 member.request_id AS requestId, request.twitch_login AS twitchLogin,
+                 request.in_game_name AS inGameName,
+                 coalesce(request.discord_user_id, mapping.discord_user_id) AS discordUserId,
+                 request.objective, request.notes, member.position AS memberPosition
+          FROM raid_groups AS raid
+          LEFT JOIN raid_group_members AS member ON member.group_id = raid.id
+          LEFT JOIN help_requests AS request ON request.id = member.request_id
+          LEFT JOIN user_mappings AS mapping ON mapping.twitch_login = request.twitch_login
+          ${where}
+          ORDER BY raid.is_priority DESC, raid.sort_key, member.position`;
+}
+
+export interface TwitchReplyReceipt {
+  duplicate: boolean;
+  replyText: string;
+  replyToMessageId?: string;
+  replyStatus: "pending" | "sent" | "failed";
+}
+
+export class D1MvpRepository implements QueueQueryRepository {
+  constructor(private readonly database: D1Database) {}
+
+  async createRequest(input: CreateHelpRequest): Promise<CreateHelpRequestOutcome> {
+    if (input.discordUserId === undefined && input.twitchUserId === undefined) {
+      throw new RepositoryInvariantError("a request requires a Discord or Twitch caller ID");
+    }
+    const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
+    const objective = input.objective.trim();
+    const notes = input.notes?.trim() || undefined;
+    if (twitchLogin === undefined)
+      throw new RepositoryInvariantError("a request requires a valid Twitch name");
+    if (objective.length < 1 || objective.length > 150) {
+      throw new RepositoryInvariantError("the request objective must contain 1 to 150 characters");
+    }
+    if (notes !== undefined && notes.length > 250) {
+      throw new RepositoryInvariantError("request notes must contain at most 250 characters");
+    }
+    const mapping = await this.upsertUserMapping({
+      twitchLogin,
+      ...(input.twitchUserId === undefined ? {} : { twitchUserId: input.twitchUserId }),
+      ...(input.discordUserId === undefined ? {} : { discordUserId: input.discordUserId }),
+      ...(input.discordDisplayName === undefined
+        ? {}
+        : { discordDisplayName: input.discordDisplayName }),
+      inGameName: input.inGameName,
+      observedAt: input.observedAt,
+    });
+    const timestamp = epoch(input.observedAt);
+    const inserted = await this.database
+      .prepare(
+        `INSERT OR IGNORE INTO help_requests
+           (source_platform, source_delivery_id, discord_user_id, twitch_user_id, twitch_login,
+            in_game_name, map_id, objective, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         RETURNING ${requestProjection()}`,
+      )
+      .bind(
+        PLATFORM[input.sourcePlatform],
+        input.sourceDeliveryId,
+        input.discordUserId ?? mapping.discordUserId ?? null,
+        input.twitchUserId ?? mapping.twitchUserId ?? null,
+        twitchLogin,
+        input.inGameName.trim(),
+        input.mapId,
+        objective,
+        notes ?? null,
+        timestamp,
+        timestamp,
+      )
+      .first<RequestRow & { reference: string; queueSequence: number }>();
+    if (inserted !== null) return { outcome: "created", request: inserted };
+    const duplicate = await this.database
+      .prepare(
+        `SELECT ${requestProjection()} FROM help_requests WHERE source_platform = ? AND source_delivery_id = ?`,
+      )
+      .bind(PLATFORM[input.sourcePlatform], input.sourceDeliveryId)
+      .first<RequestRow & { reference: string; queueSequence: number }>();
+    if (duplicate !== null) return { outcome: "duplicate_delivery", request: duplicate };
+    const active = await this.database
+      .prepare(`SELECT ${requestProjection()} FROM help_requests
+                WHERE twitch_login = ? AND map_id = ? AND state IN (0, 1)
+                ORDER BY is_priority DESC, id LIMIT 1`)
+      .bind(twitchLogin, input.mapId)
+      .first<RequestRow & { reference: string; queueSequence: number }>();
+    if (active === null) throw new RepositoryInvariantError("request was not stored");
+    return { outcome: "already_active", request: active };
+  }
+
+  private async resolveCallerLogin(caller: QueueCaller): Promise<string | undefined> {
+    const column = caller.platform === "discord" ? "discord_user_id" : "twitch_user_id";
+    const row = await this.database
+      .prepare(`SELECT twitch_login AS twitchLogin FROM user_mappings WHERE ${column} = ?`)
+      .bind(caller.userId)
+      .first<{ twitchLogin: string }>();
+    return row?.twitchLogin;
+  }
+
+  async getQueueFacts(caller: QueueCaller): Promise<QueueFacts> {
+    const twitchLogin = await this.resolveCallerLogin(caller);
+    if (twitchLogin === undefined) return {};
+    const selected = await this.database
+      .prepare(
+        `SELECT request.id AS requestId, request.map_id AS mapId,
+                request.is_priority AS isPriority, raid.id AS groupId, raid.sort_key AS sortKey
+         FROM help_requests AS request
+         LEFT JOIN raid_group_members AS member
+           ON member.request_id = request.id AND member.state = 0
+         LEFT JOIN raid_groups AS raid ON raid.id = member.group_id AND raid.state IN (0, 1)
+         WHERE request.twitch_login = ? AND request.state IN (0, 1)
+         ORDER BY request.is_priority DESC, request.id LIMIT 1`,
+      )
+      .bind(twitchLogin)
+      .first<QueueSelectionRow>();
+    if (selected === null) return {};
+    const requestPrefix =
+      selected.isPriority === 1
+        ? this.database
+            .prepare(
+              `SELECT count(*) AS count FROM (
+                 SELECT id FROM help_requests
+                 WHERE state IN (0, 1) AND is_priority = 1 AND id < ?
+                 ORDER BY id LIMIT ?
+               )`,
+            )
+            .bind(selected.requestId, QUEUE_REQUEST_EXACT_LIMIT + 1)
+            .first<{ count: number }>()
+        : this.database
+            .prepare(
+              `SELECT count(*) AS count FROM (
+                 SELECT id, is_priority AS isPriority FROM help_requests
+                 WHERE state IN (0, 1) AND is_priority = 1
+                 UNION ALL
+                 SELECT id, is_priority AS isPriority FROM help_requests
+                 WHERE state IN (0, 1) AND is_priority = 0 AND id < ?
+                 ORDER BY isPriority DESC, id LIMIT ?
+               )`,
+            )
+            .bind(selected.requestId, QUEUE_REQUEST_EXACT_LIMIT + 1)
+            .first<{ count: number }>();
+    const raidPrefix =
+      selected.sortKey === null
+        ? Promise.resolve({ count: 0 })
+        : selected.isPriority === 1
+          ? this.database
+              .prepare(
+                `SELECT count(*) AS count FROM (
+                   SELECT sort_key FROM raid_groups
+                   WHERE state IN (0, 1) AND is_priority = 1 AND sort_key < ?
+                   ORDER BY sort_key LIMIT ?
+                 )`,
+              )
+              .bind(selected.sortKey, QUEUE_RAID_EXACT_LIMIT + 1)
+              .first<{ count: number }>()
+          : this.database
+              .prepare(
+                `SELECT count(*) AS count FROM (
+                   SELECT sort_key AS sortKey, is_priority AS isPriority FROM raid_groups
+                   WHERE state IN (0, 1) AND is_priority = 1
+                   UNION ALL
+                   SELECT sort_key AS sortKey, is_priority AS isPriority FROM raid_groups
+                   WHERE state IN (0, 1) AND is_priority = 0 AND sort_key < ?
+                   ORDER BY isPriority DESC, sortKey LIMIT ?
+                 )`,
+              )
+              .bind(selected.sortKey, QUEUE_RAID_EXACT_LIMIT + 1)
+              .first<{ count: number }>();
+    const [requestPrefixRow, raidPrefixRow, otherRows] = await Promise.all([
+      requestPrefix,
+      raidPrefix,
+      this.database
+        .prepare(
+          `SELECT DISTINCT map_id AS mapId FROM help_requests
+           WHERE twitch_login = ? AND state IN (0, 1) AND id <> ?
+           ORDER BY id`,
+        )
+        .bind(twitchLogin, selected.requestId)
+        .all<{ mapId: string }>(),
+    ]);
+    const requestPrefixCount = Number(requestPrefixRow?.count ?? 0);
+    const raidPrefixCount = Number(raidPrefixRow?.count ?? 0);
+    return {
+      caller: {
+        mapName: resolveTarkovMap(selected.mapId)?.name ?? selected.mapId,
+        queuePosition:
+          requestPrefixCount > QUEUE_REQUEST_EXACT_LIMIT
+            ? { kind: "more_than", requestsAhead: QUEUE_REQUEST_EXACT_LIMIT }
+            : { kind: "exact", ordinal: requestPrefixCount + 1 },
+        raidsAhead:
+          raidPrefixCount > QUEUE_RAID_EXACT_LIMIT
+            ? { kind: "more_than", count: QUEUE_RAID_EXACT_LIMIT }
+            : { kind: "exact", count: raidPrefixCount },
+        otherActiveMapNames: otherRows.results.map(
+          (row) => resolveTarkovMap(row.mapId)?.name ?? row.mapId,
+        ),
+      },
+    };
+  }
+
+  private requesterCapacity(mapId: string, recipientLimit: number): number {
+    const map = resolveTarkovMap(mapId);
+    if (map === undefined) throw new RepositoryInvariantError("a request uses an unsupported map");
+    return Math.min(recipientLimit, map.sherpaPartyCapacity - 1);
+  }
+
+  async materializeWaitingRequests(input: {
+    recipientLimit: number;
+    changedAt: Date;
+  }): Promise<number> {
+    const waiting = await this.database
+      .prepare(
+        `SELECT id AS requestId, map_id AS mapId, is_priority AS isPriority
+         FROM help_requests WHERE state = 0
+         ORDER BY is_priority DESC, id`,
+      )
+      .all<WaitingRow>();
+    if (waiting.results.length === 0) return 0;
+
+    const [existing, maxima] = await Promise.all([
+      this.database
+        .prepare(
+          `SELECT raid.id AS groupId, raid.map_id AS mapId, raid.is_priority AS isPriority,
+                  raid.sort_key AS sortKey, raid.requester_capacity AS requesterCapacity,
+                  raid.current_member_count AS memberCount
+           FROM raid_groups AS raid
+           WHERE raid.state = 0 AND raid.automatic_fill = 1
+             AND raid.current_member_count < raid.requester_capacity
+           ORDER BY raid.is_priority DESC, raid.sort_key`,
+        )
+        .all<OpenGroupRow>(),
+      this.database
+        .prepare(
+          `SELECT
+             coalesce((SELECT sort_key FROM raid_groups
+                       WHERE is_priority = 1 AND state IN (0, 1)
+                       ORDER BY sort_key DESC LIMIT 1), 0) AS priorityMax,
+             coalesce((SELECT sort_key FROM raid_groups
+                       WHERE is_priority = 0 AND state IN (0, 1)
+                       ORDER BY sort_key DESC LIMIT 1), 0) AS ordinaryMax`,
+        )
+        .first<{ priorityMax: number; ordinaryMax: number }>(),
+    ]);
+
+    const availableByQueueAndMap = new Map<
+      string,
+      { groups: MaterializedGroup[]; index: number }
+    >();
+    for (const row of existing.results) {
+      if (row.memberCount >= row.requesterCapacity) continue;
+      const key = `${row.isPriority}:${row.mapId}`;
+      const bucket = availableByQueueAndMap.get(key) ?? { groups: [], index: 0 };
+      bucket.groups.push({ ...row });
+      availableByQueueAndMap.set(key, bucket);
+    }
+    let priorityMax = Number(maxima?.priorityMax ?? 0);
+    let ordinaryMax = Number(maxima?.ordinaryMax ?? 0);
+    const newGroups: Array<{
+      actionKey: string;
+      isPriority: number;
+      mapId: string;
+      capacity: number;
+      sortKey: number;
+    }> = [];
+    const assignments: Array<{
+      requestId: number;
+      groupId: number | null;
+      actionKey: string | null;
+      memberPosition: number;
+    }> = [];
+    for (const request of waiting.results) {
+      const bucketKey = `${request.isPriority}:${request.mapId}`;
+      const bucket = availableByQueueAndMap.get(bucketKey) ?? { groups: [], index: 0 };
+      let group = bucket.groups[bucket.index];
+      if (group === undefined) {
+        const actionKey = `materialize:${request.requestId}`;
+        if (request.isPriority === 1) {
+          priorityMax += SORT_STEP;
+        } else {
+          ordinaryMax += SORT_STEP;
+        }
+        const sortKey = request.isPriority === 1 ? priorityMax : ordinaryMax;
+        group = {
+          groupId: 0,
+          actionKey,
+          mapId: request.mapId,
+          isPriority: request.isPriority,
+          sortKey,
+          requesterCapacity: this.requesterCapacity(request.mapId, input.recipientLimit),
+          memberCount: 0,
+        };
+        bucket.groups.push(group);
+        availableByQueueAndMap.set(bucketKey, bucket);
+        newGroups.push({
+          actionKey,
+          isPriority: request.isPriority,
+          mapId: request.mapId,
+          capacity: group.requesterCapacity,
+          sortKey,
+        });
+      }
+      group.memberCount += 1;
+      assignments.push({
+        requestId: request.requestId,
+        groupId: group.groupId === 0 ? null : group.groupId,
+        actionKey: group.actionKey ?? null,
+        memberPosition: group.memberCount,
+      });
+      if (group.memberCount >= group.requesterCapacity) bucket.index += 1;
+    }
+    const timestamp = epoch(input.changedAt);
+    const groupJson = JSON.stringify(newGroups);
+    const assignmentJson = JSON.stringify(assignments);
+    const results = await this.database.batch([
+      this.database
+        .prepare(
+          `INSERT INTO raid_groups
+             (is_priority, sort_key, map_id, requester_capacity, last_action_key, created_at, updated_at)
+           SELECT json_extract(value, '$.isPriority'), json_extract(value, '$.sortKey'),
+                  json_extract(value, '$.mapId'), json_extract(value, '$.capacity'),
+                  json_extract(value, '$.actionKey'), ?, ?
+           FROM json_each(?)`,
+        )
+        .bind(timestamp, timestamp, groupJson),
+      this.database
+        .prepare(
+          `INSERT INTO raid_group_members
+             (group_id, request_id, position, created_at, updated_at)
+           SELECT coalesce(json_extract(item.value, '$.groupId'), raid.id),
+                  request.id, json_extract(item.value, '$.memberPosition'), ?, ?
+           FROM json_each(?) AS item
+           JOIN help_requests AS request
+             ON request.id = json_extract(item.value, '$.requestId') AND request.state = 0
+           LEFT JOIN raid_groups AS raid
+             ON raid.last_action_key = json_extract(item.value, '$.actionKey')
+           WHERE coalesce(json_extract(item.value, '$.groupId'), raid.id) IS NOT NULL`,
+        )
+        .bind(timestamp, timestamp, assignmentJson),
+      this.database
+        .prepare(
+          `UPDATE help_requests SET state = 1, updated_at = ?
+           WHERE state = 0 AND id IN (SELECT json_extract(value, '$.requestId') FROM json_each(?))
+             AND EXISTS (
+               SELECT 1 FROM raid_group_members AS member
+               WHERE member.request_id = help_requests.id AND member.state = 0
+             )`,
+        )
+        .bind(timestamp, assignmentJson),
+    ]);
+    return Number(results[2]?.meta.changes ?? 0);
+  }
+
+  async getBoardSnapshot(_now?: Date): Promise<StaffBoardSnapshot> {
+    const state = await this.database
+      .prepare(
+        `SELECT staff_board_message_id AS staffBoardMessageId,
+                priority_open_raid_count AS priorityRaidCount,
+                ordinary_open_raid_count AS ordinaryRaidCount
+         FROM community_state WHERE community_id = 'butcoffee'`,
+      )
+      .first<CommunityStateRow>();
+    const fallbackCounts =
+      state === null
+        ? await this.database
+            .prepare(
+              `SELECT
+                 (SELECT count(*) FROM raid_groups
+                  WHERE is_priority = 1 AND state IN (0, 1)) AS priorityRaidCount,
+                 (SELECT count(*) FROM raid_groups
+                  WHERE is_priority = 0 AND state IN (0, 1)) AS ordinaryRaidCount`,
+            )
+            .first<{ priorityRaidCount: number; ordinaryRaidCount: number }>()
+        : undefined;
+    const [priorityRows, ordinaryRows] = await Promise.all([
+      this.database
+        .prepare(
+          raidSelectSql(
+            `JOIN (SELECT id FROM raid_groups WHERE is_priority = 1 AND state IN (0, 1)
+               ORDER BY sort_key LIMIT 3) AS visible ON visible.id = raid.id`,
+          ),
+        )
+        .all<RaidRow>(),
+      this.database
+        .prepare(
+          raidSelectSql(
+            `JOIN (SELECT id FROM raid_groups WHERE is_priority = 0 AND state IN (0, 1)
+               ORDER BY sort_key LIMIT 7) AS visible ON visible.id = raid.id`,
+          ),
+        )
+        .all<RaidRow>(),
+    ]);
+    return {
+      priorityRaidCount: Number(state?.priorityRaidCount ?? fallbackCounts?.priorityRaidCount ?? 0),
+      ordinaryRaidCount: Number(state?.ordinaryRaidCount ?? fallbackCounts?.ordinaryRaidCount ?? 0),
+      ...(state?.staffBoardMessageId == null
+        ? {}
+        : { canonicalMessageId: state.staffBoardMessageId }),
+      priorityRaids: mapRaidRows(priorityRows.results),
+      ordinaryRaids: mapRaidRows(ordinaryRows.results),
+    };
+  }
+
+  async getRaid(groupId: number): Promise<StaffBoardRaid | undefined> {
+    const rows = await this.database
+      .prepare(raidSelectSql("WHERE raid.id = ?"))
+      .bind(groupId)
+      .all<RaidRow>();
+    return mapRaidRows(rows.results)[0];
+  }
+
+  async setCanonicalBoardMessage(input: { messageId: string; changedAt: Date }): Promise<void> {
+    const timestamp = epoch(input.changedAt);
+    await this.database
+      .prepare(
+        `INSERT INTO community_state (community_id, staff_board_message_id, created_at, updated_at)
+       VALUES ('butcoffee', ?, ?, ?)
+       ON CONFLICT(community_id) DO UPDATE SET
+         staff_board_message_id = excluded.staff_board_message_id, updated_at = excluded.updated_at`,
+      )
+      .bind(input.messageId, timestamp, timestamp)
+      .run();
+  }
+
+  async startRaid(input: {
+    groupId: number;
+    leaderDiscordUserId: string;
+    leaderType: "streamer" | "volunteer";
+    requestTwitchCall: boolean;
+    changedAt: Date;
+  }): Promise<StaffBoardRaid> {
+    const timestamp = epoch(input.changedAt);
+    const result = await this.database
+      .prepare(
+        `UPDATE raid_groups SET state = 1, leader_discord_user_id = ?, leader_type = ?,
+         attempt_count = 1, discord_call_status = 0, twitch_call_status = ?,
+         started_at = ?, updated_at = ? WHERE id = ? AND state = 0`,
+      )
+      .bind(
+        input.leaderDiscordUserId,
+        LEADER_TYPE[input.leaderType],
+        input.requestTwitchCall ? CALL_STATUS.pending : CALL_STATUS.not_requested,
+        timestamp,
+        timestamp,
+        input.groupId,
+      )
+      .run();
+    if (Number(result.meta.changes) !== 1)
+      throw new RepositoryInvariantError("That raid is no longer available to start.");
+    const raid = await this.getRaid(input.groupId);
+    if (raid === undefined) throw new RepositoryInvariantError("The started raid was not found.");
+    return raid;
+  }
+
+  async updateCallStatus(
+    groupId: number,
+    platform: "discord" | "twitch",
+    status: Extract<CallStatus, "sent" | "failed">,
+    changedAt: Date,
+  ): Promise<void> {
+    const column = platform === "discord" ? "discord_call_status" : "twitch_call_status";
+    await this.database
+      .prepare(`UPDATE raid_groups SET ${column} = ?, updated_at = ? WHERE id = ?`)
+      .bind(CALL_STATUS[status], epoch(changedAt), groupId)
+      .run();
+  }
+
+  async setRaidStaffMessage(groupId: number, messageId: string, changedAt: Date): Promise<void> {
+    await this.database
+      .prepare(`UPDATE raid_groups SET staff_message_id = ?, updated_at = ? WHERE id = ?`)
+      .bind(messageId, epoch(changedAt), groupId)
+      .run();
+  }
+
+  async compareAndSetRaidStaffMessage(input: {
+    groupId: number;
+    expectedMessageId?: string;
+    messageId?: string;
+    changedAt: Date;
+  }): Promise<boolean> {
+    const result = await this.database
+      .prepare(
+        `UPDATE raid_groups SET staff_message_id = ?, updated_at = ?
+       WHERE id = ? AND state = 1 AND staff_message_id IS ?`,
+      )
+      .bind(
+        input.messageId ?? null,
+        epoch(input.changedAt),
+        input.groupId,
+        input.expectedMessageId ?? null,
+      )
+      .run();
+    return Number(result.meta.changes) === 1;
+  }
+
+  async recordRaidResult(input: {
+    groupId: number;
+    outcome: "helped" | "unsuccessful";
+    attemptLimit: number;
+    actionKey: string;
+    changedAt: Date;
+  }): Promise<StaffBoardRaid> {
+    const raid = await this.getRaid(input.groupId);
+    if (raid === undefined || raid.state !== "active")
+      throw new RepositoryInvariantError("That raid is no longer active.");
+    const timestamp = epoch(input.changedAt);
+    if (input.outcome === "unsuccessful") {
+      if (raid.attemptCount >= input.attemptLimit)
+        throw new RepositoryInvariantError("Choose Helped or Postpone raid for the final attempt.");
+      const result = await this.database
+        .prepare(
+          `UPDATE raid_groups SET attempt_count = attempt_count + 1, last_action_key = ?, updated_at = ?
+         WHERE id = ? AND state = 1 AND attempt_count < ?`,
+        )
+        .bind(input.actionKey, timestamp, input.groupId, input.attemptLimit)
+        .run();
+      if (result.meta.changes !== 1)
+        throw new RepositoryInvariantError("That attempt was already recorded.");
+    } else {
+      const results = await this.database.batch([
+        this.database
+          .prepare(
+            `UPDATE raid_group_members SET state = 1, updated_at = ? WHERE group_id = ? AND state = 0`,
+          )
+          .bind(timestamp, input.groupId),
+        this.database
+          .prepare(
+            `UPDATE help_requests SET state = 2, updated_at = ?
+           WHERE state = 1 AND id IN (
+             SELECT request_id FROM raid_group_members WHERE group_id = ? AND state = 1
+           )`,
+          )
+          .bind(timestamp, input.groupId),
+        this.database
+          .prepare(
+            `UPDATE raid_groups SET state = 2, outcome = 0, staff_message_id = NULL,
+             last_action_key = ?, completed_at = ?, updated_at = ?
+           WHERE id = ? AND state = 1`,
+          )
+          .bind(input.actionKey, timestamp, timestamp, input.groupId),
+      ]);
+      if (Number(results[2]?.meta.changes ?? 0) < 1)
+        throw new RepositoryInvariantError("That raid result was already recorded.");
+    }
+    const updated = await this.getRaid(input.groupId);
+    if (updated === undefined)
+      throw new RepositoryInvariantError("The raid result was not stored.");
+    return updated;
+  }
+
+  private async requesterFollowUpWindow(groupId: number): Promise<RequesterFollowUpWindow | null> {
+    return this.database
+      .prepare(
+        `WITH source AS (
+           SELECT id, is_priority, sort_key, map_id
+           FROM raid_groups WHERE id = ? AND state = 1
+         ),
+         follow_ups AS (
+           SELECT DISTINCT target.id, target.sort_key, target.state, target.automatic_fill,
+                  target.current_member_count, target.requester_capacity
+           FROM source
+           JOIN raid_group_members AS source_member
+             ON source_member.group_id = source.id AND source_member.state = 2
+           JOIN raid_group_members AS target_member
+             ON target_member.request_id = source_member.request_id AND target_member.state = 0
+           JOIN raid_groups AS target ON target.id = target_member.group_id
+           WHERE target.id <> source.id AND target.is_priority = source.is_priority
+             AND target.map_id = source.map_id AND target.state IN (0, 1)
+         ),
+         bounds AS (
+           SELECT source.is_priority AS isPriority, source.sort_key AS sourceSortKey,
+                  coalesce(max(follow_ups.sort_key), source.sort_key) AS anchorSortKey,
+                  count(follow_ups.id) AS followUpCount
+           FROM source LEFT JOIN follow_ups ON true
+           GROUP BY source.is_priority, source.sort_key
+         )
+         SELECT bounds.sourceSortKey, bounds.anchorSortKey, bounds.followUpCount,
+                (SELECT min(next.sort_key) FROM raid_groups AS next
+                 WHERE next.is_priority = bounds.isPriority AND next.state IN (0, 1)
+                   AND next.sort_key > bounds.anchorSortKey) AS nextSortKey,
+                (SELECT id FROM follow_ups
+                 WHERE state = 0 AND automatic_fill = 1
+                   AND current_member_count < requester_capacity
+                 ORDER BY sort_key LIMIT 1) AS reusableGroupId
+         FROM bounds`,
+      )
+      .bind(groupId)
+      .first<RequesterFollowUpWindow>();
+  }
+
+  async postponeRequester(input: {
+    groupId: number;
+    requestId: number;
+    actionKey: string;
+    changedAt: Date;
+  }): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
+    const source = await this.getRaid(input.groupId);
+    if (source === undefined || source.state !== "active")
+      throw new RepositoryInvariantError("That raid is no longer active.");
+    if (!source.members.some((member) => member.requestId === input.requestId))
+      throw new RepositoryInvariantError("That requester is no longer in this raid.");
+    const sourceBecomesEmpty = source.members.length === 1;
+    const window = await this.requesterFollowUpWindow(input.groupId);
+    if (window === null) throw new RepositoryInvariantError("That raid is no longer active.");
+    const reusableGroupId = window.reusableGroupId;
+    const followUpSortKey =
+      sourceBecomesEmpty && window.followUpCount === 0
+        ? window.sourceSortKey
+        : window.nextSortKey === null
+          ? window.anchorSortKey + SORT_STEP
+          : Math.floor((window.anchorSortKey + window.nextSortKey) / 2);
+    const timestamp = epoch(input.changedAt);
+    const followUpAction = `${input.actionKey}:postponed`;
+    const sourceUpdate = this.database
+      .prepare(
+        `UPDATE raid_groups SET
+         state = CASE WHEN ? = 1 THEN 3 ELSE state END,
+         outcome = CASE WHEN ? = 1 THEN 1 ELSE outcome END,
+         staff_message_id = CASE WHEN ? = 1 THEN NULL ELSE staff_message_id END,
+         completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END,
+         last_action_key = ?, updated_at = ?
+       WHERE id = ? AND state = 1 AND EXISTS (
+         SELECT 1 FROM raid_group_members
+         WHERE group_id = ? AND request_id = ? AND state = 0
+       )`,
+      )
+      .bind(
+        sourceBecomesEmpty ? 1 : 0,
+        sourceBecomesEmpty ? 1 : 0,
+        sourceBecomesEmpty ? 1 : 0,
+        sourceBecomesEmpty ? 1 : 0,
+        timestamp,
+        input.actionKey,
+        timestamp,
+        input.groupId,
+        input.groupId,
+        input.requestId,
+      );
+    const removeSourceMembership = this.database
+      .prepare(
+        `UPDATE raid_group_members SET state = 2, updated_at = ?
+       WHERE group_id = ? AND request_id = ? AND state = 0`,
+      )
+      .bind(timestamp, input.groupId, input.requestId);
+    const statements = [sourceUpdate];
+    if (reusableGroupId === null) {
+      statements.push(
+        this.database
+          .prepare(
+            `INSERT INTO raid_groups
+             (is_priority, sort_key, map_id, requester_capacity,
+              leader_discord_user_id, leader_type, automatic_fill,
+              last_action_key, created_at, updated_at)
+           SELECT is_priority, ?, map_id, requester_capacity,
+                  leader_discord_user_id, leader_type, 1, ?, ?, ?
+           FROM raid_groups WHERE id = ? AND last_action_key = ?`,
+          )
+          .bind(
+            followUpSortKey,
+            followUpAction,
+            timestamp,
+            timestamp,
+            input.groupId,
+            input.actionKey,
+          ),
+      );
+    }
+    statements.push(removeSourceMembership);
+    const destinationPredicate = reusableGroupId === null ? "last_action_key = ?" : "id = ?";
+    const destinationKey = reusableGroupId ?? followUpAction;
+    statements.push(
+      this.database
+        .prepare(
+          `INSERT INTO raid_group_members
+             (group_id, request_id, position, created_at, updated_at)
+           VALUES (
+             (SELECT id FROM raid_groups
+              WHERE ${destinationPredicate} AND state = 0 AND automatic_fill = 1
+                AND current_member_count < requester_capacity),
+             (SELECT id FROM help_requests WHERE id = ? AND state = 1),
+             (SELECT current_member_count + 1 FROM raid_groups
+              WHERE ${destinationPredicate} AND state = 0 AND automatic_fill = 1
+                AND current_member_count < requester_capacity),
+             ?, ?
+           )`,
+        )
+        .bind(destinationKey, input.requestId, destinationKey, timestamp, timestamp),
+    );
+    const results = await this.database.batch(statements);
+    if (results.some((result) => Number(result.meta.changes) < 1)) {
+      throw new RepositoryInvariantError("The requester was not postponed atomically.");
+    }
+    const destinationId =
+      reusableGroupId === null
+        ? await this.database
+            .prepare(`SELECT id FROM raid_groups WHERE last_action_key = ?`)
+            .bind(followUpAction)
+            .first<{ id: number }>()
+        : { id: reusableGroupId };
+    const [updatedSource, dedicated] = await Promise.all([
+      this.getRaid(input.groupId),
+      destinationId === null ? undefined : this.getRaid(destinationId.id),
+    ]);
+    if (updatedSource === undefined || dedicated === undefined)
+      throw new RepositoryInvariantError("The postponed raid state was not found.");
+    return { source: updatedSource, dedicated };
+  }
+
+  async removeRequester(input: {
+    groupId: number;
+    requestId: number;
+    actionKey: string;
+    changedAt: Date;
+  }): Promise<StaffBoardRaid> {
+    const source = await this.getRaid(input.groupId);
+    if (source === undefined || source.state !== "active")
+      throw new RepositoryInvariantError("That raid is no longer active.");
+    if (!source.members.some((member) => member.requestId === input.requestId))
+      throw new RepositoryInvariantError("That requester is no longer in this raid.");
+    const timestamp = epoch(input.changedAt);
+    await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE raid_group_members SET state = 2, updated_at = ? WHERE group_id = ? AND request_id = ? AND state = 0`,
+        )
+        .bind(timestamp, input.groupId, input.requestId),
+      this.database
+        .prepare(`UPDATE help_requests SET state = 3, updated_at = ? WHERE id = ? AND state = 1`)
+        .bind(timestamp, input.requestId),
+      this.database
+        .prepare(
+          `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
+           last_action_key = ?, completed_at = ?, updated_at = ?
+         WHERE id = ? AND state = 1 AND NOT EXISTS (
+           SELECT 1 FROM raid_group_members WHERE group_id = ? AND state = 0
+         )`,
+        )
+        .bind(input.actionKey, timestamp, timestamp, input.groupId, input.groupId),
+      this.database
+        .prepare(
+          `UPDATE raid_groups SET last_action_key = ?, updated_at = ? WHERE id = ? AND state = 1`,
+        )
+        .bind(input.actionKey, timestamp, input.groupId),
+    ]);
+    const updated = await this.getRaid(input.groupId);
+    if (updated === undefined)
+      throw new RepositoryInvariantError("The requester removal was not stored.");
+    return updated;
+  }
+
+  async postponeRaid(input: {
+    groupId: number;
+    actionKey: string;
+    changedAt: Date;
+  }): Promise<StaffBoardRaid> {
+    const source = await this.getRaid(input.groupId);
+    if (source === undefined || source.state !== "active")
+      throw new RepositoryInvariantError("That raid is no longer active.");
+    if (source.members.length === 0)
+      throw new RepositoryInvariantError("That raid has no requesters to postpone.");
+    const timestamp = epoch(input.changedAt);
+    const results = await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE help_requests SET is_priority = 1, updated_at = ?
+         WHERE state = 1 AND id IN (
+           SELECT request_id FROM raid_group_members WHERE group_id = ? AND state = 0
+         )`,
+        )
+        .bind(timestamp, input.groupId),
+      this.database
+        .prepare(
+          `UPDATE raid_groups SET is_priority = 1,
+           sort_key = coalesce((SELECT max(target.sort_key) FROM raid_groups AS target
+                                WHERE target.is_priority = 1 AND target.state IN (0, 1)), 0) + ?,
+           state = 0, automatic_fill = 0, attempt_count = 0,
+           discord_call_status = 3, twitch_call_status = 3,
+           staff_message_id = NULL, last_action_key = ?, started_at = NULL, updated_at = ?
+         WHERE id = ? AND state = 1`,
+        )
+        .bind(SORT_STEP, input.actionKey, timestamp, input.groupId),
+    ]);
+    if (Number(results[1]?.meta.changes ?? 0) < 1)
+      throw new RepositoryInvariantError("That raid is no longer active.");
+    const updated = await this.getRaid(input.groupId);
+    if (updated === undefined)
+      throw new RepositoryInvariantError("The postponed raid state was not found.");
+    return updated;
+  }
+
+  async upsertUserMapping(input: {
+    twitchLogin: string;
+    twitchUserId?: string;
+    discordUserId?: string;
+    discordDisplayName?: string;
+    inGameName?: string;
+    observedAt: Date;
+  }): Promise<UserMapping> {
+    const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
+    if (twitchLogin === undefined) throw new RepositoryInvariantError("Enter a valid Twitch name.");
+    if (input.twitchUserId === undefined && input.discordUserId === undefined)
+      throw new RepositoryInvariantError("A user mapping requires a Twitch or Discord caller ID.");
+    const timestamp = epoch(input.observedAt);
+    const statements: D1PreparedStatement[] = [];
+    if (input.twitchUserId !== undefined) {
+      statements.push(
+        this.database
+          .prepare(
+            `UPDATE user_mappings SET twitch_user_id = NULL, updated_at = ?
+         WHERE twitch_user_id = ? AND twitch_login <> ?`,
+          )
+          .bind(timestamp, input.twitchUserId, twitchLogin),
+      );
+    }
+    if (input.discordUserId !== undefined) {
+      statements.push(
+        this.database
+          .prepare(
+            `UPDATE user_mappings SET discord_user_id = NULL, discord_display_name = NULL, updated_at = ?
+         WHERE discord_user_id = ? AND twitch_login <> ?`,
+          )
+          .bind(timestamp, input.discordUserId, twitchLogin),
+      );
+    }
+    statements.push(
+      this.database
+        .prepare(
+          `INSERT INTO user_mappings
+         (twitch_login, twitch_user_id, discord_user_id, discord_display_name,
+          in_game_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(twitch_login) DO UPDATE SET
+         twitch_user_id = coalesce(excluded.twitch_user_id, user_mappings.twitch_user_id),
+         discord_user_id = coalesce(excluded.discord_user_id, user_mappings.discord_user_id),
+         discord_display_name = coalesce(excluded.discord_display_name, user_mappings.discord_display_name),
+         in_game_name = CASE
+           WHEN excluded.in_game_name IS NULL THEN user_mappings.in_game_name
+           WHEN user_mappings.in_game_name IS NULL OR excluded.discord_user_id IS NOT NULL
+             THEN excluded.in_game_name ELSE user_mappings.in_game_name END,
+         updated_at = excluded.updated_at`,
+        )
+        .bind(
+          twitchLogin,
+          input.twitchUserId ?? null,
+          input.discordUserId ?? null,
+          input.discordDisplayName ?? null,
+          input.inGameName?.trim() || null,
+          timestamp,
+          timestamp,
+        ),
+    );
+    await this.database.batch(statements);
+    const row = await this.database
+      .prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+              discord_user_id AS discordUserId, discord_display_name AS discordDisplayName,
+              in_game_name AS inGameName FROM user_mappings WHERE twitch_login = ?`,
+      )
+      .bind(twitchLogin)
+      .first<UserMappingRow>();
+    if (row === null) throw new RepositoryInvariantError("User mapping was not stored.");
+    return {
+      twitchLogin: row.twitchLogin,
+      ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
+      ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+      ...(row.discordDisplayName === null ? {} : { discordDisplayName: row.discordDisplayName }),
+      ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
+    };
+  }
+
+  async findUserMappingByDiscordId(discordUserId: string): Promise<UserMapping | undefined> {
+    const row = await this.database
+      .prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+              discord_user_id AS discordUserId, discord_display_name AS discordDisplayName,
+              in_game_name AS inGameName FROM user_mappings WHERE discord_user_id = ?`,
+      )
+      .bind(discordUserId)
+      .first<UserMappingRow>();
+    return row === null
+      ? undefined
+      : {
+          twitchLogin: row.twitchLogin,
+          ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
+          ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+          ...(row.discordDisplayName === null
+            ? {}
+            : { discordDisplayName: row.discordDisplayName }),
+          ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
+        };
+  }
+
+  observeTwitchIdentity(input: {
+    twitchLogin: string;
+    twitchUserId: string;
+    observedAt: Date;
+  }): Promise<UserMapping> {
+    return this.upsertUserMapping(input);
+  }
+
+  linkDiscordToTwitch(input: {
+    twitchLogin: string;
+    discordUserId: string;
+    discordDisplayName?: string;
+    inGameName?: string;
+    linkedAt: Date;
+  }): Promise<UserMapping> {
+    return this.upsertUserMapping({
+      twitchLogin: input.twitchLogin,
+      discordUserId: input.discordUserId,
+      ...(input.discordDisplayName === undefined
+        ? {}
+        : { discordDisplayName: input.discordDisplayName }),
+      ...(input.inGameName === undefined ? {} : { inGameName: input.inGameName }),
+      observedAt: input.linkedAt,
+    });
+  }
+
+  async recordTwitchReply(input: {
+    deliveryId: string;
+    eventType: string;
+    replyText: string;
+    replyToMessageId?: string;
+    receivedAt: Date;
+  }): Promise<TwitchReplyReceipt> {
+    const receivedAt = epoch(input.receivedAt);
+    const results = await this.database.batch([
+      this.database
+        .prepare(`DELETE FROM event_receipts WHERE received_at < ?`)
+        .bind(receivedAt - RECEIPT_TTL_MS),
+      this.database
+        .prepare(
+          `INSERT OR IGNORE INTO event_receipts
+           (platform, delivery_id, event_type, received_at, twitch_reply_text,
+            twitch_reply_to_message_id, reply_status)
+         VALUES (1, ?, ?, ?, ?, ?, 0)`,
+        )
+        .bind(
+          input.deliveryId,
+          input.eventType,
+          receivedAt,
+          input.replyText,
+          input.replyToMessageId ?? null,
+        ),
+    ]);
+    const row = await this.database
+      .prepare(
+        `SELECT twitch_reply_text AS replyText, twitch_reply_to_message_id AS replyToMessageId,
+              CASE reply_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
+                                WHEN 2 THEN 'failed' END AS replyStatus
+       FROM event_receipts WHERE platform = 1 AND delivery_id = ?`,
+      )
+      .bind(input.deliveryId)
+      .first<TwitchReceiptRow>();
+    if (row?.replyText == null || row.replyStatus === null)
+      throw new RepositoryInvariantError("Twitch command receipt was not stored");
+    return {
+      duplicate: results[1]?.meta.changes === 0,
+      replyText: row.replyText,
+      replyStatus: row.replyStatus,
+      ...(row.replyToMessageId === null ? {} : { replyToMessageId: row.replyToMessageId }),
+    };
+  }
+
+  async markTwitchReplySent(deliveryId: string, platformMessageId: string): Promise<void> {
+    await this.database
+      .prepare(
+        `UPDATE event_receipts SET reply_status = 1, reply_attempts = reply_attempts + 1,
+         platform_message_id = ?, last_error_code = NULL WHERE platform = 1 AND delivery_id = ?`,
+      )
+      .bind(platformMessageId, deliveryId)
+      .run();
+  }
+
+  async markTwitchReplyFailed(deliveryId: string, errorCode: string): Promise<void> {
+    await this.database
+      .prepare(
+        `UPDATE event_receipts SET reply_status = 2, reply_attempts = reply_attempts + 1,
+         last_error_code = ? WHERE platform = 1 AND delivery_id = ?`,
+      )
+      .bind(errorCode, deliveryId)
+      .run();
+  }
+
+  async claimDiscordMutation(
+    deliveryId: string,
+    eventType: string,
+    receivedAt: Date,
+  ): Promise<boolean> {
+    const timestamp = epoch(receivedAt);
+    const results = await this.database.batch([
+      this.database
+        .prepare(`DELETE FROM event_receipts WHERE received_at < ?`)
+        .bind(timestamp - RECEIPT_TTL_MS),
+      this.database
+        .prepare(
+          `INSERT OR IGNORE INTO event_receipts (platform, delivery_id, event_type, received_at)
+         VALUES (0, ?, ?, ?)`,
+        )
+        .bind(deliveryId, eventType, timestamp),
+    ]);
+    return results[1]?.meta.changes === 1;
+  }
+
+  async getDiagnostics(): Promise<{
+    tableCount: number;
+    requestCount: number;
+    receiptCount: number;
+  }> {
+    const results = await this.database.batch([
+      this.database.prepare(
+        `SELECT count(*) AS count FROM sqlite_schema WHERE type = 'table'
+         AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'`,
+      ),
+      this.database.prepare(`SELECT count(*) AS count FROM help_requests`),
+      this.database.prepare(`SELECT count(*) AS count FROM event_receipts`),
+    ]);
+    const count = (index: number) =>
+      Number((results[index]?.results[0] as { count?: number } | undefined)?.count ?? 0);
+    return { tableCount: count(0), requestCount: count(1), receiptCount: count(2) };
+  }
+}

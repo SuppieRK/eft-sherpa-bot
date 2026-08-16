@@ -1,0 +1,51 @@
+{
+  "public": [
+    {
+      "name": "request",
+      "description": "Ask for help with an Escape from Tarkov raid.",
+      "type": 1
+    },
+    {
+      "name": "queue",
+      "description": "See the queue and your next help request.",
+      "type": 1
+    }
+  ],
+  "discordViewer": [
+    {
+      "name": "link-twitch",
+      "description": "Associate a Twitch name with a Discord member.",
+      "type": 1,
+      "options": [
+        {
+          "name": "name",
+          "description": "Twitch name. You can omit the @ sign.",
+          "type": 3,
+          "required": true,
+          "max_length": 25
+        },
+        {
+          "name": "discord",
+          "description": "Staff only: select the Discord member to associate.",
+          "type": 6,
+          "required": false
+        },
+        {
+          "name": "eft",
+          "description": "Optional Escape from Tarkov in-game name.",
+          "type": 3,
+          "required": false,
+          "min_length": 1,
+          "max_length": 64
+        }
+      ]
+    }
+  ],
+  "discordStaff": [
+    {
+      "name": "board",
+      "description": "Open the sherpa staff board.",
+      "type": 1
+    }
+  ]
+}

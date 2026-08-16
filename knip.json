@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/knip/schema.json",
+  "ignoreDependencies": ["cloudflare"],
+  "vitest": {
+    "config": ["vitest.config.ts", "vitest.benchmark.config.ts"],
+    "entry": ["test/**/*.test.ts", "benchmark/**/*.benchmark.ts"]
+  }
+}

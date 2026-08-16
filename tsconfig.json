@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "allowJs": false,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "lib": ["ES2024"],
+    "module": "ESNext",
+    "moduleDetection": "force",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2024",
+    "types": ["@cloudflare/vitest-pool-workers/types", "node"],
+    "verbatimModuleSyntax": true
+  },
+  "include": [
+    "benchmark/**/*.ts",
+    "src/**/*.ts",
+    "src/worker-configuration.d.ts",
+    "test/**/*.ts",
+    "test/**/*.d.ts",
+    "vitest.config.ts",
+    "vitest.benchmark.config.ts"
+  ]
+}

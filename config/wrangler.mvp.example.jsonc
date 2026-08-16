@@ -1,0 +1,42 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "coffee-bot-mvp",
+  "main": "../src/index.ts",
+  "compatibility_date": "2026-08-14",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "coffee-bot-mvp",
+      "database_id": "<MVP_D1_DATABASE_ID>",
+      "migrations_dir": "../migrations"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "mvp",
+    "COMMUNITY_ID": "butcoffee",
+    "TWITCH_BROADCASTER_USER_ID": "<TWITCH_BROADCASTER_USER_ID>",
+    "TWITCH_BOT_USER_ID": "<TWITCH_BOT_USER_ID>",
+    "TWITCH_CLIENT_ID": "<TWITCH_CLIENT_ID>",
+    "DISCORD_APPLICATION_ID": "<DISCORD_APPLICATION_ID>",
+    "DISCORD_PUBLIC_KEY": "<DISCORD_PUBLIC_KEY>",
+    "DISCORD_GUILD_ID": "<DISCORD_GUILD_ID>",
+    "DISCORD_REQUEST_CHANNEL_ID": "<DISCORD_REQUEST_CHANNEL_ID>",
+    "DISCORD_STAFF_CHANNEL_ID": "<DISCORD_STAFF_CHANNEL_ID>",
+    "DISCORD_VOLUNTEER_ROLE_ID": "<DISCORD_VOLUNTEER_ROLE_ID>",
+    "DISCORD_STREAMER_USER_ID": "<DISCORD_STREAMER_USER_ID>",
+    "RECIPIENT_LIMIT": "3",
+    "ATTEMPT_LIMIT": "3",
+    "DISCORD_API_BASE_URL": "https://discord.com/api/v10",
+    "TWITCH_API_BASE_URL": "https://api.twitch.tv/helix",
+    "TWITCH_AUTH_BASE_URL": "https://id.twitch.tv/oauth2"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  }
+}

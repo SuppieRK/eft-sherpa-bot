@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "coffee-bot-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-14",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "coffee-bot-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "local",
+    "COMMUNITY_ID": "butcoffee",
+    "TWITCH_BROADCASTER_USER_ID": "100000000000001",
+    "TWITCH_BOT_USER_ID": "100000000000002",
+    "TWITCH_CLIENT_ID": "testclientid1234567890",
+    "DISCORD_APPLICATION_ID": "200000000000001",
+    "DISCORD_PUBLIC_KEY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "DISCORD_GUILD_ID": "200000000000002",
+    "DISCORD_REQUEST_CHANNEL_ID": "200000000000003",
+    "DISCORD_STAFF_CHANNEL_ID": "200000000000004",
+    "DISCORD_VOLUNTEER_ROLE_ID": "200000000000005",
+    "DISCORD_STREAMER_USER_ID": "200000000000006",
+    "RECIPIENT_LIMIT": "3",
+    "ATTEMPT_LIMIT": "3",
+    "DISCORD_API_BASE_URL": "https://discord.com/api/v10",
+    "TWITCH_API_BASE_URL": "https://api.twitch.tv/helix",
+    "TWITCH_AUTH_BASE_URL": "https://id.twitch.tv/oauth2"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  }
+}

@@ -1,0 +1,47 @@
+name: Refresh Twitch token
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-production
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ vars.WORKER_BASE_URL }}
+    env:
+      TWITCH_CLIENT_ID: ${{ vars.TWITCH_CLIENT_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      WORKER_NAME: ${{ vars.WORKER_NAME }}
+      WORKER_BASE_URL: ${{ vars.WORKER_BASE_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Use pinned npm
+        run: npm install --global npm@12.0.2
+      - name: Install dependencies
+        run: npm ci
+      - name: Generate Twitch app token
+        run: node scripts/deployment/create-twitch-app-token.mjs
+        env:
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+      - name: Upload Twitch app token
+        run: printf '%s' "$TWITCH_APP_ACCESS_TOKEN" | npx wrangler secret put TWITCH_APP_ACCESS_TOKEN --name "$WORKER_NAME"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Verify Twitch app token
+        run: node scripts/deployment/verify-twitch-token.mjs
+        env:
+          SPIKE_DIAGNOSTICS_TOKEN: ${{ secrets.SPIKE_DIAGNOSTICS_TOKEN }}

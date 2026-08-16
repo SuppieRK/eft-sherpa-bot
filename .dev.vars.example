@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development. Never commit the copied file.
+TWITCH_EVENTSUB_SECRET=replace-with-a-random-10-to-100-character-secret
+TWITCH_APP_ACCESS_TOKEN=replace-with-the-server-to-server-app-access-token
+SPIKE_DIAGNOSTICS_TOKEN=replace-with-a-separate-random-diagnostics-token
+DISCORD_BOT_TOKEN=replace-with-the-private-discord-bot-token

@@ -1,0 +1,30 @@
+name: Report a bug
+description: Report incorrect bot behavior
+title: "Bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not report a security problem here. Use the security policy.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Enter the deployed release version.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Incorrect behavior
+      description: State what happened and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: Give the shortest safe steps that show the problem.
+    validations:
+      required: true

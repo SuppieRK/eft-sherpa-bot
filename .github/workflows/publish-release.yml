@@ -1,0 +1,82 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version, for example v0.1.0
+        required: true
+        type: string
+      smoke_test_complete:
+        description: Confirm that the upstream Discord and Twitch smoke test passed
+        required: true
+        type: boolean
+        default: false
+      migrations:
+        description: State the migration effect
+        required: true
+        type: string
+      compatibility:
+        description: State the compatibility effect
+        required: true
+        type: string
+      operator_actions:
+        description: State the required operator actions
+        required: true
+        type: string
+      rollback:
+        description: State the rollback procedure
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    name: Verify gates and publish
+    if: github.repository == 'SuppieRK/eft-sherpa-bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Use pinned npm
+        run: npm install --global npm@12.0.2
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify release source
+        run: npm run verify
+      - name: Require upstream main and completed smoke test
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$SMOKE_TEST_COMPLETE" = "true"
+        env:
+          SMOKE_TEST_COMPLETE: ${{ inputs.smoke_test_complete }}
+      - name: Require successful deployment for this commit
+        run: |
+          run_count=$(gh run list --workflow deploy-production.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq 'length')
+          test "$run_count" -gt 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create release notes
+        run: |
+          mkdir -p .artifacts
+          node scripts/deployment/create-release-notes.mjs
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_MIGRATIONS: ${{ inputs.migrations }}
+          RELEASE_COMPATIBILITY: ${{ inputs.compatibility }}
+          RELEASE_OPERATOR_ACTIONS: ${{ inputs.operator_actions }}
+          RELEASE_ROLLBACK: ${{ inputs.rollback }}
+      - name: Create tag and GitHub release
+        run: gh release create "$RELEASE_VERSION" --target "$GITHUB_SHA" --title "$RELEASE_VERSION" --notes-file .artifacts/release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}

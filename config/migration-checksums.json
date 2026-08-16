@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "migrations": {
+    "0001_mvp_baseline.sql": "24fdfbd0b962e408484811768afb657a97e4dead71368f1614e475e34b94e404"
+  }
+}

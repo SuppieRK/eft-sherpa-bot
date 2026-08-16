@@ -1,0 +1,5 @@
+# Copy to .dev.vars.operator for Twitch provisioning. Never commit the copied file.
+TWITCH_CLIENT_ID=replace-with-the-public-client-id
+TWITCH_CLIENT_SECRET=replace-with-the-private-client-secret
+TWITCH_BOT_LOGIN=replace-with-the-lowercase-bot-login
+TWITCH_BROADCASTER_LOGIN=replace-with-the-lowercase-test-channel-login
