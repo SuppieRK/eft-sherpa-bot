@@ -17,7 +17,7 @@ export const testCommunityConfig = {
     streamerUserId: "200000000000006",
   },
   policies: {
-    recipientLimit: 3,
+    recipientLimit: 4,
     attemptLimit: 3,
   },
 } satisfies CommunityConfig;
