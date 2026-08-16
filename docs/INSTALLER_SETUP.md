@@ -21,7 +21,15 @@ Use the [Twitch Developer Console](https://dev.twitch.tv/console/apps) to create
 3. Record the account ID and D1 database ID.
 4. Create a custom API token for the streamer account.
 5. Give the token `Workers Scripts:Write` and `D1:Edit`.
-6. Keep the token in a password manager until you add it to GitHub.
+6. Do not put the token in a repository file.
+7. Open the GitHub repository that will deploy the bot.
+8. Select **Settings**.
+9. Select **Environments**.
+10. Select `production`.
+11. Under **Environment secrets**, select **Add environment secret**.
+12. Enter `CLOUDFLARE_API_TOKEN` in **Name**.
+13. Paste the token in **Value**.
+14. Select **Add secret**.
 
 The deployment creates the Worker. Use `eft-sherpa-bot` as the Worker name.
 
@@ -53,7 +61,19 @@ The user approval is a one-time action. GitHub creates a new application token d
 
 ## Add GitHub environment variables
 
-Add these values to the `production` environment in the streamer fork.
+Use the streamer fork for the streamer deployment. Use
+[SuppieRK/eft-sherpa-bot](https://github.com/SuppieRK/eft-sherpa-bot) only for the maintainer test
+deployment.
+
+1. Open the repository that will deploy the bot.
+2. Select **Settings**.
+3. Select **Environments**.
+4. Select `production`.
+5. Under **Environment variables**, select **Add environment variable**.
+6. Enter the table name in **Name**.
+7. Enter the source value in **Value**.
+8. Select **Add variable**.
+9. Repeat these steps for each table row.
 
 | Name | Source | Public | GitHub location | Validation |
 |---|---|---:|---|---|
@@ -78,7 +98,17 @@ Add these values to the `production` environment in the streamer fork.
 
 ## Add GitHub environment secrets
 
-Do not show these values in a screenshot or message.
+Use the same repository and its `production` environment. Do not use repository-level secrets.
+
+1. Open **Settings** and select **Environments**.
+2. Select `production`.
+3. Under **Environment secrets**, select **Add environment secret**.
+4. Enter the table name in **Name**.
+5. Enter the source value in **Value**.
+6. Select **Add secret**.
+7. Repeat these steps for each table row.
+
+Do not show these values in a screenshot or message. Do not put these values in repository files.
 
 | Name | Source | Public | GitHub location | Validation |
 |---|---|---:|---|---|
