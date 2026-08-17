@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { checkedJson } from "./deployment/fetch-json.mjs";
+import { WORKER_SECRET_NAMES, workerSecrets } from "./deployment/render-worker-secrets.mjs";
 import { ensureTwitchSubscription } from "./twitch/create-chat-subscription.mjs";
 
 const environment = {
@@ -20,6 +22,37 @@ const environment = {
   ATTEMPT_LIMIT: "3",
 };
 const callback = "https://worker.example/webhooks/twitch/eventsub";
+
+{
+  const secretEnvironment = Object.fromEntries(
+    WORKER_SECRET_NAMES.map((name, index) => [name, `secret-${index}`]),
+  );
+  assert.deepEqual(workerSecrets(secretEnvironment), secretEnvironment);
+  assert.throws(
+    () => workerSecrets({ ...secretEnvironment, SPIKE_DIAGNOSTICS_TOKEN: "" }),
+    /Missing Worker secret: SPIKE_DIAGNOSTICS_TOKEN/,
+  );
+}
+
+{
+  const payload = await checkedJson("https://worker.example/health", undefined, async () =>
+    Response.json({ status: "ok" }),
+  );
+  assert.deepEqual(payload, { status: "ok" });
+
+  await assert.rejects(
+    checkedJson(
+      "https://worker.example/internal/status",
+      undefined,
+      async () =>
+        new Response("<!DOCTYPE html><title>Worker error</title>", {
+          status: 500,
+          headers: { "Content-Type": "text/html" },
+        }),
+    ),
+    /\/internal\/status failed with status 500 and text\/html: <!DOCTYPE html>/,
+  );
+}
 
 function response(body, status = 200) {
   return new Response(status === 204 ? null : JSON.stringify(body), {

@@ -1,4 +1,5 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { checkedJson } from "./fetch-json.mjs";
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -25,13 +26,6 @@ function findBookmark(value) {
     }
   }
   return undefined;
-}
-
-async function checkedJson(url, init) {
-  const response = await fetch(url, init);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(`${new URL(url).pathname} failed with ${response.status}`);
-  return payload;
 }
 
 const workerBaseUrl = new URL(required("WORKER_BASE_URL"));

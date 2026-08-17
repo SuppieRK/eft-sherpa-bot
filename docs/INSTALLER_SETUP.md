@@ -17,21 +17,27 @@ Use the [Twitch Developer Console](https://dev.twitch.tv/console/apps) to create
 ## Prepare Cloudflare
 
 1. Sign in to the streamer-owned Cloudflare account.
-2. Create a D1 database named `eft-sherpa-bot`.
-3. Record the account ID and D1 database ID.
-4. Create a custom API token for the streamer account.
-5. Give the token `Workers Scripts:Write` and `D1:Edit`.
-6. Do not put the token in a repository file.
-7. Open the GitHub repository that will deploy the bot.
-8. Select **Settings**.
-9. Select **Environments**.
-10. Select `production`.
-11. Under **Environment secrets**, select **Add environment secret**.
-12. Enter `CLOUDFLARE_API_TOKEN` in **Name**.
-13. Paste the token in **Value**.
-14. Select **Add secret**.
+2. Open **Workers & Pages**.
+3. Select **Create application**.
+4. Select a basic Worker template. Do not connect a Git repository.
+5. Enter `eft-sherpa-bot` as the Worker name.
+6. Deploy the template.
+7. Record the `workers.dev` HTTPS URL.
+8. Create a D1 database named `eft-sherpa-bot`.
+9. Record the account ID and D1 database ID.
+10. Create a custom API token for the streamer account.
+11. Give the token `Workers Scripts:Write` and `D1:Edit`.
+12. Do not put the token in a repository file.
+13. Open the GitHub repository that will deploy the bot.
+14. Select **Settings**.
+15. Select **Environments**.
+16. Select `production`.
+17. Under **Environment secrets**, select **Add environment secret**.
+18. Enter `CLOUDFLARE_API_TOKEN` in **Name**.
+19. Paste the token in **Value**.
+20. Select **Add secret**.
 
-The deployment creates the Worker. Use `eft-sherpa-bot` as the Worker name.
+The first GitHub deployment replaces the template Worker. GitHub Actions controls later deployments.
 
 ## Prepare Twitch
 
