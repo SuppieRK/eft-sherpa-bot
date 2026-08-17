@@ -24,20 +24,16 @@ Use the [Twitch Developer Console](https://dev.twitch.tv/console/apps) to create
 6. Deploy the template.
 7. Record the `workers.dev` HTTPS URL.
 8. Create a D1 database named `eft-sherpa-bot`.
-9. Record the account ID and D1 database ID.
-10. Create a custom API token for the streamer account.
-11. Give the token `Workers Scripts:Write` and `D1:Edit`.
-12. Do not put the token in a repository file.
-13. Open the GitHub repository that will deploy the bot.
-14. Select **Settings**.
-15. Select **Environments**.
-16. Select `production`.
-17. Under **Environment secrets**, select **Add environment secret**.
-18. Enter `CLOUDFLARE_API_TOKEN` in **Name**.
-19. Paste the token in **Value**.
-20. Select **Add secret**.
+9. Select the database and record its **Database ID**.
+10. Open **Workers & Pages** and record the **Account ID** in **Account Details**.
+11. Create a custom API token for the streamer account.
+12. Give the token `Workers Scripts:Write` and `D1:Edit`.
+13. Copy the token value when Cloudflare shows it.
+14. Do not put the token in a repository file.
 
 The first GitHub deployment replaces the template Worker. GitHub Actions controls later deployments.
+
+Use the official Cloudflare instructions to [find the account ID](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/), [create the D1 database](https://developers.cloudflare.com/d1/get-started/), and [create the API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/).
 
 ## Prepare Twitch
 
@@ -49,80 +45,106 @@ The first GitHub deployment replaces the template Worker. GitHub Actions control
 6. Sign in with the Twitch bot account.
 7. Approve the requested scopes.
 8. Ask the streamer to make the bot account a moderator.
-9. Record the broadcaster user ID and bot user ID from the command output.
+9. Record `broadcasterUserId`, `botUserId`, and `clientId` from the command output.
+10. Keep `.dev.vars` and `.dev.vars.operator` on the installer computer.
 
 The user approval is a one-time action. GitHub creates a new application token during each deployment.
 
+The [Twitch application guide](https://dev.twitch.tv/docs/authentication/register-app/) explains the client ID and client secret. A new client secret invalidates the previous client secret.
+
 ## Prepare Discord
 
-1. Create the Discord application with the streamer owner account.
-2. Keep only **Guild Install** on the **Installation** page.
-3. Set **Install Link** to **None**.
-4. Install the application in the streamer server.
-5. Create one request channel.
-6. Create one staff channel.
-7. Create one volunteer sherpa role.
-8. Give the bot **View Channel**, **Send Messages**, and **Embed Links** in both channels.
-9. Record all Discord values in the table below.
+Warning: **Reset Token** invalidates the previous Discord bot token. If you reset the token, replace every stored copy.
 
-## Add GitHub environment variables
+1. Create the Discord application with the streamer owner account.
+2. Record **Application ID** and **Public Key** from **General Information**.
+3. Open **Bot** and record the bot token. If Discord does not show a token, select **Reset Token** and record the new value.
+4. Keep only **Guild Install** on the **Installation** page.
+5. Set **Install Link** to **None**.
+6. Install the application in the streamer server.
+7. In Discord, open **User Settings**, then **Advanced**, and enable **Developer Mode**.
+8. Create one request channel.
+9. Create one staff channel.
+10. Create one volunteer sherpa role.
+11. Give the bot **View Channel**, **Send Messages**, and **Embed Links** in both channels.
+12. Confirm that the bot can view both channels before you record their IDs.
+
+The [Discord Developer Mode guide](https://support.discord.com/hc/en-us/articles/206346498) explains how to copy server, channel, role, and user IDs.
+
+## Add GitHub environment values
 
 Use the streamer fork for the streamer deployment. Use
 [SuppieRK/eft-sherpa-bot](https://github.com/SuppieRK/eft-sherpa-bot) only for the maintainer test
 deployment.
 
+Each table has these columns:
+
+- **GitHub type** tells you to use **Environment variables** or **Environment secrets**.
+- **Enter this value** identifies the exact value to paste.
+- **Get it here** gives the exact page, control, file key, or command-output field.
+- **Format/check** identifies the expected format and a common incorrect value.
+
+Do not add quotation marks, labels, or spaces around a value. A numeric Twitch or Discord ID is not a login name, display name, or mention.
+
 1. Open the repository that will deploy the bot.
 2. Select **Settings**.
 3. Select **Environments**.
 4. Select `production`.
-5. Under **Environment variables**, select **Add environment variable**.
-6. Enter the table name in **Name**.
-7. Enter the source value in **Value**.
-8. Select **Add variable**.
-9. Repeat these steps for each table row.
+5. For a `Variable` row, select **Add environment variable** under **Environment variables**.
+6. For a `Secret` row, select **Add environment secret** under **Environment secrets**.
+7. Enter the table value from **Name** in the GitHub **Name** field.
+8. Enter the table value from **Enter this value** in the GitHub **Value** field.
+9. Save the value.
+10. Repeat these steps for each table row.
 
-| Name | Source | Public | GitHub location | Validation |
-|---|---|---:|---|---|
-| `COMMUNITY_ID` | Use `butcoffee` | Yes | Environment variable | Configuration check |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account overview | Yes | Environment variable | Wrangler authentication |
-| `D1_DATABASE_ID` | Cloudflare D1 database page | Yes | Environment variable | Wrangler configuration |
-| `D1_DATABASE_NAME` | Use `eft-sherpa-bot` | Yes | Environment variable | D1 migration step |
-| `WORKER_NAME` | Use `eft-sherpa-bot` | Yes | Environment variable | Worker deployment |
-| `WORKER_BASE_URL` | Worker `workers.dev` HTTPS URL | Yes | Environment variable | Health check |
-| `TWITCH_BROADCASTER_USER_ID` | Twitch authorization output | Yes | Environment variable | Twitch validation |
-| `TWITCH_BOT_USER_ID` | Twitch authorization output | Yes | Environment variable | Twitch validation |
-| `TWITCH_CLIENT_ID` | Twitch Developer Console | Yes | Environment variable | Twitch token request |
-| `DISCORD_APPLICATION_ID` | Discord **General Information** | Yes | Environment variable | Discord validation |
-| `DISCORD_PUBLIC_KEY` | Discord **General Information** | Yes | Environment variable | Discord signature check |
-| `DISCORD_GUILD_ID` | Discord **Copy Server ID** | Yes | Environment variable | Discord validation |
-| `DISCORD_REQUEST_CHANNEL_ID` | Discord **Copy Channel ID** | Yes | Environment variable | Discord validation |
-| `DISCORD_STAFF_CHANNEL_ID` | Discord **Copy Channel ID** | Yes | Environment variable | Discord validation |
-| `DISCORD_VOLUNTEER_ROLE_ID` | Discord **Copy Role ID** | Yes | Environment variable | Discord validation |
-| `DISCORD_STREAMER_USER_ID` | Discord **Copy User ID** | Yes | Environment variable | Discord validation |
-| `RECIPIENT_LIMIT` | Use `4` | Yes | Environment variable | Configuration check |
-| `ATTEMPT_LIMIT` | Use `3` | Yes | Environment variable | Configuration check |
+Do not use repository-level variables or secrets. Do not show a secret in a screenshot or message. Do not put a secret in a tracked file.
 
-## Add GitHub environment secrets
+### Cloudflare values
 
-Use the same repository and its `production` environment. Do not use repository-level secrets.
+| Name | GitHub type | Enter this value | Get it here | Format/check |
+|---|---|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | `Variable` | The value labeled **Account ID** | Cloudflare dashboard: **Workers & Pages** → **Account Details** | Exactly 32 hexadecimal characters; do not use the account name |
+| `D1_DATABASE_ID` | `Variable` | The value labeled **Database ID** for `eft-sherpa-bot` | Cloudflare dashboard: **D1 SQL database** → `eft-sherpa-bot` | UUID with hyphens; do not use the database name |
+| `D1_DATABASE_NAME` | `Variable` | `eft-sherpa-bot` | Use this exact fixed value | Must match the D1 database name |
+| `WORKER_NAME` | `Variable` | `eft-sherpa-bot` | Use this exact fixed value | Must match the placeholder Worker name |
+| `WORKER_BASE_URL` | `Variable` | The complete public URL of the placeholder Worker | Cloudflare dashboard: **Workers & Pages** → `eft-sherpa-bot` → public route | Starts with `https://` and ends with `.workers.dev`; do not add a path |
+| `CLOUDFLARE_API_TOKEN` | `Secret` | The token value that Cloudflare showed after creation | Cloudflare custom API token result page | Use the token value; do not use the token name or token ID |
 
-1. Open **Settings** and select **Environments**.
-2. Select `production`.
-3. Under **Environment secrets**, select **Add environment secret**.
-4. Enter the table name in **Name**.
-5. Enter the source value in **Value**.
-6. Select **Add secret**.
-7. Repeat these steps for each table row.
+### Twitch values
 
-Do not show these values in a screenshot or message. Do not put these values in repository files.
+Run `npm run twitch:authorize` before you add these values. The command creates or updates the ignored files `.dev.vars` and `.dev.vars.operator`.
 
-| Name | Source | Public | GitHub location | Validation |
-|---|---|---:|---|---|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare custom API token | No | Environment secret | Wrangler authentication |
-| `DISCORD_BOT_TOKEN` | Discord **Bot** page | No | Environment secret | Discord validation |
-| `TWITCH_CLIENT_SECRET` | Twitch Developer Console | No | Environment secret | Twitch token request |
-| `TWITCH_EVENTSUB_SECRET` | A random value with at least 32 bytes | No | Environment secret | EventSub callback verification |
-| `SPIKE_DIAGNOSTICS_TOKEN` | A different random value with at least 32 bytes | No | Environment secret | Operator status check |
+| Name | GitHub type | Enter this value | Get it here | Format/check |
+|---|---|---|---|---|
+| `TWITCH_BROADCASTER_USER_ID` | `Variable` | The value of `broadcasterUserId` | JSON output from `npm run twitch:authorize` | Digits only; do not use `broadcasterLogin` |
+| `TWITCH_BOT_USER_ID` | `Variable` | The value of `botUserId` | JSON output from `npm run twitch:authorize` | Digits only; do not use `authorizedBotLogin` |
+| `TWITCH_CLIENT_ID` | `Variable` | The value of `clientId` | JSON output from `npm run twitch:authorize` | Letters and digits; do not use a user ID |
+| `TWITCH_CLIENT_SECRET` | `Secret` | The value after `TWITCH_CLIENT_SECRET=` | `.dev.vars.operator` on the installer computer | Use the application client secret; do not use an access token or refresh token |
+| `TWITCH_EVENTSUB_SECRET` | `Secret` | The value after `TWITCH_EVENTSUB_SECRET=` | `.dev.vars` on the installer computer | The authorization command generates 64 hexadecimal characters |
+| `SPIKE_DIAGNOSTICS_TOKEN` | `Secret` | The value after `SPIKE_DIAGNOSTICS_TOKEN=` | `.dev.vars` on the installer computer | The authorization command generates a different 64-character value |
+
+### Discord values
+
+Enable Discord Developer Mode before you copy a server, channel, role, or user ID.
+
+| Name | GitHub type | Enter this value | Get it here | Format/check |
+|---|---|---|---|---|
+| `DISCORD_APPLICATION_ID` | `Variable` | The value labeled **Application ID** | Discord Developer Portal: the bot application → **General Information** | 17 to 20 digits; do not use the application name |
+| `DISCORD_PUBLIC_KEY` | `Variable` | The value labeled **Public Key** | Discord Developer Portal: the bot application → **General Information** | Exactly 64 hexadecimal characters; this is not the bot token |
+| `DISCORD_GUILD_ID` | `Variable` | The server ID | Discord: open the server menu → **Copy Server ID** | 17 to 20 digits; do not use the server name |
+| `DISCORD_REQUEST_CHANNEL_ID` | `Variable` | The request channel ID | Discord: open the request channel menu → **Copy Channel ID** | 17 to 20 digits; the bot must have access to this channel |
+| `DISCORD_STAFF_CHANNEL_ID` | `Variable` | The staff channel ID | Discord: open the staff channel menu → **Copy Channel ID** | 17 to 20 digits; use a different channel from the request channel |
+| `DISCORD_VOLUNTEER_ROLE_ID` | `Variable` | The volunteer sherpa role ID | Discord: open the volunteer role menu → **Copy Role ID** | 17 to 20 digits; do not use the role name |
+| `DISCORD_STREAMER_USER_ID` | `Variable` | The streamer's Discord user ID | Discord: open the streamer user menu → **Copy User ID** | 17 to 20 digits; do not use the display name or mention |
+| `DISCORD_BOT_TOKEN` | `Secret` | The bot token that you recorded during Discord setup | Discord Developer Portal: the bot application → **Bot** → **Token** or **Reset Token** | Use the bot token; do not use the public key or client secret |
+
+### Bot settings
+
+| Name | GitHub type | Enter this value | Get it here | Format/check |
+|---|---|---|---|---|
+| `COMMUNITY_ID` | `Variable` | `butcoffee` | Use this exact fixed value | Lowercase text |
+| `RECIPIENT_LIMIT` | `Variable` | `4` | Use this exact fixed value | Positive integer; the raid leader uses a separate seat |
+| `ATTEMPT_LIMIT` | `Variable` | `3` | Use this exact fixed value | Positive integer; this is the default attempt limit |
 
 The legacy word `SPIKE` remains in one secret name. It does not enable a spike command.
 

@@ -99,6 +99,10 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           SPIKE_DIAGNOSTICS_TOKEN: ${{ secrets.SPIKE_DIAGNOSTICS_TOKEN }}
           TWITCH_EVENTSUB_SECRET: ${{ secrets.TWITCH_EVENTSUB_SECRET }}
+      - name: Wait for Worker readiness
+        run: node scripts/deployment/wait-for-worker.mjs
+        env:
+          SPIKE_DIAGNOSTICS_TOKEN: ${{ secrets.SPIKE_DIAGNOSTICS_TOKEN }}
       - name: Configure Discord commands and endpoint
         run: npm run discord:configure > .artifacts/discord-configuration.json
         env:

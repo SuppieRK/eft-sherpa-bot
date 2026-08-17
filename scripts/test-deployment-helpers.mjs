@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { checkedJson } from "./deployment/fetch-json.mjs";
 import { WORKER_SECRET_NAMES, workerSecrets } from "./deployment/render-worker-secrets.mjs";
+import { waitForWorker } from "./deployment/wait-for-worker.mjs";
 import { ensureTwitchSubscription } from "./twitch/create-chat-subscription.mjs";
 
 const environment = {
@@ -33,6 +34,49 @@ const callback = "https://worker.example/webhooks/twitch/eventsub";
     /Missing Worker secret: SPIKE_DIAGNOSTICS_TOKEN/,
   );
 }
+
+{
+  let statusAttempts = 0;
+  const waits = [];
+  const result = await waitForWorker({
+    workerBaseUrl: "https://worker.example",
+    diagnosticsToken: "diagnostics-token",
+    attempts: 3,
+    delayMs: 25,
+    fetcher: async (url) => {
+      if (new URL(url).pathname === "/health") {
+        return Response.json({ status: "ok", configuration: "ready" });
+      }
+      statusAttempts += 1;
+      if (statusAttempts === 1) {
+        return new Response("error code: 1101", { status: 500 });
+      }
+      return Response.json({
+        authorization: { ok: true },
+        database: { tableCount: 6 },
+      });
+    },
+    sleep: async (duration) => waits.push(duration),
+  });
+  assert.equal(result.attempt, 2);
+  assert.equal(statusAttempts, 2);
+  assert.deepEqual(waits, [25]);
+}
+
+await assert.rejects(
+  waitForWorker({
+    workerBaseUrl: "https://worker.example",
+    diagnosticsToken: "diagnostics-token",
+    attempts: 2,
+    delayMs: 0,
+    fetcher: async (url) =>
+      new URL(url).pathname === "/health"
+        ? Response.json({ status: "ok", configuration: "ready" })
+        : new Response("error code: 1101", { status: 500 }),
+    sleep: async () => undefined,
+  }),
+  /Worker did not become ready after 2 attempts: \/internal\/status failed with status 500/,
+);
 
 {
   const payload = await checkedJson("https://worker.example/health", undefined, async () =>

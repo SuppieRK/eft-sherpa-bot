@@ -11,6 +11,7 @@ const required = new Set([
 ]);
 const failures = [];
 let deploymentWorkflow;
+let refreshWorkflow;
 for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith(".yml"))) {
   required.delete(file);
   const path = `${workflowDirectory}/${file}`;
@@ -19,6 +20,7 @@ for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith
   try {
     workflow = parse(contents);
     if (file === "deploy-production.yml") deploymentWorkflow = workflow;
+    if (file === "refresh-twitch-token.yml") refreshWorkflow = workflow;
   } catch (error) {
     failures.push(`${path}: invalid YAML: ${error.message}`);
     continue;
@@ -72,6 +74,36 @@ if (
 ) {
   failures.push(
     `${workflowDirectory}/deploy-production.yml: Worker secrets must use the production config and Worker name`,
+  );
+}
+const readinessStepIndex = deploymentSteps.findIndex(
+  (step) => step.name === "Wait for Worker readiness",
+);
+const secretStepIndex = deploymentSteps.findIndex((step) => step.name === "Upload Worker secrets");
+const discordStepIndex = deploymentSteps.findIndex(
+  (step) => step.name === "Configure Discord commands and endpoint",
+);
+if (
+  readinessStepIndex <= secretStepIndex ||
+  readinessStepIndex >= discordStepIndex ||
+  deploymentSteps[readinessStepIndex]?.run !== "node scripts/deployment/wait-for-worker.mjs"
+) {
+  failures.push(
+    `${workflowDirectory}/deploy-production.yml: Worker readiness must pass between secret upload and platform configuration`,
+  );
+}
+
+const refreshSteps = refreshWorkflow?.jobs?.refresh?.steps ?? [];
+const tokenUploadIndex = refreshSteps.findIndex((step) => step.name === "Upload Twitch app token");
+const tokenReadinessIndex = refreshSteps.findIndex(
+  (step) => step.name === "Wait for Worker readiness",
+);
+if (
+  tokenReadinessIndex <= tokenUploadIndex ||
+  refreshSteps[tokenReadinessIndex]?.run !== "node scripts/deployment/wait-for-worker.mjs"
+) {
+  failures.push(
+    `${workflowDirectory}/refresh-twitch-token.yml: Worker readiness must pass after Twitch token upload`,
   );
 }
 

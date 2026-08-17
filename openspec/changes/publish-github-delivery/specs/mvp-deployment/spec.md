@@ -37,6 +37,10 @@ The production workflow SHALL register the Discord interaction endpoint and comm
 - **WHEN** Discord and Twitch already contain the expected configuration
 - **THEN** deployment validates or reuses it without creating duplicates
 
+#### Scenario: Cloudflare secret deployment is still propagating
+- **WHEN** the production route returns a transient error after Worker secret upload
+- **THEN** deployment waits for bounded Worker readiness before it configures Discord or Twitch
+
 ### Requirement: Twitch app token is generated during deployment
 GitHub SHALL store the Twitch client secret and SHALL generate, mask, and upload a fresh app access token during deployment. A protected manual workflow SHALL refresh the app token without applying migrations.
 

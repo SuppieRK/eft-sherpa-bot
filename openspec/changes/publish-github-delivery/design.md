@@ -43,6 +43,10 @@ GitHub stores the Twitch client secret, not an expiring app token. Deployment an
 
 The workflow deploys the configured production Worker and then uploads all Worker secrets with the rendered production Wrangler configuration and explicit Worker name. Secret upload through the Wrangler Action input was rejected after the streamer-fork rehearsal showed that it used the tracked local Wrangler configuration and uploaded secrets to `coffee-bot-local`.
 
+### Wait for Worker readiness before platform configuration
+
+Cloudflare can accept a secret update before the new Worker version is ready at the public route. The deployment and token-refresh workflows use a bounded readiness probe after secret upload. Production deployment configures Discord and Twitch only after health, Twitch authorization, and D1 diagnostics respond successfully.
+
 ### Keep migrations forward-compatible
 
 Deployment records a D1 Time Travel bookmark and applies pending migrations before deploying code. After `v0.1.0`, applied migration files are immutable and new migrations remain compatible with the previous Worker version. Automatic D1 rollback is prohibited because it could discard writes received after the bookmark.
@@ -53,7 +57,7 @@ After source verification, the existing `.git` directory is deleted. The sanitiz
 
 ### Treat documentation as an operational interface
 
-README, guides, templates, workflow labels, and release instructions use ASD-STE100 Simplified Technical English. Automated checks cover links and mechanical rules; human review covers vocabulary and meaning. The canonical MIT license is exempt because legal text must remain canonical.
+README, guides, templates, workflow labels, and release instructions use ASD-STE100 Simplified Technical English. Environment values are grouped by provider and identify the exact dashboard field, local-file key, or command-output field that the installer must copy. Format checks distinguish numeric platform IDs, login names, resource names, URLs, and credentials. Automated checks cover links, the documented production environment contract, and mechanical rules; human review covers vocabulary and meaning. The canonical MIT license is exempt because legal text must remain canonical.
 
 ## Risks / Trade-offs
 

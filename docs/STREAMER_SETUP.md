@@ -44,7 +44,7 @@ GitHub has more information in [Deployment environments](https://docs.github.com
 
 ## Add environment values
 
-The technical installer must add the values in [Installer setup](INSTALLER_SETUP.md). The installer must add variables in **Environment variables** and secrets in **Environment secrets**.
+The technical installer must add the provider values in [Installer setup](INSTALLER_SETUP.md). Each table row gives the exact value, source, format, and GitHub type.
 
 Do not put a secret in a variable. GitHub shows variables as plain text.
 

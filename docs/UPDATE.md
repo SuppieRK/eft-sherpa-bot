@@ -30,6 +30,6 @@ Use this procedure when the operator status reports an invalid Twitch token.
 4. Select **Review deployments**.
 5. Select `production`.
 6. Select **Approve and deploy**.
-7. Confirm that **Verify Twitch app token** is green.
+7. Confirm that **Wait for Worker readiness** is green.
 
 This workflow does not change bot code or the D1 schema.
