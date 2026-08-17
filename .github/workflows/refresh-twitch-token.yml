@@ -41,7 +41,7 @@ jobs:
         run: printf '%s' "$TWITCH_APP_ACCESS_TOKEN" | npx wrangler secret put TWITCH_APP_ACCESS_TOKEN --name "$WORKER_NAME"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      - name: Verify Twitch app token
-        run: node scripts/deployment/verify-twitch-token.mjs
+      - name: Wait for Worker readiness
+        run: node scripts/deployment/wait-for-worker.mjs
         env:
           SPIKE_DIAGNOSTICS_TOKEN: ${{ secrets.SPIKE_DIAGNOSTICS_TOKEN }}
