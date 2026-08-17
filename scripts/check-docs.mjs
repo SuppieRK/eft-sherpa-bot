@@ -24,6 +24,11 @@ const publicInterfaceFiles = [
     .map((file) => `.github/workflows/${file}`),
 ];
 const failures = [];
+const installerSetup = readFileSync("docs/INSTALLER_SETUP.md", "utf8");
+const productionWorkflow = readFileSync(
+  ".github/workflows/check-production-configuration.yml",
+  "utf8",
+);
 const discouraged = [
   { pattern: /\bclick\b/gi, replacement: "select" },
   { pattern: /\bjust\b/gi, replacement: "a precise instruction" },
@@ -35,6 +40,49 @@ const discouraged = [
     replacement: "the full form",
   },
 ];
+
+const environmentTableHeader =
+  "| Name | GitHub type | Enter this value | Get it here | Format/check |";
+if (!installerSetup.includes(environmentTableHeader)) {
+  failures.push("docs/INSTALLER_SETUP.md: environment tables need the exact source columns");
+}
+if (installerSetup.includes("| Name | Source |")) {
+  failures.push("docs/INSTALLER_SETUP.md: replace the ambiguous Source column");
+}
+
+const documentedEnvironment = new Map();
+for (const match of installerSetup.matchAll(/^\| `([A-Z0-9_]+)` \| `(Variable|Secret)` \|/gm)) {
+  const [, name, type] = match;
+  if (documentedEnvironment.has(name)) {
+    failures.push(`docs/INSTALLER_SETUP.md: duplicate environment value ${name}`);
+  }
+  documentedEnvironment.set(name, type);
+}
+
+const requiredEnvironment = new Map();
+for (const match of productionWorkflow.matchAll(
+  /^\s{6}([A-Z0-9_]+): \$\{\{ (vars|secrets)\.\1 \}\}$/gm,
+)) {
+  const [, name, source] = match;
+  requiredEnvironment.set(name, source === "vars" ? "Variable" : "Secret");
+}
+
+for (const [name, type] of requiredEnvironment) {
+  const documentedType = documentedEnvironment.get(name);
+  if (documentedType === undefined) {
+    failures.push(`docs/INSTALLER_SETUP.md: missing production environment value ${name}`);
+  } else if (documentedType !== type) {
+    failures.push(
+      `docs/INSTALLER_SETUP.md: ${name} must use GitHub type ${type}, not ${documentedType}`,
+    );
+  }
+}
+
+for (const name of documentedEnvironment.keys()) {
+  if (!requiredEnvironment.has(name)) {
+    failures.push(`docs/INSTALLER_SETUP.md: undocumented production contract value ${name}`);
+  }
+}
 
 for (const file of publicInterfaceFiles) {
   const contents = readFileSync(file, "utf8");

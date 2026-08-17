@@ -57,7 +57,7 @@ After source verification, the existing `.git` directory is deleted. The sanitiz
 
 ### Treat documentation as an operational interface
 
-README, guides, templates, workflow labels, and release instructions use ASD-STE100 Simplified Technical English. Automated checks cover links and mechanical rules; human review covers vocabulary and meaning. The canonical MIT license is exempt because legal text must remain canonical.
+README, guides, templates, workflow labels, and release instructions use ASD-STE100 Simplified Technical English. Environment values are grouped by provider and identify the exact dashboard field, local-file key, or command-output field that the installer must copy. Format checks distinguish numeric platform IDs, login names, resource names, URLs, and credentials. Automated checks cover links, the documented production environment contract, and mechanical rules; human review covers vocabulary and meaning. The canonical MIT license is exempt because legal text must remain canonical.
 
 ## Risks / Trade-offs
 
