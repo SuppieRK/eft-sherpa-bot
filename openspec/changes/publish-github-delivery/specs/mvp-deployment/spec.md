@@ -19,7 +19,7 @@ The Worker SHALL receive `DISCORD_BOT_TOKEN` as a local, Cloudflare, or GitHub e
 
 #### Scenario: GitHub deploys a configured environment
 - **WHEN** the deployment workflow runs after environment approval
-- **THEN** the Discord bot token is uploaded with the Worker secrets and is not written to tracked configuration or deployment evidence
+- **THEN** the Discord bot token is uploaded to the explicitly configured production Worker with the other Worker secrets and is not written to tracked configuration or deployment evidence
 
 ### Requirement: Rollback preserves live data by default
 Rollback SHALL restore a previous verified Worker version. Deployment SHALL record a D1 Time Travel bookmark, but SHALL NOT automatically restore the database after failure. Applied migrations SHALL remain compatible with the previous Worker version.

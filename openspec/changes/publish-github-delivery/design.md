@@ -39,6 +39,10 @@ Platform IDs, Discord public key, and policy integers become Worker environment 
 
 GitHub stores the Twitch client secret, not an expiring app token. Deployment and the manual refresh workflow request a new app access token, mask it, and upload it as a Worker secret. The one-time bot authorization remains an installer operation because it requires Twitch user consent.
 
+### Target Worker secrets with production configuration
+
+The workflow deploys the configured production Worker and then uploads all Worker secrets with the rendered production Wrangler configuration and explicit Worker name. Secret upload through the Wrangler Action input was rejected after the streamer-fork rehearsal showed that it used the tracked local Wrangler configuration and uploaded secrets to `coffee-bot-local`.
+
 ### Keep migrations forward-compatible
 
 Deployment records a D1 Time Travel bookmark and applies pending migrations before deploying code. After `v0.1.0`, applied migration files are immutable and new migrations remain compatible with the previous Worker version. Automatic D1 rollback is prohibited because it could discard writes received after the bookmark.

@@ -10,6 +10,7 @@ const required = new Set([
   "refresh-twitch-token.yml",
 ]);
 const failures = [];
+let deploymentWorkflow;
 for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith(".yml"))) {
   required.delete(file);
   const path = `${workflowDirectory}/${file}`;
@@ -17,6 +18,7 @@ for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith
   let workflow;
   try {
     workflow = parse(contents);
+    if (file === "deploy-production.yml") deploymentWorkflow = workflow;
   } catch (error) {
     failures.push(`${path}: invalid YAML: ${error.message}`);
     continue;
@@ -51,6 +53,27 @@ for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith
 }
 for (const file of required)
   failures.push(`${workflowDirectory}/${file}: required workflow is missing`);
+
+const deploymentSteps = deploymentWorkflow?.jobs?.deploy?.steps ?? [];
+const workerDeploy = deploymentSteps.find(
+  (step) => typeof step.uses === "string" && step.uses.startsWith("cloudflare/wrangler-action@"),
+);
+if (workerDeploy?.with?.secrets !== undefined) {
+  failures.push(
+    `${workflowDirectory}/deploy-production.yml: Wrangler Action secret upload can target the local Worker`,
+  );
+}
+const workerSecretUpload = deploymentSteps.find((step) => step.name === "Upload Worker secrets");
+if (
+  typeof workerSecretUpload?.run !== "string" ||
+  !workerSecretUpload.run.includes(
+    'wrangler secret bulk --config config/wrangler.github.jsonc --name "$WORKER_NAME"',
+  )
+) {
+  failures.push(
+    `${workflowDirectory}/deploy-production.yml: Worker secrets must use the production config and Worker name`,
+  );
+}
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));
