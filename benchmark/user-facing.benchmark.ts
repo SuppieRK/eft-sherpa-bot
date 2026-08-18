@@ -146,6 +146,19 @@ function operationDefinitions(input: {
       label: `${platform === "discord" ? "Discord /queue" : "Twitch !queue"} at p${percentile}`,
       async prepare(seed, sample) {
         const requestId = queueRequestId(seed.scale, percentile);
+        const queuePosition = await env.DB.prepare(
+          `WITH target AS (
+             SELECT id, game_mode, is_priority FROM help_requests WHERE id = ?
+           )
+           SELECT count(*) AS ordinal
+           FROM help_requests AS request, target
+           WHERE request.state IN (0, 1) AND request.game_mode = target.game_mode
+             AND (request.is_priority > target.is_priority OR
+                  (request.is_priority = target.is_priority AND request.id <= target.id))`,
+        )
+          .bind(requestId)
+          .first<{ ordinal: number }>();
+        const expectedOrdinal = Number(queuePosition?.ordinal ?? 0);
         const interactionId = `${OPERATION_PREFIX}${platform}-queue-p${percentile}-${sample}`;
         const request =
           platform === "discord"
@@ -165,7 +178,9 @@ function operationDefinitions(input: {
           async verify(response) {
             expect(response.status).toBe(platform === "discord" ? 200 : 204);
             const expectedQueueText =
-              requestId <= 101 ? `${ordinal(requestId)} overall` : "More than 100 requests ahead";
+              expectedOrdinal <= 101
+                ? `${ordinal(expectedOrdinal)} in the`
+                : "More than 100 requests ahead";
             if (platform === "discord") {
               expect(await responseText(response)).toContain(expectedQueueText);
             } else {
@@ -188,6 +203,7 @@ function operationDefinitions(input: {
             id: `${OPERATION_PREFIX}discord-form-${sample}`,
             name: "request",
             userId,
+            options: [{ name: "mode", type: 3, value: "pve" }],
           }),
           async verify(response) {
             expect(response.status).toBe(200);
@@ -284,14 +300,14 @@ function operationDefinitions(input: {
       async prepare(_seed, sample) {
         return {
           request: await twitch({
-            text: "!request customs benchmark objective",
+            text: "!request pve customs benchmark objective",
             deliveryId: `${OPERATION_PREFIX}twitch-created-${sample}`,
             twitchUserId: `${OPERATION_PREFIX}twitch-created`,
             twitchLogin: "op_twitch_created",
           }),
           async verify(response) {
             expect(response.status).toBe(204);
-            expect(twitchCalls.at(-1)?.body).toContain("queued for Customs");
+            expect(twitchCalls.at(-1)?.body).toContain("queued for PvE · Customs");
             const row = await env.DB.prepare(
               "SELECT state FROM help_requests WHERE twitch_login = 'op_twitch_created'",
             ).first<{ state: number }>();
@@ -313,7 +329,7 @@ function operationDefinitions(input: {
         });
         return {
           request: await twitch({
-            text: "!request customs another objective",
+            text: "!request pve customs another objective",
             deliveryId: `${OPERATION_PREFIX}twitch-already-${sample}`,
             twitchUserId: `${OPERATION_PREFIX}twitch-twitch_already-1`,
             twitchLogin: "op_twitch_already_1",

@@ -46,6 +46,7 @@ describe("six-table dual-queue schema", () => {
       name: string;
     }>();
     expect(requestColumns.results.map((column) => column.name)).toContain("is_priority");
+    expect(requestColumns.results.map((column) => column.name)).toContain("game_mode");
     expect(requestColumns.results.map((column) => column.name)).not.toContain(
       "retry_source_group_id",
     );
@@ -59,6 +60,7 @@ describe("six-table dual-queue schema", () => {
         "is_priority",
         "sort_key",
         "current_member_count",
+        "game_mode",
       ]),
     );
     expect(stateColumns.results.map((column) => column.name)).toContain("staff_board_message_id");
@@ -72,22 +74,41 @@ describe("six-table dual-queue schema", () => {
       `SELECT name FROM sqlite_schema
        WHERE type = 'index' AND name IN (
          'help_requests_one_active_map_per_twitch',
+         'help_requests_one_active_mode_map_per_twitch',
+         'help_requests_mode_queue_order_idx',
          'help_requests_queue_order_idx',
          'help_requests_waiting_order_idx',
          'raid_groups_outstanding_idx',
          'raid_groups_open_sort_key_idx',
          'raid_groups_compatible_idx',
+         'raid_groups_compatible_mode_idx',
+         'raid_groups_outstanding_mode_idx',
          'raid_group_members_group_idx',
          'raid_group_members_one_open_request_idx'
        ) ORDER BY name`,
     ).all<{ name: string }>();
-    expect(indexes.results.map((index) => index.name)).toHaveLength(8);
+    expect(indexes.results.map((index) => index.name)).toEqual(
+      expect.arrayContaining([
+        "help_requests_one_active_mode_map_per_twitch",
+        "help_requests_mode_queue_order_idx",
+        "help_requests_queue_order_idx",
+        "help_requests_waiting_order_idx",
+        "raid_groups_outstanding_idx",
+        "raid_groups_outstanding_mode_idx",
+        "raid_groups_open_sort_key_idx",
+        "raid_groups_compatible_mode_idx",
+        "raid_group_members_group_idx",
+        "raid_group_members_one_open_request_idx",
+      ]),
+    );
     const retired = await env.DB.prepare(
       `SELECT name FROM sqlite_schema WHERE type = 'index' AND name IN (
          'help_requests_map_queue_order_idx',
          'help_requests_retry_source_idx',
          'help_requests_discord_idx',
          'help_requests_twitch_idx'
+         ,'help_requests_one_active_map_per_twitch'
+         ,'raid_groups_compatible_idx'
        )`,
     ).all<{ name: string }>();
     expect(retired.results).toEqual([]);
@@ -97,7 +118,8 @@ describe("six-table dual-queue schema", () => {
     const compatiblePlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM raid_groups
-       WHERE is_priority = 0 AND map_id = 'customs' AND state = 0 AND automatic_fill = 1
+       WHERE is_priority = 0 AND game_mode = 2 AND map_id = 'customs'
+         AND state = 0 AND automatic_fill = 1
          AND current_member_count < requester_capacity
        ORDER BY sort_key LIMIT 1`,
     ).all<{ detail: string }>();
@@ -106,7 +128,7 @@ describe("six-table dual-queue schema", () => {
        SELECT request_id FROM raid_group_members WHERE group_id = 1 ORDER BY position`,
     ).all<{ detail: string }>();
     expect(compatiblePlan.results.map((row) => row.detail).join(" ")).toContain(
-      "raid_groups_compatible_idx",
+      "raid_groups_compatible_mode_idx",
     );
     expect(membershipPlan.results.map((row) => row.detail).join(" ")).toContain(
       "raid_group_members_group_idx",
@@ -118,23 +140,18 @@ describe("six-table dual-queue schema", () => {
       `EXPLAIN QUERY PLAN
        SELECT count(*) FROM (
          SELECT id, is_priority AS isPriority FROM help_requests
-         WHERE state IN (0, 1) AND is_priority = 1
+         WHERE state IN (0, 1) AND game_mode = 2 AND is_priority = 1
          UNION ALL
          SELECT id, is_priority AS isPriority FROM help_requests
-         WHERE state IN (0, 1) AND is_priority = 0 AND id < 50000
+         WHERE state IN (0, 1) AND game_mode = 2 AND is_priority = 0 AND id < 50000
          ORDER BY isPriority DESC, id LIMIT 101
        )`,
     ).all<{ detail: string }>();
     const raidRangePlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
-       SELECT count(*) FROM (
-         SELECT sort_key AS sortKey, is_priority AS isPriority FROM raid_groups
-         WHERE state IN (0, 1) AND is_priority = 1
-         UNION ALL
-         SELECT sort_key AS sortKey, is_priority AS isPriority FROM raid_groups
-         WHERE state IN (0, 1) AND is_priority = 0 AND sort_key < 50000000
-         ORDER BY isPriority DESC, sortKey LIMIT 51
-       )`,
+       SELECT id FROM raid_groups
+       WHERE state IN (0, 1) AND is_priority = 0 AND game_mode = 2
+       ORDER BY sort_key LIMIT 52`,
     ).all<{ detail: string }>();
     const raidMaxPlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
@@ -143,10 +160,10 @@ describe("six-table dual-queue schema", () => {
        ORDER BY sort_key DESC LIMIT 1`,
     ).all<{ detail: string }>();
     expect(requestPlan.results.map((row) => row.detail).join(" ")).toContain(
-      "help_requests_queue_order_idx",
+      "help_requests_mode_queue_order_idx",
     );
     expect(raidRangePlan.results.map((row) => row.detail).join(" ")).toContain(
-      "raid_groups_open_sort_key_idx",
+      "raid_groups_outstanding_mode_idx",
     );
     expect(raidMaxPlan.results.map((row) => row.detail).join(" ")).toContain(
       "raid_groups_open_sort_key_idx",
@@ -231,7 +248,7 @@ describe("six-table dual-queue schema", () => {
     ).rejects.toThrow();
   });
 
-  it("allows only one active request per Twitch login and map", async () => {
+  it("defaults existing-shape writes to PvE and allows one active request per mode and map", async () => {
     await insertMapping("viewer", "twitch-viewer");
     const insert = (delivery: string) =>
       env.DB.prepare(
@@ -244,8 +261,71 @@ describe("six-table dual-queue schema", () => {
         .run();
     await insert("one");
     await expect(insert("two")).rejects.toThrow();
-    await env.DB.prepare(`UPDATE help_requests SET state = 2`).run();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO help_requests
+           (source_platform, source_delivery_id, twitch_user_id, twitch_login,
+            in_game_name, game_mode, map_id, objective, created_at, updated_at)
+         VALUES (1, 'pvp', 'twitch-viewer', 'viewer', 'viewer', 1, 'customs', 'Task', ?, ?)`,
+      )
+        .bind(nowEpoch, nowEpoch)
+        .run(),
+    ).resolves.toBeDefined();
+    expect(
+      await env.DB.prepare(
+        `SELECT game_mode AS gameMode, typeof(game_mode) AS storageType
+         FROM help_requests WHERE source_delivery_id = 'one'`,
+      ).first(),
+    ).toEqual({ gameMode: 2, storageType: "integer" });
+    await env.DB.prepare(
+      `INSERT INTO raid_groups
+         (is_priority, sort_key, map_id, requester_capacity, created_at, updated_at)
+       VALUES (0, 1000000, 'customs', 3, ?, ?)`,
+    )
+      .bind(nowEpoch, nowEpoch)
+      .run();
+    expect(
+      await env.DB.prepare(
+        `SELECT game_mode AS gameMode, typeof(game_mode) AS storageType FROM raid_groups`,
+      ).first(),
+    ).toEqual({ gameMode: 2, storageType: "integer" });
+    await env.DB.prepare(`UPDATE help_requests SET state = 2 WHERE game_mode = 2`).run();
     await expect(insert("three")).resolves.toBeDefined();
+  });
+
+  it("rejects memberships with a different mode, map, or queue kind", async () => {
+    await insertMapping("compatible", "compatible-id");
+    await env.DB.prepare(
+      `INSERT INTO help_requests
+         (id, source_platform, source_delivery_id, twitch_user_id, twitch_login,
+          in_game_name, game_mode, map_id, objective, state, created_at, updated_at)
+       VALUES (1, 1, 'compatible', 'compatible-id', 'compatible',
+               'PMC', 2, 'customs', 'Task', 1, ?, ?)`,
+    )
+      .bind(nowEpoch, nowEpoch)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO raid_groups
+         (id, is_priority, game_mode, sort_key, map_id, requester_capacity, created_at, updated_at)
+       VALUES (1, 0, 1, 1000000, 'customs', 3, ?, ?),
+              (2, 0, 2, 2000000, 'woods', 3, ?, ?),
+              (3, 1, 2, 1000000, 'customs', 3, ?, ?),
+              (4, 0, 2, 3000000, 'customs', 3, ?, ?)`,
+    )
+      .bind(nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch)
+      .run();
+    const insertMembership = (groupId: number) =>
+      env.DB.prepare(
+        `INSERT INTO raid_group_members
+           (group_id, request_id, position, created_at, updated_at)
+         VALUES (?, 1, 1, ?, ?)`,
+      )
+        .bind(groupId, nowEpoch, nowEpoch)
+        .run();
+    await expect(insertMembership(1)).rejects.toThrow("raid group membership is incompatible");
+    await expect(insertMembership(2)).rejects.toThrow("raid group membership is incompatible");
+    await expect(insertMembership(3)).rejects.toThrow("raid group membership is incompatible");
+    await expect(insertMembership(4)).resolves.toBeDefined();
   });
 
   it.each(TARKOV_MAPS)("enforces the $name requester capacity", async (map) => {

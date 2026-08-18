@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { TARKOV_MAPS } from "../../src/domain/maps/catalog";
+import type { GameMode } from "../../src/domain/game-mode";
 import type { StaffBoardRaid } from "../../src/domain/staff-board";
 import { D1Metrics, instrumentD1Database } from "../../src/infrastructure/cloudflare/d1-metrics";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
@@ -15,12 +16,14 @@ async function createRequest(
   repo: D1MvpRepository,
   index: number,
   mapId = "customs",
+  gameMode: GameMode = "pve",
 ): Promise<number> {
   const created = await repo.createRequest({
     sourcePlatform: "twitch",
     sourceDeliveryId: `delivery-${index}`,
     twitchUserId: `twitch-${index}`,
     twitchLogin: `viewer_${index}`,
+    gameMode,
     inGameName: `PMC ${index}`,
     mapId,
     objective: `Goal ${index}`,
@@ -78,6 +81,119 @@ describe("schedule-independent dual queues", () => {
       Promise.all(board.ordinaryRaids.map((raid) => currentMemberCount(raid.id))),
     ).resolves.toEqual(board.ordinaryRaids.map((raid) => raid.members.length));
     expect(board.priorityRaids).toEqual([]);
+  });
+
+  it("groups only requests with the same game mode and map", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 4; index += 1) {
+      await createRequest(repo, index, "customs", "pve");
+    }
+    await createRequest(repo, 5, "customs", "pvp");
+    await createRequest(repo, 6, "customs", "pvp-seasonal");
+    await materialize(repo);
+
+    const raids = await env.DB.prepare(
+      `SELECT raid.game_mode AS gameMode, count(member.id) AS members
+       FROM raid_groups AS raid
+       JOIN raid_group_members AS member ON member.group_id = raid.id AND member.state = 0
+       GROUP BY raid.id ORDER BY raid.sort_key`,
+    ).all<{ gameMode: number; members: number }>();
+    expect(raids.results).toEqual([
+      { gameMode: 2, members: 3 },
+      { gameMode: 2, members: 1 },
+      { gameMode: 1, members: 1 },
+      { gameMode: 0, members: 1 },
+    ]);
+  });
+
+  it("reserves a visible raid for every non-empty mode under skew", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 21; index += 1) {
+      await createRequest(repo, index, "customs", "pve");
+    }
+    await createRequest(repo, 22, "customs", "pvp");
+    await createRequest(repo, 23, "customs", "pvp-seasonal");
+    await materialize(repo);
+
+    const board = await repo.getBoardSnapshot();
+    expect(board.ordinaryRaidCount).toBe(9);
+    expect(board.ordinaryRaids).toHaveLength(7);
+    expect(board.ordinaryRaids.slice(0, 3).map((raid) => raid.gameMode)).toEqual([
+      "pve",
+      "pvp",
+      "pvp-seasonal",
+    ]);
+    expect(board.ordinaryRaids.filter((raid) => raid.gameMode === "pve")).toHaveLength(5);
+  });
+
+  it("reserves a minority-mode raid and keeps dominant-mode FIFO order", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 21; index += 1) {
+      await createRequest(repo, index, "customs", "pve");
+    }
+    await createRequest(repo, 22, "customs", "pvp");
+    await materialize(repo);
+
+    const board = await repo.getBoardSnapshot();
+    expect(board.ordinaryRaids.map((raid) => raid.gameMode)).toEqual([
+      "pve",
+      "pvp",
+      "pve",
+      "pve",
+      "pve",
+      "pve",
+      "pve",
+    ]);
+    expect(
+      board.ordinaryRaids.filter((raid) => raid.gameMode === "pve").map((raid) => raid.id),
+    ).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("applies mode-presence ordering independently to Priority raids", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 21; index += 1) {
+      await createRequest(repo, index, "customs", "pve");
+    }
+    await createRequest(repo, 22, "customs", "pvp");
+    await createRequest(repo, 23, "customs", "pvp-seasonal");
+    await materialize(repo);
+    const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids;
+    for (const [index, mode] of (["pve", "pvp", "pvp-seasonal"] as const).entries()) {
+      const raid = ordinary.find((candidate) => candidate.gameMode === mode);
+      expect(raid).toBeDefined();
+      await postpone(repo, raid as StaffBoardRaid, `priority-mode-${index}`);
+    }
+
+    const board = await repo.getBoardSnapshot();
+    expect(board.priorityRaidCount).toBe(3);
+    expect(board.priorityRaids.map((raid) => raid.gameMode)).toEqual([
+      "pve",
+      "pvp",
+      "pvp-seasonal",
+    ]);
+    expect(board.ordinaryRaids[0]?.gameMode).toBe("pve");
+  });
+
+  it("allows the same viewer to request one map in different modes", async () => {
+    const repo = repository();
+    const base = {
+      sourcePlatform: "twitch" as const,
+      twitchUserId: "same-viewer-id",
+      twitchLogin: "same_viewer",
+      inGameName: "Same PMC",
+      mapId: "customs",
+      objective: "Task",
+      observedAt: now,
+    };
+    await expect(
+      repo.createRequest({ ...base, sourceDeliveryId: "same-pve", gameMode: "pve" }),
+    ).resolves.toMatchObject({ outcome: "created" });
+    await expect(
+      repo.createRequest({ ...base, sourceDeliveryId: "same-pvp", gameMode: "pvp" }),
+    ).resolves.toMatchObject({ outcome: "created" });
+    await expect(
+      repo.createRequest({ ...base, sourceDeliveryId: "same-pve-again", gameMode: "pve" }),
+    ).resolves.toMatchObject({ outcome: "already_active" });
   });
 
   it.each(["active", "reserved"] as const)(
@@ -167,7 +283,7 @@ describe("schedule-independent dual queues", () => {
     expect(board.ordinaryRaids).toHaveLength(7);
   });
 
-  it("returns the authenticated caller's global position", async () => {
+  it("returns the authenticated caller's mode-scoped position", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
     await materialize(repo);
@@ -177,6 +293,26 @@ describe("schedule-independent dual queues", () => {
       caller: {
         mapName: "Customs",
         queuePosition: { kind: "exact", ordinal: 4 },
+        raidsAhead: { kind: "exact", count: 1 },
+      },
+    });
+  });
+
+  it("does not count another mode in the request ordinal but includes its fair raid head", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 6; index += 1) {
+      await createRequest(repo, index, "customs", "pve");
+    }
+    await createRequest(repo, 7, "customs", "pvp");
+    await materialize(repo);
+
+    await expect(
+      repo.getQueueFacts({ platform: "twitch", userId: "twitch-7" }),
+    ).resolves.toMatchObject({
+      caller: {
+        gameMode: "pvp",
+        mapName: "Customs",
+        queuePosition: { kind: "exact", ordinal: 1 },
         raidsAhead: { kind: "exact", count: 1 },
       },
     });
@@ -398,6 +534,37 @@ describe("schedule-independent dual queues", () => {
       postponedRequest,
       laterRequest,
     ]);
+  });
+
+  it("fills requester follow-ups only with the same game mode", async () => {
+    const repo = repository();
+    const postponedRequest = await createRequest(repo, 1, "interchange", "pve");
+    await materialize(repo);
+    const source = await start(
+      repo,
+      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+    );
+    const postponed = await repo.postponeRequester({
+      groupId: source.id,
+      requestId: postponedRequest,
+      actionKey: "postpone-mode-safe",
+      changedAt: now,
+    });
+
+    const pvpRequest = await createRequest(repo, 2, "interchange", "pvp");
+    const pveRequest = await createRequest(repo, 3, "interchange", "pve");
+    await materialize(repo);
+
+    const followUp = await repo.getRaid(postponed.dedicated.id);
+    expect(followUp?.gameMode).toBe("pve");
+    expect(followUp?.members.map((member) => member.requestId)).toEqual([
+      postponedRequest,
+      pveRequest,
+    ]);
+    const pvpRaid = (await repo.getBoardSnapshot()).ordinaryRaids.find(
+      (raid) => raid.gameMode === "pvp",
+    );
+    expect(pvpRaid?.members.map((member) => member.requestId)).toEqual([pvpRequest]);
   });
 
   it("reuses one follow-up for requesters postponed from the same source", async () => {
@@ -797,7 +964,7 @@ describe("schedule-independent dual queues", () => {
         raidsAhead: { kind: "more_than", count: 50 },
       },
     });
-    expect(queueMetrics.snapshot().statements).toBe(5);
+    expect(queueMetrics.snapshot().statements).toBe(8);
     expect(queueMetrics.snapshot().rowsRead).toBeLessThan(200);
   }, 15_000);
 

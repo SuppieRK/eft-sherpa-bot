@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CommunityConfig, validateCommunityConfig } from "../../src/config/community";
 import { createWorker } from "../../src";
 import type { StaffBoardRaid } from "../../src/domain/staff-board";
@@ -98,7 +98,11 @@ function context(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function requestModal(interactionId: string) {
+function requestModal(
+  interactionId: string,
+  gameMode: "pvp-seasonal" | "pvp" | "pve" = "pve",
+  legacy = false,
+) {
   const text = (customId: string, value: string) => ({
     type: 18,
     component: { type: 4, custom_id: customId, value },
@@ -107,7 +111,7 @@ function requestModal(interactionId: string) {
     id: interactionId,
     type: 5,
     data: {
-      custom_id: "request:create:v1",
+      custom_id: legacy ? "request:create:v1" : `request:create:v2:${gameMode}`,
       components: [
         text("request:twitch-name", "TwitchViewer"),
         text("request:in-game-name", "Helpful PMC"),
@@ -227,6 +231,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  vi.restoreAllMocks();
   outbound = [];
   messageSequence = 0;
   deleteResponseStatus = 204;
@@ -248,7 +253,25 @@ describe("Discord progressive raid workflow", () => {
   });
 
   it("creates a bounded request and directs the viewer to queue", async () => {
-    const command = await signedRequest(context({ type: 2, data: { type: 1, name: "request" } }));
+    const missingMode = await worker.fetch(
+      await signedRequest(context({ type: 2, data: { type: 1, name: "request" } })),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await missingMode.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("Select PvP Seasonal, PvP, or PvE") },
+    });
+    const command = await signedRequest(
+      context({
+        type: 2,
+        data: {
+          type: 1,
+          name: "request",
+          options: [{ name: "mode", type: 3, value: "pve" }],
+        },
+      }),
+    );
     const modal = await worker.fetch(command, testEnvironment, createExecutionContext());
     expect(await modal.json()).toMatchObject({
       type: 9,
@@ -265,7 +288,40 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     expect(await response.json()).toMatchObject({
-      data: { content: "Your help request for Customs is in the queue. Use `/queue` to check it." },
+      data: {
+        content: "Your help request for PvE · Customs is in the queue. Use `/queue` to check it.",
+      },
+    });
+  });
+
+  it("accepts a legacy request modal as PvE", async () => {
+    const response = await worker.fetch(
+      await signedRequest(requestModal("legacy-request", "pvp", true)),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      data: { content: expect.stringContaining("PvE · Customs") },
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT game_mode AS gameMode FROM help_requests WHERE source_delivery_id = 'legacy-request'`,
+      ).first(),
+    ).toEqual({ gameMode: 2 });
+  });
+
+  it("rejects invalid new modal mode state with private retry guidance", async () => {
+    const invalid = requestModal("invalid-mode") as Record<string, unknown>;
+    const data = invalid.data as Record<string, unknown>;
+    data.custom_id = "request:create:v2:invalid";
+    const response = await worker.fetch(
+      await signedRequest(invalid),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Select a valid game mode and open `/request` again.", flags: 64 },
     });
   });
 
@@ -282,7 +338,7 @@ describe("Discord progressive raid workflow", () => {
     );
     expect(await queue.json()).toMatchObject({
       data: {
-        content: "1st overall for Customs, no raids ahead.",
+        content: "PvE · Customs: 1st in the PvE queue, no raids ahead.",
       },
     });
     const position = await worker.fetch(
@@ -358,6 +414,7 @@ describe("Discord progressive raid workflow", () => {
         request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
     );
     expect(requestCall?.body).toMatchObject({
+      content: expect.stringContaining("Starting PvE · Customs"),
       allowed_mentions: { parse: [], users: ["volunteer", "requester"] },
     });
     let raid = await repo.getRaid(raidId ?? 0);
@@ -394,6 +451,39 @@ describe("Discord progressive raid workflow", () => {
     expect(
       outbound.filter((request) => request.url.includes(config.discord.requestChannelId)),
     ).toHaveLength(1);
+  });
+
+  it("names the game mode in streamer-led Discord and Twitch calls", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("streamer-call-request", "pvp")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ data: [{ message_id: "call-message", is_sent: true }] }));
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          channel_id: config.discord.staffChannelId,
+          member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+          id: "streamer-start",
+          type: 3,
+          data: { custom_id: "board:v5:start", values: [String(raid.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    const discordCall = outbound.find((request) =>
+      request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+    );
+    expect(discordCall?.body.content).toContain("Starting PvP · Customs");
+    const twitchBody = twitchFetch.mock.calls[0]?.[1]?.body;
+    expect(typeof twitchBody === "string" ? twitchBody : "").toContain("Starting PvP · Customs");
   });
 
   it("deletes the obsolete details message after recording Helped", async () => {

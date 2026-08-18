@@ -22,6 +22,7 @@ export interface SeedState {
 }
 
 interface GroupSeed {
+  gameMode: number;
   id: number;
   isPriority: number;
   sortKey: number;
@@ -31,6 +32,7 @@ interface GroupSeed {
 }
 
 interface RequestSeed {
+  gameMode: number;
   id: number;
   groupId: number;
   position: number;
@@ -65,10 +67,11 @@ async function insertSeedChunk(
   const results = await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO raid_groups
-       (id, is_priority, sort_key, map_id, requester_capacity, automatic_fill,
+       (id, is_priority, game_mode, sort_key, map_id, requester_capacity, automatic_fill,
         created_at, updated_at)
        SELECT json_extract(value, '$.id'), json_extract(value, '$.isPriority'),
-              json_extract(value, '$.sortKey'), json_extract(value, '$.mapId'),
+              json_extract(value, '$.gameMode'), json_extract(value, '$.sortKey'),
+              json_extract(value, '$.mapId'),
               json_extract(value, '$.capacity'), json_extract(value, '$.automaticFill'), ?, ?
        FROM json_each(?)`,
     ).bind(timestamp, timestamp, jsonRows(groups)),
@@ -84,7 +87,7 @@ async function insertSeedChunk(
     env.DB.prepare(
       `INSERT INTO help_requests
        (id, source_platform, source_delivery_id, discord_user_id, twitch_user_id,
-        twitch_login, in_game_name, map_id, objective, is_priority, state,
+        twitch_login, in_game_name, game_mode, map_id, objective, is_priority, state,
         created_at, updated_at)
        SELECT json_extract(value, '$.id'), 1,
               printf('seed-request-%d', json_extract(value, '$.id')),
@@ -92,6 +95,7 @@ async function insertSeedChunk(
               printf('bench-twitch-%d', json_extract(value, '$.id')),
               printf('bench_%06d', json_extract(value, '$.id')),
               printf('PMC %d', json_extract(value, '$.id')),
+              json_extract(value, '$.gameMode'),
               json_extract(value, '$.mapId'),
               printf('Seeded goal %d', json_extract(value, '$.id')),
               json_extract(value, '$.isPriority'), 1, ?, ?
@@ -134,11 +138,13 @@ export async function seedDatabase(scale: number): Promise<SeedState> {
     const capacity = Math.min(3, map.sherpaPartyCapacity - 1);
     const memberCount = Math.min(capacity, segmentEnd - requestId + 1);
     groupId += 1;
+    const gameMode = [2, 2, 2, 2, 2, 2, 2, 1, 1, 0][(groupId - 1) % 10] as number;
     mapIndex += 1;
     if (isPriority === 1) priorityOrdinal += 1;
     else ordinaryOrdinal += 1;
     groupChunk.push({
       id: groupId,
+      gameMode,
       isPriority,
       sortKey:
         ((isPriority === 1 ? priorityOrdinal : ordinaryOrdinal) + BASE_SORT_OFFSET) * SORT_STEP,
@@ -149,6 +155,7 @@ export async function seedDatabase(scale: number): Promise<SeedState> {
     for (let position = 1; position <= memberCount; position += 1) {
       requestChunk.push({
         id: requestId,
+        gameMode,
         groupId,
         position,
         isPriority,
@@ -236,6 +243,7 @@ export async function seedOperationRaid(input: {
   streamerDiscordUserId: string;
   isPriority?: boolean;
   visibleFirst?: boolean;
+  gameMode?: 0 | 1 | 2;
 }): Promise<{ groupId: number; requestIds: number[] }> {
   const timestamp = Date.now();
   const groupId = input.seed.groupCount + 1;
@@ -244,6 +252,7 @@ export async function seedOperationRaid(input: {
     (_, index) => input.seed.scale + index + 1,
   );
   const isPriority = input.isPriority === true ? 1 : 0;
+  const gameMode = input.gameMode ?? 2;
   const sortKey = input.visibleFirst
     ? SORT_STEP
     : (isPriority === 1 ? input.seed.priorityMaxSortKey : input.seed.ordinaryMaxSortKey) +
@@ -259,14 +268,15 @@ export async function seedOperationRaid(input: {
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO raid_groups
-       (id, is_priority, sort_key, map_id, requester_capacity,
+       (id, is_priority, game_mode, sort_key, map_id, requester_capacity,
         leader_discord_user_id, leader_type, automatic_fill, attempt_count, state,
         discord_call_status, twitch_call_status, staff_message_id, started_at,
         created_at, updated_at)
-       VALUES (?, ?, ?, 'customs', 3, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'customs', 3, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       groupId,
       isPriority,
+      gameMode,
       sortKey,
       input.state === "active" ? input.streamerDiscordUserId : null,
       input.state === "active" ? 0 : null,
@@ -282,7 +292,7 @@ export async function seedOperationRaid(input: {
     env.DB.prepare(
       `INSERT INTO help_requests
        (id, source_platform, source_delivery_id, discord_user_id, twitch_user_id,
-        twitch_login, in_game_name, map_id, objective, is_priority, state,
+        twitch_login, in_game_name, game_mode, map_id, objective, is_priority, state,
         created_at, updated_at)
        SELECT json_extract(value, '$.id'), 0,
               printf('bench-op-seed-${input.suffix}-%d', json_extract(value, '$.position')),
@@ -290,9 +300,9 @@ export async function seedOperationRaid(input: {
               printf('${OPERATION_PREFIX}twitch-${input.suffix}-%d', json_extract(value, '$.position')),
               printf('op_${input.suffix}_%d', json_extract(value, '$.position')),
               printf('Benchmark PMC %d', json_extract(value, '$.position')),
-              'customs', printf('Benchmark goal %d', json_extract(value, '$.position')),
+              ?, 'customs', printf('Benchmark goal %d', json_extract(value, '$.position')),
               ?, 1, ?, ? FROM json_each(?)`,
-    ).bind(isPriority, timestamp, timestamp, jsonRows(requestRows)),
+    ).bind(gameMode, isPriority, timestamp, timestamp, jsonRows(requestRows)),
     env.DB.prepare(
       `INSERT INTO raid_group_members
        (group_id, request_id, position, created_at, updated_at)
@@ -358,7 +368,12 @@ export function discordContext(
 
 export function discordRequestModal(
   config: CommunityConfig,
-  input: { id: string; userId: string; twitchLogin: string },
+  input: {
+    id: string;
+    userId: string;
+    twitchLogin: string;
+    gameMode?: "pvp-seasonal" | "pvp" | "pve";
+  },
 ): Record<string, unknown> {
   const text = (customId: string, value: string) => ({
     type: 18,
@@ -369,7 +384,7 @@ export function discordRequestModal(
     type: 5,
     userId: input.userId,
     data: {
-      custom_id: "request:create:v1",
+      custom_id: `request:create:v2:${input.gameMode ?? "pve"}`,
       components: [
         text("request:twitch-name", input.twitchLogin),
         text("request:in-game-name", "Benchmark PMC"),

@@ -1,5 +1,6 @@
 import type { CommunityConfig } from "../../config/community";
 import { resolveTarkovMap } from "../../domain/maps/catalog";
+import { formatModeMap } from "../../domain/game-mode";
 import { RepositoryInvariantError } from "../../domain/sherpa-repository";
 import { isStaffBoardMember, type StaffBoardRaid } from "../../domain/staff-board";
 import { D1MvpRepository } from "../cloudflare/d1-mvp-repository";
@@ -215,6 +216,7 @@ async function sendRaidCalls(
 ): Promise<void> {
   const { environment, communityConfig, changedAt } = dependencies;
   const map = resolveTarkovMap(raid.mapId)?.name ?? raid.mapId;
+  const raidName = formatModeMap(raid.gameMode, map);
   const linkedUsers = [
     ...(raid.leaderDiscordUserId === undefined ? [] : [raid.leaderDiscordUserId]),
     ...raid.members.flatMap((member) =>
@@ -227,7 +229,7 @@ async function sendRaidCalls(
     .map((member) => `@${member.twitchLogin}`);
   try {
     await createDiscordMessage(environment, communityConfig.discord.requestChannelId, {
-      content: `Starting ${map}: ${[...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ")}`,
+      content: `Starting ${raidName}: ${[...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ")}`,
       allowed_mentions: { parse: [], users: uniqueUsers },
     });
     await repository.updateCallStatus(raid.id, "discord", "sent", changedAt);
@@ -244,7 +246,7 @@ async function sendRaidCalls(
       },
       {
         broadcasterId: communityConfig.twitch.broadcasterUserId,
-        message: `Starting ${map}: ${raid.members.map((member) => `@${member.twitchLogin}`).join(" ")}. Check Discord for details.`,
+        message: `Starting ${raidName}: ${raid.members.map((member) => `@${member.twitchLogin}`).join(" ")}. Check Discord for details.`,
       },
     );
     await repository.updateCallStatus(raid.id, "twitch", "sent", changedAt);

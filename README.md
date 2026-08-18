@@ -4,9 +4,11 @@ EFT Sherpa Bot plans Escape from Tarkov help raids for the butcoffee community. 
 
 ## Main functions
 
-- Twitch viewers use `!request [map] [goal]` and `!queue`.
+- Twitch viewers use `!request [mode] [map] [goal]` and `!queue`.
 - Discord viewers use `/request`, `/queue`, and `/link-twitch`.
 - The streamer and volunteer sherpas use `/board`.
+- The bot groups requests only when the game mode and map are the same.
+- The board shows at least one raid for each non-empty game mode.
 - The bot limits each raid to the map party size and keeps one place for the sherpa.
 - The bot records raid attempts and moves postponed raids to the priority queue.
 - The bot stores queue data in Cloudflare D1.
@@ -45,7 +47,7 @@ npm run verify
 
 `npm run verify` checks format, lint rules, TypeScript, unused code, migrations, documentation, workflows, tests, the Worker build, and tracked secrets.
 
-Run `npm run benchmark:d1` to measure user operations with a fully local D1 database. The benchmark cannot use a remote D1 database.
+Run `npm run benchmark:d1` before a release. This command measures all user operations with a fully local D1 database. It writes the new latency and D1 row statistics to the `reports` directory. Review rows read and rows written first. The benchmark cannot use a remote D1 database.
 
 See [Contributing](CONTRIBUTING.md) before you send a change.
 

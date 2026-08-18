@@ -12,6 +12,8 @@ const required = new Set([
 const failures = [];
 let deploymentWorkflow;
 let refreshWorkflow;
+let ciWorkflow;
+let releaseWorkflow;
 for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith(".yml"))) {
   required.delete(file);
   const path = `${workflowDirectory}/${file}`;
@@ -21,6 +23,8 @@ for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith
     workflow = parse(contents);
     if (file === "deploy-production.yml") deploymentWorkflow = workflow;
     if (file === "refresh-twitch-token.yml") refreshWorkflow = workflow;
+    if (file === "ci.yml") ciWorkflow = workflow;
+    if (file === "publish-release.yml") releaseWorkflow = workflow;
   } catch (error) {
     failures.push(`${path}: invalid YAML: ${error.message}`);
     continue;
@@ -104,6 +108,25 @@ if (
 ) {
   failures.push(
     `${workflowDirectory}/refresh-twitch-token.yml: Worker readiness must pass after Twitch token upload`,
+  );
+}
+
+const ciSteps = ciWorkflow?.jobs?.verify?.steps ?? [];
+const benchmarkStep = ciSteps.find((step) => step.name === "Run fully local D1 benchmark");
+if (benchmarkStep?.run !== "npm run benchmark:d1") {
+  failures.push(`${workflowDirectory}/ci.yml: CI must generate local D1 benchmark evidence`);
+}
+const releaseSteps = releaseWorkflow?.jobs?.publish?.steps ?? [];
+const releaseGate = releaseSteps.find(
+  (step) => step.name === "Require successful CI and deployment for this commit",
+);
+if (
+  typeof releaseGate?.run !== "string" ||
+  !releaseGate.run.includes("--workflow ci.yml") ||
+  !releaseGate.run.includes("--workflow deploy-production.yml")
+) {
+  failures.push(
+    `${workflowDirectory}/publish-release.yml: release must require CI benchmark evidence and deployment for the commit`,
   );
 }
 

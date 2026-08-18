@@ -14,10 +14,11 @@ type QueueRaidsAhead =
   | { kind: "more_than"; count: typeof QUEUE_RAID_EXACT_LIMIT };
 
 interface CallerQueueFacts {
+  gameMode: GameMode;
   mapName: string;
   queuePosition: QueuePosition;
   raidsAhead: QueueRaidsAhead;
-  otherActiveMapNames: string[];
+  otherActiveModeMapNames: string[];
 }
 
 export interface QueueFacts {
@@ -35,3 +36,4 @@ export class QueueQueryService {
     return this.repository.getQueueFacts(caller);
   }
 }
+import type { GameMode } from "./game-mode";

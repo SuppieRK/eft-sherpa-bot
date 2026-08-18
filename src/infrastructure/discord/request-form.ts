@@ -5,9 +5,11 @@ import {
   type RequestFormValidation,
   validateRequestForm,
 } from "../../domain/help-request";
+import { formatModeMap, type GameMode, parseGameMode } from "../../domain/game-mode";
 
 export const DISCORD_REQUEST_COMMAND = "request";
 export const DISCORD_REQUEST_MODAL_ID = "request:create:v1";
+export const DISCORD_REQUEST_MODAL_V2_PREFIX = "request:create:v2:";
 
 const fields = {
   twitchLogin: "request:twitch-name",
@@ -45,7 +47,7 @@ interface DiscordModalLabel {
 }
 
 export interface DiscordRequestModal {
-  custom_id: typeof DISCORD_REQUEST_MODAL_ID;
+  custom_id: string;
   title: string;
   components: DiscordModalLabel[];
 }
@@ -69,12 +71,21 @@ function textInput(
   };
 }
 
-export function buildDiscordRequestModal(initial?: {
-  twitchLogin?: string;
-  inGameName?: string;
-}): DiscordRequestModal {
+export function requestModalGameMode(customId: string): GameMode | undefined {
+  if (customId === DISCORD_REQUEST_MODAL_ID) return "pve";
+  if (!customId.startsWith(DISCORD_REQUEST_MODAL_V2_PREFIX)) return undefined;
+  return parseGameMode(customId.slice(DISCORD_REQUEST_MODAL_V2_PREFIX.length));
+}
+
+export function buildDiscordRequestModal(
+  gameMode: GameMode,
+  initial?: {
+    twitchLogin?: string;
+    inGameName?: string;
+  },
+): DiscordRequestModal {
   return {
-    custom_id: DISCORD_REQUEST_MODAL_ID,
+    custom_id: `${DISCORD_REQUEST_MODAL_V2_PREFIX}${gameMode}`,
     title: "Ask for raid help",
     components: [
       {
@@ -139,8 +150,10 @@ export function buildDiscordRequestModal(initial?: {
 
 export function validateDiscordRequestModal(
   values: Readonly<Record<string, string>>,
+  gameMode: GameMode,
 ): RequestFormValidation {
   return validateRequestForm({
+    gameMode,
     twitchLogin: values[fields.twitchLogin] ?? "",
     inGameName: values[fields.inGameName] ?? "",
     map: values[fields.map] ?? "",
@@ -157,10 +170,12 @@ export function buildDiscordRequestValidationReply(validation: RequestFormValida
 }
 
 export function buildDiscordRequestCreatedReply(
+  gameMode: GameMode,
   mapName: string,
   outcome: "created" | "duplicate_delivery" | "already_active",
 ): string {
+  const raidName = formatModeMap(gameMode, mapName);
   return outcome === "already_active"
-    ? `You are already queued for ${mapName}. Use \`/queue\` to check it.`
-    : `Your help request for ${mapName} is in the queue. Use \`/queue\` to check it.`;
+    ? `You are already queued for ${raidName}. Use \`/queue\` to check it.`
+    : `Your help request for ${raidName} is in the queue. Use \`/queue\` to check it.`;
 }

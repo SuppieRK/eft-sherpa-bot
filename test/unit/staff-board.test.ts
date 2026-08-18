@@ -8,11 +8,13 @@ import {
 } from "../../src/infrastructure/discord/staff-board";
 
 const raid: StaffBoardRaid = {
+  gameMode: "pve",
   id: 7,
   queueKind: "ordinary",
   mapId: "the-lab",
   state: "planned",
   requesterCapacity: 3,
+  sortKey: 1_000_000,
   automaticFill: true,
   attemptCount: 0,
   discordCallStatus: "not_requested",
@@ -54,6 +56,7 @@ describe("split staff board", () => {
     expect(serialized).toContain("Showing 1 of 11 raids (up to 7)");
     expect(serialized).toContain("board:v5:refresh");
     expect(serialized).toContain("board:v5:start");
+    expect(serialized).toContain("PvE · The Lab");
     expect(
       JSON.stringify(
         renderStaffBoard(
@@ -75,8 +78,8 @@ describe("split staff board", () => {
       },
       { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },
     );
-    expect(JSON.stringify(message)).toContain("Ordinary 2 · The Lab");
-    expect(JSON.stringify(message)).not.toContain("Ordinary 1 · The Lab");
+    expect(JSON.stringify(message)).toContain("Ordinary 2 · PvE · The Lab");
+    expect(JSON.stringify(message)).not.toContain("Ordinary 1 · PvE · The Lab");
   });
 
   it("renders full raid disclosure and the attempt-dependent controls", () => {
@@ -89,6 +92,7 @@ describe("split staff board", () => {
       discordCallStatus: "sent" as const,
     };
     const message = renderRaidMessage(active, 3, true);
+    expect(JSON.stringify(message)).toContain("PvE · The Lab raid");
     expect(JSON.stringify(message)).toContain("Goal: Task");
     expect(JSON.stringify(message)).toContain("Notes: Bring markers");
     expect(JSON.stringify(message)).toContain("Record unsuccessful attempt");

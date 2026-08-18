@@ -15,6 +15,7 @@ export interface CreateHelpRequest {
   discordDisplayName?: string;
   twitchUserId?: string;
   twitchLogin: string;
+  gameMode: GameMode;
   inGameName: string;
   mapId: string;
   objective: string;
@@ -38,3 +39,4 @@ export interface UserMapping {
 export class RepositoryInvariantError extends Error {
   override readonly name = "RepositoryInvariantError";
 }
+import type { GameMode } from "./game-mode";

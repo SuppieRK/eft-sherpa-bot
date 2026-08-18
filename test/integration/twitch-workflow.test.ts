@@ -51,8 +51,8 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("Twitch private-pilot commands", () => {
   it.each([
-    ["!request", "use !request [map] [goal]"],
-    [`!request customs ${"x".repeat(151)}`, "150 characters"],
+    ["!request", "use !request [mode] [map] [goal]"],
+    [`!request pve customs ${"x".repeat(151)}`, "150 characters"],
   ])("answers %s with the expected public guidance", async (command, expectedText) => {
     const twitchFetch = vi
       .spyOn(globalThis, "fetch")
@@ -74,24 +74,24 @@ describe("Twitch private-pilot commands", () => {
     expect(requestBody(request?.body).toLowerCase()).toContain(expectedText);
   });
 
-  it("creates a Twitch-native request and keeps one active request per map", async () => {
+  it("creates a Twitch-native request and keeps one active request per mode and map", async () => {
     const twitchFetch = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(() =>
         Promise.resolve(Response.json({ data: [{ message_id: "sent-message", is_sent: true }] })),
       );
     for (const [deliveryId, text] of [
-      ["request-one", "!request customs pocket watch"],
-      ["request-two", "!request customs a different goal"],
+      ["request-one", "!request pve customs pocket watch"],
+      ["request-two", "!request pve customs a different goal"],
     ] as const) {
       const context = createExecutionContext();
       await worker.fetch(await eventSubRequest(text, deliveryId), testEnvironment, context);
       await waitOnExecutionContext(context);
     }
     expect(twitchFetch).toHaveBeenCalledTimes(2);
-    expect(requestBody(twitchFetch.mock.calls[0]?.[1]?.body)).toContain("queued for Customs");
+    expect(requestBody(twitchFetch.mock.calls[0]?.[1]?.body)).toContain("queued for PvE · Customs");
     expect(requestBody(twitchFetch.mock.calls[1]?.[1]?.body)).toContain(
-      "already queued for Customs",
+      "already queued for PvE · Customs",
     );
     expect(
       await env.DB.prepare(
@@ -111,7 +111,7 @@ describe("Twitch private-pilot commands", () => {
         Promise.resolve(Response.json({ data: [{ message_id: "sent-message", is_sent: true }] })),
       );
     for (const [deliveryId, text] of [
-      ["queue-request", "!request woods"],
+      ["queue-request", "!request pve woods"],
       ["queue-check", "!queue"],
     ] as const) {
       const context = createExecutionContext();
@@ -120,7 +120,7 @@ describe("Twitch private-pilot commands", () => {
     }
     const reply = requestBody(twitchFetch.mock.calls[1]?.[1]?.body);
     expect(reply).toContain("Woods");
-    expect(reply).toContain("1st overall");
+    expect(reply).toContain("1st in the PvE queue");
     expect(reply).toContain("no raids ahead");
     expect(reply).not.toContain("C1");
   });
@@ -188,7 +188,7 @@ describe("Twitch private-pilot commands", () => {
     await waitOnExecutionContext(context);
     expect(twitchFetch).toHaveBeenCalledTimes(1);
     expect(requestBody(twitchFetch.mock.calls[0]?.[1]?.body)).toContain(
-      "Use !request [map] [goal]",
+      "Use !request [mode] [map] [goal]",
     );
   });
 });

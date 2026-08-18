@@ -10,6 +10,7 @@ describe("help request form", () => {
   it("accepts the minimum form and resolves a map alias", () => {
     expect(
       validateRequestForm({
+        gameMode: "pve",
         twitchLogin: "  @Viewer_Name  ",
         inGameName: "  Helpful PMC  ",
         map: "SOT",
@@ -18,6 +19,7 @@ describe("help request form", () => {
     ).toEqual({
       valid: true,
       value: {
+        gameMode: "pve",
         inGameName: "Helpful PMC",
         twitchLogin: "viewer_name",
         mapId: "streets-of-tarkov",
@@ -29,6 +31,7 @@ describe("help request form", () => {
   it("keeps optional notes trimmed", () => {
     expect(
       validateRequestForm({
+        gameMode: "pve",
         twitchLogin: "ViewerName",
         inGameName: "Helpful PMC",
         map: "customs",
@@ -38,6 +41,7 @@ describe("help request form", () => {
     ).toEqual({
       valid: true,
       value: {
+        gameMode: "pve",
         inGameName: "Helpful PMC",
         twitchLogin: "viewername",
         mapId: "customs",
@@ -47,6 +51,7 @@ describe("help request form", () => {
     });
     expect(
       validateRequestForm({
+        gameMode: "pve",
         twitchLogin: "ViewerName",
         inGameName: "Helpful PMC",
         map: "customs",
@@ -56,6 +61,7 @@ describe("help request form", () => {
     ).toEqual({
       valid: true,
       value: {
+        gameMode: "pve",
         inGameName: "Helpful PMC",
         twitchLogin: "viewername",
         mapId: "customs",
@@ -67,6 +73,7 @@ describe("help request form", () => {
   it("returns field-specific guidance for missing data and unsupported maps", () => {
     expect(
       validateRequestForm({
+        gameMode: "pve",
         twitchLogin: "bad name!",
         inGameName: " ",
         map: "not-a-map",
@@ -89,6 +96,7 @@ describe("help request form", () => {
 
   it("rejects goals over 150 and notes over 250 characters", () => {
     const validation = validateRequestForm({
+      gameMode: "pve",
       twitchLogin: "viewer",
       inGameName: "PMC",
       map: "customs",

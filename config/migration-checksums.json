@@ -1,6 +1,7 @@
 {
   "version": 1,
   "migrations": {
-    "0001_mvp_baseline.sql": "24fdfbd0b962e408484811768afb657a97e4dead71368f1614e475e34b94e404"
+    "0001_mvp_baseline.sql": "24fdfbd0b962e408484811768afb657a97e4dead71368f1614e475e34b94e404",
+    "0002_add_game_modes.sql": "7638f718d6ead421f218cd94a1b1e951a195a0bdb50763b1b55fc7c9a5cad9c5"
   }
 }
