@@ -1,4 +1,5 @@
 import type { QueueFacts } from "../domain/queue-queries";
+import { formatModeMap, gameModeLabel } from "../domain/game-mode";
 
 function plural(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
@@ -21,7 +22,7 @@ function ordinal(value: number): string {
 
 export function renderQueueFacts(facts: QueueFacts, platform: "discord" | "twitch"): string {
   if (facts.caller === undefined) {
-    return platform === "discord" ? "Use `/request` to join." : "Use !request [map] [goal].";
+    return platform === "discord" ? "Use `/request` to join." : "Use !request [mode] [map] [goal].";
   }
   const ahead =
     facts.caller.raidsAhead.kind === "more_than"
@@ -30,12 +31,13 @@ export function renderQueueFacts(facts: QueueFacts, platform: "discord" | "twitc
         ? "no raids ahead"
         : `${plural(facts.caller.raidsAhead.count, "raid")} ahead`;
   const other =
-    facts.caller.otherActiveMapNames.length === 0
+    facts.caller.otherActiveModeMapNames.length === 0
       ? ""
-      : ` Also queued: ${facts.caller.otherActiveMapNames.join(", ")}.`;
+      : ` Also queued: ${facts.caller.otherActiveModeMapNames.join(", ")}.`;
+  const raidName = formatModeMap(facts.caller.gameMode, facts.caller.mapName);
   const position =
     facts.caller.queuePosition.kind === "more_than"
-      ? `More than ${facts.caller.queuePosition.requestsAhead} requests ahead for ${facts.caller.mapName}`
-      : `${ordinal(facts.caller.queuePosition.ordinal)} overall for ${facts.caller.mapName}`;
+      ? `${raidName}: More than ${facts.caller.queuePosition.requestsAhead} requests ahead in this mode`
+      : `${raidName}: ${ordinal(facts.caller.queuePosition.ordinal)} in the ${gameModeLabel(facts.caller.gameMode)} queue`;
   return `${position}, ${ahead}.${other}`;
 }

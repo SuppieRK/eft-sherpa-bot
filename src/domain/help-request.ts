@@ -1,6 +1,7 @@
 import { resolveTarkovMap, TARKOV_MAPS } from "./maps/catalog";
 import type { RequestState } from "./sherpa-repository";
 import { normalizeTwitchLogin } from "./user-identity";
+import type { GameMode } from "./game-mode";
 
 type RequestFormField = "twitchLogin" | "inGameName" | "map" | "objective" | "notes";
 
@@ -8,6 +9,7 @@ export const REQUEST_OBJECTIVE_MAX_LENGTH = 150;
 export const REQUEST_NOTES_MAX_LENGTH = 250;
 
 export interface RequestFormInput {
+  gameMode: GameMode;
   inGameName: string;
   map: string;
   objective: string;
@@ -16,6 +18,7 @@ export interface RequestFormInput {
 }
 
 interface ValidatedRequestForm {
+  gameMode: GameMode;
   inGameName: string;
   mapId: string;
   objective: string;
@@ -80,6 +83,7 @@ export function validateRequestForm(input: RequestFormInput): RequestFormValidat
   return {
     valid: true,
     value: {
+      gameMode: input.gameMode,
       inGameName,
       twitchLogin,
       mapId: map.id,

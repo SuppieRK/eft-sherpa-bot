@@ -4,6 +4,7 @@ import {
   validateCommunityConfig,
 } from "./config/community";
 import { QueueQueryService } from "./domain/queue-queries";
+import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
 import { parseTwitchRequestInput } from "./domain/twitch-request";
 import { isStaffBoardMember } from "./domain/staff-board";
@@ -32,7 +33,8 @@ import {
   buildDiscordRequestModal,
   buildDiscordRequestValidationReply,
   DISCORD_REQUEST_COMMAND,
-  DISCORD_REQUEST_MODAL_ID,
+  DISCORD_REQUEST_MODAL_V2_PREFIX,
+  requestModalGameMode,
   validateDiscordRequestModal,
 } from "./infrastructure/discord/request-form";
 import {
@@ -147,10 +149,15 @@ async function handleDiscordInteraction(
       });
     }
     if (interaction.commandName === DISCORD_REQUEST_COMMAND) {
+      const gameMode = parseGameMode(interaction.options.mode);
+      if (gameMode === undefined) {
+        return discordEphemeralMessage("Select PvP Seasonal, PvP, or PvE, then try again.");
+      }
       const mapping = await repository.findUserMappingByDiscordId(interaction.discordUserId);
       return Response.json({
         type: DISCORD_INTERACTION_RESPONSE_MODAL,
         data: buildDiscordRequestModal(
+          gameMode,
           mapping === undefined
             ? undefined
             : {
@@ -240,10 +247,14 @@ async function handleDiscordInteraction(
     return new Response("Unsupported component", { status: 400 });
   }
 
-  if (interaction.customId !== DISCORD_REQUEST_MODAL_ID) {
+  const gameMode = requestModalGameMode(interaction.customId);
+  if (gameMode === undefined) {
+    if (interaction.customId.startsWith(DISCORD_REQUEST_MODAL_V2_PREFIX)) {
+      return discordEphemeralMessage("Select a valid game mode and open `/request` again.");
+    }
     return new Response("Unsupported modal", { status: 400 });
   }
-  const validation = validateDiscordRequestModal(interaction.values);
+  const validation = validateDiscordRequestModal(interaction.values, gameMode);
   if (!validation.valid) {
     return discordEphemeralMessage(buildDiscordRequestValidationReply(validation));
   }
@@ -256,6 +267,7 @@ async function handleDiscordInteraction(
       ? {}
       : { discordDisplayName: interaction.discordDisplayName }),
     twitchLogin: validation.value.twitchLogin,
+    gameMode: validation.value.gameMode,
     inGameName: validation.value.inGameName,
     mapId: validation.value.mapId,
     objective: validation.value.objective,
@@ -272,7 +284,9 @@ async function handleDiscordInteraction(
     }).catch(() => undefined),
   );
   const mapName = resolveTarkovMap(validation.value.mapId)?.name ?? validation.value.mapId;
-  return discordEphemeralMessage(buildDiscordRequestCreatedReply(mapName, created.outcome));
+  return discordEphemeralMessage(
+    buildDiscordRequestCreatedReply(validation.value.gameMode, mapName, created.outcome),
+  );
 }
 
 async function buildTwitchPublicReply(
@@ -287,30 +301,35 @@ async function buildTwitchPublicReply(
   if (command.name === "request") {
     const parsed = parseTwitchRequestInput(command.input);
     if (!parsed.valid) {
+      if (parsed.reason === "missing_mode" || parsed.reason === "unknown_mode") {
+        return "Use !request [mode] [map] [goal]. Modes: seasonal, pvp, pve.";
+      }
       if (parsed.reason === "missing_map") {
-        return "Use !request [map] [goal].";
+        return "Use !request [mode] [map] [goal].";
       }
       if (parsed.reason === "goal_too_long") {
         return "Keep the goal to 150 characters or fewer.";
       }
       return parsed.suggestion === undefined
-        ? "I do not know that map. Use !request [map] [goal]."
-        : `Did you mean ${parsed.suggestion.name}? Try !request ${parsed.suggestion.id} [goal].`;
+        ? "I do not know that map. Use !request [mode] [map] [goal]."
+        : `Did you mean ${parsed.suggestion.name}? Try !request ${parsed.gameMode ?? "pve"} ${parsed.suggestion.id} [goal].`;
     }
     const result = await repository.createRequest({
       sourcePlatform: "twitch",
       sourceDeliveryId: deliveryId,
       twitchUserId,
       twitchLogin,
+      gameMode: parsed.gameMode,
       inGameName: twitchLogin,
       mapId: parsed.map.id,
       objective: parsed.goal,
       observedAt,
     });
     await materializeRaidBoard(repository, communityConfig, observedAt);
+    const raidName = formatModeMap(parsed.gameMode, parsed.map.name);
     return result.outcome === "already_active"
-      ? `You are already queued for ${parsed.map.name}. Use !queue to check it.`
-      : `You are queued for ${parsed.map.name}. Use !queue to check it.`;
+      ? `You are already queued for ${raidName}. Use !queue to check it.`
+      : `You are queued for ${raidName}. Use !queue to check it.`;
   }
   const queryService = new QueueQueryService(repository);
   return renderQueueFacts(

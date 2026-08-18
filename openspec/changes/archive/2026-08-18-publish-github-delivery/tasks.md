@@ -32,4 +32,4 @@
 - [x] 5.2 Run complete local verification and resolve every finding
 - [x] 5.3 Replace the local Git history with one sanitized root commit using the GitHub noreply address
 - [x] 5.4 Create and configure `SuppieRK/eft-sherpa-bot`, run upstream deployment verification, and publish `v0.1.0`
-- [ ] 5.5 Rehearse the streamer fork setup and deployment instructions against the actual fork
+- [x] 5.5 Rehearse the streamer fork setup and deployment instructions against the actual fork

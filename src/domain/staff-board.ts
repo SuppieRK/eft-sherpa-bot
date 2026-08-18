@@ -14,12 +14,14 @@ export interface StaffBoardMember {
 }
 
 export interface StaffBoardRaid {
+  gameMode: GameMode;
   id: number;
   queueKind: QueueKind;
   mapId: string;
   state: RaidGroupState;
   outcome?: "helped" | "not_run";
   requesterCapacity: number;
+  sortKey: number;
   leaderDiscordUserId?: string;
   leaderType?: "streamer" | "volunteer";
   automaticFill: boolean;
@@ -49,3 +51,4 @@ export function isStaffBoardMember(input: {
     input.discordRoleIds.includes(input.volunteerRoleId)
   );
 }
+import type { GameMode } from "./game-mode";

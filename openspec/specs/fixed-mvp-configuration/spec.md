@@ -6,12 +6,12 @@ Define the committed community policy, bounded operations, and local performance
 
 ## Requirements
 
-### Requirement: One committed private-pilot configuration
-The MVP SHALL keep public Twitch, Discord, and policy values for one community in version-controlled configuration. Credentials SHALL remain in ignored files, Cloudflare secrets, or GitHub environment secrets.
+### Requirement: One deployed community configuration
+The MVP SHALL load public Twitch, Discord, infrastructure, and policy values for one community from validated Worker variables rendered from the selected GitHub deployment environment. Credentials SHALL remain in ignored local files, Cloudflare secrets, or GitHub environment secrets. No streamer-specific platform ID SHALL require a tracked fork change.
 
 #### Scenario: Configuration is incomplete
-- **WHEN** a live webhook has unresolved or malformed values
-- **THEN** the operation is blocked before durable state changes
+- **WHEN** a live webhook has a missing or malformed deployment value
+- **THEN** the operation is blocked before durable state changes and deployment validation reports the invalid variable name
 
 ### Requirement: Streamer operation is visual
 The streamer SHALL operate requests and raids through Discord commands, the canonical board, and raid-specific messages. The MVP SHALL NOT provide `/setup` or require runtime configuration editing.
@@ -21,10 +21,10 @@ The streamer SHALL operate requests and raids through Discord commands, the cano
 - **THEN** the streamer claims and records raids without opening a deployment tool
 
 ### Requirement: Attempt limit is configurable
-The fixed MVP policy SHALL load one positive integer attempt limit from community configuration and SHALL default it to three in the committed private-pilot configuration.
+The fixed MVP policy SHALL load one positive integer attempt limit from deployment configuration and SHALL document three as the production default.
 
 #### Scenario: Third attempt is active under the default
-- **WHEN** two unsuccessful attempts have been recorded
+- **WHEN** two unsuccessful attempts have been recorded with the default attempt limit
 - **THEN** the raid message removes the unsuccessful outcome and offers only `Helped` and `Postpone raid`
 
 ### Requirement: Group materialization has no raid cap

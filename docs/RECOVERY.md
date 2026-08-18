@@ -4,6 +4,8 @@
 
 Use this procedure when a new Worker version fails but D1 remains healthy.
 
+Do not roll back to a version without game-mode support after the bot accepts a PvP Seasonal or PvP request. That version can mix incompatible requests. Apply a forward repair or deploy another verified mode-aware version.
+
 1. Sign in to Cloudflare.
 2. Open **Workers & Pages**.
 3. Open the `eft-sherpa-bot` Worker.

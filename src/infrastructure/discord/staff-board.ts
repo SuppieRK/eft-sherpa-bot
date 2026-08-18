@@ -1,4 +1,5 @@
 import { resolveTarkovMap } from "../../domain/maps/catalog";
+import { formatModeMap } from "../../domain/game-mode";
 import type { StaffBoardRaid, StaffBoardSnapshot } from "../../domain/staff-board";
 import { discordMessageUrl } from "./messages";
 
@@ -74,6 +75,10 @@ function mapName(mapId: string): string {
   return resolveTarkovMap(mapId)?.name ?? mapId;
 }
 
+function raidName(raid: StaffBoardRaid): string {
+  return formatModeMap(raid.gameMode, mapName(raid.mapId));
+}
+
 function escapeMarkdown(value: string): string {
   return value.replaceAll(/([\\`*_~|>])/g, "\\$1");
 }
@@ -109,7 +114,7 @@ function boardRaidField(
       ? ""
       : ` · [Raid details](${discordMessageUrl(guildId, staffChannelId, raid.staffMessageId)})`;
   return {
-    name: `${displayIndex + 1}. ${mapName(raid.mapId)} (${occupancy(raid)})`,
+    name: `${displayIndex + 1}. ${raidName(raid)} (${occupancy(raid)})`,
     value: `${raid.state === "active" ? "Active" : "Planned"} · Attempt ${raid.attemptCount}/${attemptLimit} · ${leader}${details}`,
     inline: false,
   };
@@ -163,7 +168,7 @@ export function renderStaffBoard(
           max_values: 1,
           options: planned.map(({ raid, queueOrdinal }) => ({
             label:
-              `${raid.queueKind === "priority" ? "Priority" : "Ordinary"} ${queueOrdinal} · ${mapName(raid.mapId)}`.slice(
+              `${raid.queueKind === "priority" ? "Priority" : "Ordinary"} ${queueOrdinal} · ${raidName(raid)}`.slice(
                 0,
                 100,
               ),
@@ -212,7 +217,7 @@ export function renderRaidMessage(
     const finalAttempt = raid.attemptCount >= attemptLimit;
     const outcomes: SelectOption[] = [
       {
-        label: `${mapName(raid.mapId)} · Helped`,
+        label: `${raidName(raid)} · Helped`,
         value: "helped",
         description: participantTags(raid),
       },
@@ -220,13 +225,13 @@ export function renderRaidMessage(
         ? []
         : [
             {
-              label: `${mapName(raid.mapId)} · Record unsuccessful attempt`,
+              label: `${raidName(raid)} · Record unsuccessful attempt`,
               value: "unsuccessful",
               description: participantTags(raid),
             },
           ]),
       {
-        label: `${mapName(raid.mapId)} · Postpone raid`,
+        label: `${raidName(raid)} · Postpone raid`,
         value: "postpone_raid",
         description: participantTags(raid),
       },
@@ -288,7 +293,7 @@ export function renderRaidMessage(
         : `<@${raid.leaderDiscordUserId}> this raid is ready.`,
     embeds: [
       {
-        title: `${mapName(raid.mapId)} raid`,
+        title: `${raidName(raid)} raid`,
         description: `${status}\nParty: ${occupancy(raid)}\nLeader: ${raid.leaderDiscordUserId === undefined ? "Not assigned" : `<@${raid.leaderDiscordUserId}>`}\nCalls: Discord ${raid.discordCallStatus} · Twitch ${raid.twitchCallStatus}`,
         fields,
       },

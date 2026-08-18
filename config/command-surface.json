@@ -3,7 +3,20 @@
     {
       "name": "request",
       "description": "Ask for help with an Escape from Tarkov raid.",
-      "type": 1
+      "type": 1,
+      "options": [
+        {
+          "name": "mode",
+          "description": "Select the game mode for this request.",
+          "type": 3,
+          "required": true,
+          "choices": [
+            { "name": "PvP Seasonal", "value": "pvp-seasonal" },
+            { "name": "PvP", "value": "pvp" },
+            { "name": "PvE", "value": "pve" }
+          ]
+        }
+      ]
     },
     {
       "name": "queue",

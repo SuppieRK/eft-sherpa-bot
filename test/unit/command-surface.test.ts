@@ -13,4 +13,22 @@ describe("command surface", () => {
     expect(surface.discordViewer.map((command) => command.name)).toEqual(["link-twitch"]);
     expect(surface.discordStaff.map((command) => command.name)).toEqual(["board"]);
   });
+
+  it("requires the Discord request mode selector", () => {
+    const request = surface.public.find((command) => command.name === "request");
+    expect(request).toMatchObject({
+      options: [
+        {
+          name: "mode",
+          type: 3,
+          required: true,
+          choices: [
+            { name: "PvP Seasonal", value: "pvp-seasonal" },
+            { name: "PvP", value: "pvp" },
+            { name: "PvE", value: "pve" },
+          ],
+        },
+      ],
+    });
+  });
 });

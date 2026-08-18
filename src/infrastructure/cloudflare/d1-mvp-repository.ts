@@ -5,6 +5,8 @@ import {
   QUEUE_RAID_EXACT_LIMIT,
   QUEUE_REQUEST_EXACT_LIMIT,
 } from "../../domain/queue-queries";
+import { gameModeCode, gameModeLabel, type GameMode } from "../../domain/game-mode";
+import { orderByModePresence } from "../../domain/mode-presence-order";
 import { resolveTarkovMap } from "../../domain/maps/catalog";
 import {
   type CreateHelpRequest,
@@ -34,12 +36,14 @@ interface RequestRow {
 }
 
 interface RaidRow {
+  gameMode: GameMode;
   id: number;
   queueKind: QueueKind;
   mapId: string;
   state: "planned" | "active" | "completed" | "canceled";
   outcome: "helped" | "not_run" | null;
   requesterCapacity: number;
+  sortKey: number;
   leaderDiscordUserId: string | null;
   leaderType: "streamer" | "volunteer" | null;
   automaticFill: number;
@@ -79,12 +83,14 @@ interface TwitchReceiptRow {
 }
 
 interface WaitingRow {
+  gameMode: number;
   requestId: number;
   mapId: string;
   isPriority: number;
 }
 
 interface OpenGroupRow {
+  gameMode: number;
   groupId: number;
   mapId: string;
   isPriority: number;
@@ -98,11 +104,19 @@ interface MaterializedGroup extends OpenGroupRow {
 }
 
 interface QueueSelectionRow {
+  gameMode: GameMode;
   requestId: number;
   mapId: string;
   isPriority: number;
   groupId: number | null;
   sortKey: number | null;
+}
+
+interface QueueRaidOrderRow {
+  gameMode: GameMode;
+  groupId: number;
+  isPriority: number;
+  sortKey: number;
 }
 
 interface RequesterFollowUpWindow {
@@ -129,12 +143,14 @@ function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
     let raid = raids.get(row.id);
     if (raid === undefined) {
       raid = {
+        gameMode: row.gameMode,
         id: row.id,
         queueKind: row.queueKind,
         mapId: row.mapId,
         state: row.state,
         ...(row.outcome === null ? {} : { outcome: row.outcome }),
         requesterCapacity: row.requesterCapacity,
+        sortKey: row.sortKey,
         ...(row.leaderDiscordUserId === null
           ? {}
           : { leaderDiscordUserId: row.leaderDiscordUserId }),
@@ -179,12 +195,15 @@ function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
 
 function raidSelectSql(where: string): string {
   return `SELECT raid.id,
+                 CASE raid.game_mode WHEN 0 THEN 'pvp-seasonal'
+                      WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
                  CASE raid.is_priority WHEN 1 THEN 'priority' ELSE 'ordinary' END AS queueKind,
                  raid.map_id AS mapId,
                  CASE raid.state WHEN 0 THEN 'planned' WHEN 1 THEN 'active'
                                  WHEN 2 THEN 'completed' ELSE 'canceled' END AS state,
                  CASE raid.outcome WHEN 0 THEN 'helped' WHEN 1 THEN 'not_run' END AS outcome,
                  raid.requester_capacity AS requesterCapacity,
+                 raid.sort_key AS sortKey,
                  raid.leader_discord_user_id AS leaderDiscordUserId,
                  CASE raid.leader_type WHEN 0 THEN 'streamer' WHEN 1 THEN 'volunteer' END AS leaderType,
                  raid.automatic_fill AS automaticFill, raid.attempt_count AS attemptCount,
@@ -206,6 +225,36 @@ function raidSelectSql(where: string): string {
           ORDER BY raid.is_priority DESC, raid.sort_key, member.position`;
 }
 
+function boundedModeRaidSql(isPriority: number, limit: number): string {
+  const perMode = (gameMode: number) => `
+    SELECT id AS groupId,
+           CASE game_mode WHEN 0 THEN 'pvp-seasonal' WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
+           is_priority AS isPriority,
+           sort_key AS sortKey
+    FROM raid_groups
+    WHERE is_priority = ${isPriority} AND game_mode = ${gameMode} AND state IN (0, 1)
+    ORDER BY sort_key LIMIT ${limit}`;
+  return `SELECT groupId, gameMode, isPriority, sortKey FROM (${perMode(0)})
+          UNION ALL SELECT groupId, gameMode, isPriority, sortKey FROM (${perMode(1)})
+          UNION ALL SELECT groupId, gameMode, isPriority, sortKey FROM (${perMode(2)})`;
+}
+
+function boundedGlobalRaidSql(isPriority: number, limit: number): string {
+  return `SELECT id AS groupId,
+                 CASE game_mode WHEN 0 THEN 'pvp-seasonal'
+                      WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
+                 is_priority AS isPriority, sort_key AS sortKey
+          FROM raid_groups
+          WHERE is_priority = ${isPriority} AND state IN (0, 1)
+          ORDER BY sort_key LIMIT ${limit}`;
+}
+
+function boundedBoardRaidSql(): string {
+  return `SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(1, 3)})
+          UNION ALL
+          SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(0, 7)})`;
+}
+
 export interface TwitchReplyReceipt {
   duplicate: boolean;
   replyText: string;
@@ -215,6 +264,20 @@ export interface TwitchReplyReceipt {
 
 export class D1MvpRepository implements QueueQueryRepository {
   constructor(private readonly database: D1Database) {}
+
+  private async modeFairRaidPrefix(
+    isPriority: number,
+    exactAheadLimit: number,
+  ): Promise<QueueRaidOrderRow[]> {
+    const globalLimit = exactAheadLimit + 4;
+    const [modeHeads, fifoRows] = await Promise.all([
+      this.database.prepare(boundedModeRaidSql(isPriority, 1)).all<QueueRaidOrderRow>(),
+      this.database.prepare(boundedGlobalRaidSql(isPriority, globalLimit)).all<QueueRaidOrderRow>(),
+    ]);
+    const unique = new Map<number, QueueRaidOrderRow>();
+    for (const raid of [...modeHeads.results, ...fifoRows.results]) unique.set(raid.groupId, raid);
+    return orderByModePresence([...unique.values()]).slice(0, exactAheadLimit + 1);
+  }
 
   async createRequest(input: CreateHelpRequest): Promise<CreateHelpRequestOutcome> {
     if (input.discordUserId === undefined && input.twitchUserId === undefined) {
@@ -246,8 +309,8 @@ export class D1MvpRepository implements QueueQueryRepository {
       .prepare(
         `INSERT OR IGNORE INTO help_requests
            (source_platform, source_delivery_id, discord_user_id, twitch_user_id, twitch_login,
-            in_game_name, map_id, objective, notes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            in_game_name, game_mode, map_id, objective, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING ${requestProjection()}`,
       )
       .bind(
@@ -257,6 +320,7 @@ export class D1MvpRepository implements QueueQueryRepository {
         input.twitchUserId ?? mapping.twitchUserId ?? null,
         twitchLogin,
         input.inGameName.trim(),
+        gameModeCode(input.gameMode),
         input.mapId,
         objective,
         notes ?? null,
@@ -274,9 +338,9 @@ export class D1MvpRepository implements QueueQueryRepository {
     if (duplicate !== null) return { outcome: "duplicate_delivery", request: duplicate };
     const active = await this.database
       .prepare(`SELECT ${requestProjection()} FROM help_requests
-                WHERE twitch_login = ? AND map_id = ? AND state IN (0, 1)
+                WHERE twitch_login = ? AND game_mode = ? AND map_id = ? AND state IN (0, 1)
                 ORDER BY is_priority DESC, id LIMIT 1`)
-      .bind(twitchLogin, input.mapId)
+      .bind(twitchLogin, gameModeCode(input.gameMode), input.mapId)
       .first<RequestRow & { reference: string; queueSequence: number }>();
     if (active === null) throw new RepositoryInvariantError("request was not stored");
     return { outcome: "already_active", request: active };
@@ -297,6 +361,8 @@ export class D1MvpRepository implements QueueQueryRepository {
     const selected = await this.database
       .prepare(
         `SELECT request.id AS requestId, request.map_id AS mapId,
+                CASE request.game_mode WHEN 0 THEN 'pvp-seasonal'
+                     WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
                 request.is_priority AS isPriority, raid.id AS groupId, raid.sort_key AS sortKey
          FROM help_requests AS request
          LEFT JOIN raid_group_members AS member
@@ -308,74 +374,71 @@ export class D1MvpRepository implements QueueQueryRepository {
       .bind(twitchLogin)
       .first<QueueSelectionRow>();
     if (selected === null) return {};
+    const selectedModeCode = gameModeCode(selected.gameMode);
     const requestPrefix =
       selected.isPriority === 1
         ? this.database
             .prepare(
               `SELECT count(*) AS count FROM (
                  SELECT id FROM help_requests
-                 WHERE state IN (0, 1) AND is_priority = 1 AND id < ?
+                 WHERE state IN (0, 1) AND game_mode = ? AND is_priority = 1 AND id < ?
                  ORDER BY id LIMIT ?
                )`,
             )
-            .bind(selected.requestId, QUEUE_REQUEST_EXACT_LIMIT + 1)
+            .bind(selectedModeCode, selected.requestId, QUEUE_REQUEST_EXACT_LIMIT + 1)
             .first<{ count: number }>()
         : this.database
             .prepare(
               `SELECT count(*) AS count FROM (
                  SELECT id, is_priority AS isPriority FROM help_requests
-                 WHERE state IN (0, 1) AND is_priority = 1
+                 WHERE state IN (0, 1) AND game_mode = ? AND is_priority = 1
                  UNION ALL
                  SELECT id, is_priority AS isPriority FROM help_requests
-                 WHERE state IN (0, 1) AND is_priority = 0 AND id < ?
+                 WHERE state IN (0, 1) AND game_mode = ? AND is_priority = 0 AND id < ?
                  ORDER BY isPriority DESC, id LIMIT ?
                )`,
             )
-            .bind(selected.requestId, QUEUE_REQUEST_EXACT_LIMIT + 1)
+            .bind(
+              selectedModeCode,
+              selectedModeCode,
+              selected.requestId,
+              QUEUE_REQUEST_EXACT_LIMIT + 1,
+            )
             .first<{ count: number }>();
-    const raidPrefix =
-      selected.sortKey === null
-        ? Promise.resolve({ count: 0 })
-        : selected.isPriority === 1
-          ? this.database
-              .prepare(
-                `SELECT count(*) AS count FROM (
-                   SELECT sort_key FROM raid_groups
-                   WHERE state IN (0, 1) AND is_priority = 1 AND sort_key < ?
-                   ORDER BY sort_key LIMIT ?
-                 )`,
-              )
-              .bind(selected.sortKey, QUEUE_RAID_EXACT_LIMIT + 1)
-              .first<{ count: number }>()
-          : this.database
-              .prepare(
-                `SELECT count(*) AS count FROM (
-                   SELECT sort_key AS sortKey, is_priority AS isPriority FROM raid_groups
-                   WHERE state IN (0, 1) AND is_priority = 1
-                   UNION ALL
-                   SELECT sort_key AS sortKey, is_priority AS isPriority FROM raid_groups
-                   WHERE state IN (0, 1) AND is_priority = 0 AND sort_key < ?
-                   ORDER BY isPriority DESC, sortKey LIMIT ?
-                 )`,
-              )
-              .bind(selected.sortKey, QUEUE_RAID_EXACT_LIMIT + 1)
-              .first<{ count: number }>();
-    const [requestPrefixRow, raidPrefixRow, otherRows] = await Promise.all([
+    const [requestPrefixRow, priorityRaids, otherRows] = await Promise.all([
       requestPrefix,
-      raidPrefix,
+      this.modeFairRaidPrefix(1, QUEUE_RAID_EXACT_LIMIT),
       this.database
         .prepare(
-          `SELECT DISTINCT map_id AS mapId FROM help_requests
+          `SELECT CASE game_mode WHEN 0 THEN 'pvp-seasonal'
+                       WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
+                  map_id AS mapId
+           FROM help_requests
            WHERE twitch_login = ? AND state IN (0, 1) AND id <> ?
-           ORDER BY id`,
+           GROUP BY game_mode, map_id ORDER BY min(id)`,
         )
         .bind(twitchLogin, selected.requestId)
-        .all<{ mapId: string }>(),
+        .all<{ gameMode: GameMode; mapId: string }>(),
     ]);
     const requestPrefixCount = Number(requestPrefixRow?.count ?? 0);
-    const raidPrefixCount = Number(raidPrefixRow?.count ?? 0);
+    const ordinaryAheadLimit =
+      selected.isPriority === 1
+        ? 0
+        : Math.max(
+            0,
+            QUEUE_RAID_EXACT_LIMIT - Math.min(priorityRaids.length, QUEUE_RAID_EXACT_LIMIT + 1),
+          );
+    const ordinaryRaids =
+      selected.isPriority === 1 ? [] : await this.modeFairRaidPrefix(0, ordinaryAheadLimit);
+    const orderedRaids = [...priorityRaids, ...ordinaryRaids];
+    const selectedRaidIndex =
+      selected.groupId === null
+        ? 0
+        : orderedRaids.findIndex((raid) => raid.groupId === selected.groupId);
+    const raidPrefixCount = selectedRaidIndex < 0 ? QUEUE_RAID_EXACT_LIMIT + 1 : selectedRaidIndex;
     return {
       caller: {
+        gameMode: selected.gameMode,
         mapName: resolveTarkovMap(selected.mapId)?.name ?? selected.mapId,
         queuePosition:
           requestPrefixCount > QUEUE_REQUEST_EXACT_LIMIT
@@ -385,8 +448,9 @@ export class D1MvpRepository implements QueueQueryRepository {
           raidPrefixCount > QUEUE_RAID_EXACT_LIMIT
             ? { kind: "more_than", count: QUEUE_RAID_EXACT_LIMIT }
             : { kind: "exact", count: raidPrefixCount },
-        otherActiveMapNames: otherRows.results.map(
-          (row) => resolveTarkovMap(row.mapId)?.name ?? row.mapId,
+        otherActiveModeMapNames: otherRows.results.map(
+          (row) =>
+            `${gameModeLabel(row.gameMode)} · ${resolveTarkovMap(row.mapId)?.name ?? row.mapId}`,
         ),
       },
     };
@@ -404,7 +468,8 @@ export class D1MvpRepository implements QueueQueryRepository {
   }): Promise<number> {
     const waiting = await this.database
       .prepare(
-        `SELECT id AS requestId, map_id AS mapId, is_priority AS isPriority
+        `SELECT id AS requestId, game_mode AS gameMode, map_id AS mapId,
+                is_priority AS isPriority
          FROM help_requests WHERE state = 0
          ORDER BY is_priority DESC, id`,
       )
@@ -414,13 +479,14 @@ export class D1MvpRepository implements QueueQueryRepository {
     const [existing, maxima] = await Promise.all([
       this.database
         .prepare(
-          `SELECT raid.id AS groupId, raid.map_id AS mapId, raid.is_priority AS isPriority,
+          `SELECT raid.id AS groupId, raid.game_mode AS gameMode, raid.map_id AS mapId,
+                  raid.is_priority AS isPriority,
                   raid.sort_key AS sortKey, raid.requester_capacity AS requesterCapacity,
                   raid.current_member_count AS memberCount
            FROM raid_groups AS raid
            WHERE raid.state = 0 AND raid.automatic_fill = 1
              AND raid.current_member_count < raid.requester_capacity
-           ORDER BY raid.is_priority DESC, raid.sort_key`,
+           ORDER BY raid.is_priority, raid.game_mode, raid.map_id, raid.sort_key`,
         )
         .all<OpenGroupRow>(),
       this.database
@@ -442,7 +508,7 @@ export class D1MvpRepository implements QueueQueryRepository {
     >();
     for (const row of existing.results) {
       if (row.memberCount >= row.requesterCapacity) continue;
-      const key = `${row.isPriority}:${row.mapId}`;
+      const key = `${row.isPriority}:${row.gameMode}:${row.mapId}`;
       const bucket = availableByQueueAndMap.get(key) ?? { groups: [], index: 0 };
       bucket.groups.push({ ...row });
       availableByQueueAndMap.set(key, bucket);
@@ -452,6 +518,7 @@ export class D1MvpRepository implements QueueQueryRepository {
     const newGroups: Array<{
       actionKey: string;
       isPriority: number;
+      gameMode: number;
       mapId: string;
       capacity: number;
       sortKey: number;
@@ -463,7 +530,7 @@ export class D1MvpRepository implements QueueQueryRepository {
       memberPosition: number;
     }> = [];
     for (const request of waiting.results) {
-      const bucketKey = `${request.isPriority}:${request.mapId}`;
+      const bucketKey = `${request.isPriority}:${request.gameMode}:${request.mapId}`;
       const bucket = availableByQueueAndMap.get(bucketKey) ?? { groups: [], index: 0 };
       let group = bucket.groups[bucket.index];
       if (group === undefined) {
@@ -477,6 +544,7 @@ export class D1MvpRepository implements QueueQueryRepository {
         group = {
           groupId: 0,
           actionKey,
+          gameMode: request.gameMode,
           mapId: request.mapId,
           isPriority: request.isPriority,
           sortKey,
@@ -488,6 +556,7 @@ export class D1MvpRepository implements QueueQueryRepository {
         newGroups.push({
           actionKey,
           isPriority: request.isPriority,
+          gameMode: request.gameMode,
           mapId: request.mapId,
           capacity: group.requesterCapacity,
           sortKey,
@@ -509,9 +578,11 @@ export class D1MvpRepository implements QueueQueryRepository {
       this.database
         .prepare(
           `INSERT INTO raid_groups
-             (is_priority, sort_key, map_id, requester_capacity, last_action_key, created_at, updated_at)
-           SELECT json_extract(value, '$.isPriority'), json_extract(value, '$.sortKey'),
-                  json_extract(value, '$.mapId'), json_extract(value, '$.capacity'),
+             (is_priority, game_mode, sort_key, map_id, requester_capacity,
+              last_action_key, created_at, updated_at)
+           SELECT json_extract(value, '$.isPriority'), json_extract(value, '$.gameMode'),
+                  json_extract(value, '$.sortKey'), json_extract(value, '$.mapId'),
+                  json_extract(value, '$.capacity'),
                   json_extract(value, '$.actionKey'), ?, ?
            FROM json_each(?)`,
         )
@@ -545,14 +616,17 @@ export class D1MvpRepository implements QueueQueryRepository {
   }
 
   async getBoardSnapshot(_now?: Date): Promise<StaffBoardSnapshot> {
-    const state = await this.database
-      .prepare(
-        `SELECT staff_board_message_id AS staffBoardMessageId,
+    const [state, candidateRows] = await Promise.all([
+      this.database
+        .prepare(
+          `SELECT staff_board_message_id AS staffBoardMessageId,
                 priority_open_raid_count AS priorityRaidCount,
                 ordinary_open_raid_count AS ordinaryRaidCount
          FROM community_state WHERE community_id = 'butcoffee'`,
-      )
-      .first<CommunityStateRow>();
+        )
+        .first<CommunityStateRow>(),
+      this.database.prepare(boundedBoardRaidSql()).all<QueueRaidOrderRow>(),
+    ]);
     const fallbackCounts =
       state === null
         ? await this.database
@@ -565,32 +639,36 @@ export class D1MvpRepository implements QueueQueryRepository {
             )
             .first<{ priorityRaidCount: number; ordinaryRaidCount: number }>()
         : undefined;
-    const [priorityRows, ordinaryRows] = await Promise.all([
-      this.database
-        .prepare(
-          raidSelectSql(
-            `JOIN (SELECT id FROM raid_groups WHERE is_priority = 1 AND state IN (0, 1)
-               ORDER BY sort_key LIMIT 3) AS visible ON visible.id = raid.id`,
-          ),
-        )
-        .all<RaidRow>(),
-      this.database
-        .prepare(
-          raidSelectSql(
-            `JOIN (SELECT id FROM raid_groups WHERE is_priority = 0 AND state IN (0, 1)
-               ORDER BY sort_key LIMIT 7) AS visible ON visible.id = raid.id`,
-          ),
-        )
-        .all<RaidRow>(),
-    ]);
+    const priorityCandidates = orderByModePresence(
+      candidateRows.results.filter((raid) => raid.isPriority === 1),
+    ).slice(0, 3);
+    const ordinaryCandidates = orderByModePresence(
+      candidateRows.results.filter((raid) => raid.isPriority === 0),
+    ).slice(0, 7);
+    const visibleIds = [...priorityCandidates, ...ordinaryCandidates].map(
+      (candidate) => candidate.groupId,
+    );
+    const detailRows =
+      visibleIds.length === 0
+        ? { results: [] as RaidRow[] }
+        : await this.database
+            .prepare(raidSelectSql(`WHERE raid.id IN (${visibleIds.map(() => "?").join(", ")})`))
+            .bind(...visibleIds)
+            .all<RaidRow>();
+    const raidsById = new Map(mapRaidRows(detailRows.results).map((raid) => [raid.id, raid]));
+    const hydrate = (candidates: readonly QueueRaidOrderRow[]) =>
+      candidates.flatMap((candidate) => {
+        const raid = raidsById.get(candidate.groupId);
+        return raid === undefined ? [] : [raid];
+      });
     return {
       priorityRaidCount: Number(state?.priorityRaidCount ?? fallbackCounts?.priorityRaidCount ?? 0),
       ordinaryRaidCount: Number(state?.ordinaryRaidCount ?? fallbackCounts?.ordinaryRaidCount ?? 0),
       ...(state?.staffBoardMessageId == null
         ? {}
         : { canonicalMessageId: state.staffBoardMessageId }),
-      priorityRaids: mapRaidRows(priorityRows.results),
-      ordinaryRaids: mapRaidRows(ordinaryRows.results),
+      priorityRaids: hydrate(priorityCandidates),
+      ordinaryRaids: hydrate(ordinaryCandidates),
     };
   }
 
@@ -745,7 +823,7 @@ export class D1MvpRepository implements QueueQueryRepository {
     return this.database
       .prepare(
         `WITH source AS (
-           SELECT id, is_priority, sort_key, map_id
+           SELECT id, is_priority, game_mode, sort_key, map_id
            FROM raid_groups WHERE id = ? AND state = 1
          ),
          follow_ups AS (
@@ -758,6 +836,7 @@ export class D1MvpRepository implements QueueQueryRepository {
              ON target_member.request_id = source_member.request_id AND target_member.state = 0
            JOIN raid_groups AS target ON target.id = target_member.group_id
            WHERE target.id <> source.id AND target.is_priority = source.is_priority
+             AND target.game_mode = source.game_mode
              AND target.map_id = source.map_id AND target.state IN (0, 1)
          ),
          bounds AS (
@@ -841,10 +920,10 @@ export class D1MvpRepository implements QueueQueryRepository {
         this.database
           .prepare(
             `INSERT INTO raid_groups
-             (is_priority, sort_key, map_id, requester_capacity,
+             (is_priority, game_mode, sort_key, map_id, requester_capacity,
               leader_discord_user_id, leader_type, automatic_fill,
               last_action_key, created_at, updated_at)
-           SELECT is_priority, ?, map_id, requester_capacity,
+           SELECT is_priority, game_mode, ?, map_id, requester_capacity,
                   leader_discord_user_id, leader_type, 1, ?, ?, ?
            FROM raid_groups WHERE id = ? AND last_action_key = ?`,
           )

@@ -70,3 +70,30 @@ The largest measured Discord Queue read is 162 rows, below the 200-row contract.
 | 100,000 | 62,083,072 | 61,403,136 | -679,936 |
 
 At the largest seed, the optimized schema uses about 664 KiB less local D1 storage despite the two board counters and per-raid occupancy counter.
+
+## Game-Mode Release Comparison
+
+The game-mode candidate uses a deterministic 70% PvE, 20% PvP, and 10% PvP Seasonal raid mix. The comparison baseline is the prior tracked report. The candidate report was generated on 2026-08-18 with the same four scales, operation list, warmups, samples, and fully local D1 guard.
+
+| 100,000-request operation | Prior rows read | Mode-aware rows read | Prior rows written | Mode-aware rows written |
+|---|---:|---:|---:|---:|
+| Discord request submission (created) | 206 | 229 | 31 | 34 |
+| Discord Queue p10 | 160 | 166 | 0 | 0 |
+| Discord Queue p50 | 162 | 174 | 0 | 0 |
+| Discord Queue p90 | 162 | 174 | 0 | 0 |
+| Discord board open | 485 | 545 | 0 | 0 |
+| Discord streamer-led raid start | 204 | 224 | 9 | 10 |
+| Discord postpone requester (source remains) | 216 | 248 | 24 | 26 |
+
+The added reads are bounded. Queue reads at 100,000 requests remain below the contracts: Discord uses at most 174 rows and Twitch uses at most 181 rows. The board reads up to 30 mode-specific candidates before it hydrates no more than ten visible raids. This adds 60 deterministic D1 row reads because local D1 counts the compound-query inputs and results.
+
+The added writes come from the mode-aware request and raid indexes and from compatibility-triggered state changes. The maximum operation uses 38 writes, below the limit of 50. No write count changes with scale.
+
+| Active requests | Prior database bytes | Mode-aware database bytes | Change |
+|---:|---:|---:|---:|
+| 100 | 147,456 | 155,648 | +5.56% |
+| 1,000 | 704,512 | 745,472 | +5.81% |
+| 10,000 | 5,988,352 | 6,234,112 | +4.10% |
+| 100,000 | 61,407,232 | 64,266,240 | +4.66% |
+
+The 100,000-request database adds about 2.73 MiB for two required mode columns and three mode-aware indexes. The increase is accepted because it enforces mode-safe uniqueness, grouping, and bounded fair board reads. Wall-time changes are local observations; D1 row and write counts remain the release decision signals.

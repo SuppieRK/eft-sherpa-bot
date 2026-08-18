@@ -20,6 +20,10 @@ on:
         description: State the compatibility effect
         required: true
         type: string
+      performance:
+        description: State the D1 row-statistics review result
+        required: true
+        type: string
       operator_actions:
         description: State the required operator actions
         required: true
@@ -59,10 +63,12 @@ jobs:
           test "$SMOKE_TEST_COMPLETE" = "true"
         env:
           SMOKE_TEST_COMPLETE: ${{ inputs.smoke_test_complete }}
-      - name: Require successful deployment for this commit
+      - name: Require successful CI and deployment for this commit
         run: |
-          run_count=$(gh run list --workflow deploy-production.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq 'length')
-          test "$run_count" -gt 0
+          ci_count=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq 'length')
+          deployment_count=$(gh run list --workflow deploy-production.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq 'length')
+          test "$ci_count" -gt 0
+          test "$deployment_count" -gt 0
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Create release notes
@@ -73,6 +79,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_MIGRATIONS: ${{ inputs.migrations }}
           RELEASE_COMPATIBILITY: ${{ inputs.compatibility }}
+          RELEASE_PERFORMANCE: ${{ inputs.performance }}
           RELEASE_OPERATOR_ACTIONS: ${{ inputs.operator_actions }}
           RELEASE_ROLLBACK: ${{ inputs.rollback }}
       - name: Create tag and GitHub release
