@@ -131,14 +131,16 @@ async function deleteDuplicateRaidMessage(input: {
   }
 }
 
-async function reconcileActiveRaidMessage(input: {
+async function reconcileRaidMessage(input: {
   raid: StaffBoardRaid;
   repository: D1MvpRepository;
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
 }): Promise<void> {
-  if (input.raid.state !== "active") return;
+  const isReviewedPlanned =
+    input.raid.state === "planned" && input.raid.staffMessageId !== undefined;
+  if (input.raid.state !== "active" && !isReviewedPlanned) return;
   const channelId = input.communityConfig.discord.staffChannelId;
   if (input.raid.staffMessageId !== undefined) {
     try {
@@ -156,7 +158,9 @@ async function reconcileActiveRaidMessage(input: {
   }
 
   const current = await input.repository.getRaid(input.raid.id);
-  if (current === undefined || current.state !== "active" || current.staffMessageId !== undefined) {
+  const canRecover =
+    current?.state === "active" || (current?.state === "planned" && !current.automaticFill);
+  if (current === undefined || !canRecover || current.staffMessageId !== undefined) {
     return;
   }
   const created = await createDiscordMessage(
@@ -187,19 +191,19 @@ async function reconcileActiveRaidMessage(input: {
   }
 }
 
-async function reconcileVisibleActiveRaidMessages(input: {
+async function reconcileVisibleRaidMessages(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
 }): Promise<void> {
   const repository = new D1MvpRepository(input.environment.DB);
   const snapshot = await repository.getBoardSnapshot(input.changedAt);
-  const visibleActiveRaids = [...snapshot.priorityRaids, ...snapshot.ordinaryRaids].filter(
-    (raid) => raid.state === "active",
+  const visibleRaids = [...snapshot.priorityRaids, ...snapshot.ordinaryRaids].filter(
+    (raid) => raid.state === "active" || raid.staffMessageId !== undefined,
   );
   await Promise.allSettled(
-    visibleActiveRaids.map((raid) =>
-      reconcileActiveRaidMessage({
+    visibleRaids.map((raid) =>
+      reconcileRaidMessage({
         ...input,
         raid,
         repository,
@@ -280,8 +284,45 @@ class StaffBoardHandler {
   }
 
   private reconcileBoardLater(): void {
-    const work = reconcileVisibleActiveRaidMessages(this.dependencies).catch(() => undefined);
+    const work = reconcileVisibleRaidMessages(this.dependencies).catch(() => undefined);
     this.dependencies.context?.waitUntil(work);
+  }
+
+  private async ensureReviewMessage(
+    raid: StaffBoardRaid,
+    reviewerDiscordUserId: string,
+  ): Promise<string> {
+    const { communityConfig, changedAt, environment } = this.dependencies;
+    if (raid.staffMessageId !== undefined) return raid.staffMessageId;
+    const created = await createDiscordMessage(
+      environment,
+      communityConfig.discord.staffChannelId,
+      renderRaidMessage(raid, communityConfig.policies.attemptLimit, reviewerDiscordUserId),
+    );
+    let stored: boolean;
+    try {
+      stored = await this.repository.compareAndSetRaidStaffMessage({
+        groupId: raid.id,
+        messageId: created.id,
+        changedAt,
+      });
+    } catch (error) {
+      await deleteDuplicateRaidMessage({
+        environment,
+        channelId: communityConfig.discord.staffChannelId,
+        messageId: created.id,
+      });
+      throw error;
+    }
+    if (stored) return created.id;
+    await deleteDuplicateRaidMessage({
+      environment,
+      channelId: communityConfig.discord.staffChannelId,
+      messageId: created.id,
+    });
+    const retained = await this.repository.getRaid(raid.id);
+    if (retained?.staffMessageId !== undefined) return retained.staffMessageId;
+    throw new RepositoryInvariantError("That raid is no longer available to review.");
   }
 
   private async deleteRaidMessage(messageId: string | undefined): Promise<boolean> {
@@ -322,7 +363,7 @@ class StaffBoardHandler {
   }
 
   async handle(interaction: DiscordMessageComponentInteraction): Promise<Response> {
-    const { communityConfig, changedAt, environment } = this.dependencies;
+    const { communityConfig, changedAt } = this.dependencies;
     if (!hasAccess(interaction, communityConfig)) {
       return ephemeral("Only the streamer or a volunteer sherpa can use these controls.");
     }
@@ -332,6 +373,9 @@ class StaffBoardHandler {
       return new Response("Unsupported component", { status: 400 });
     }
     await this.materialize();
+    if (boardAction?.action === "retired_start") {
+      return ephemeral("This board is out of date. Use Refresh, then review the raid again.");
+    }
     if (boardAction?.action === "refresh") {
       this.reconcileBoardLater();
       return update(
@@ -341,55 +385,69 @@ class StaffBoardHandler {
     if (
       !(await this.repository.claimDiscordMutation(
         interaction.interactionId,
-        boardAction === undefined ? `raid:${raidAction?.action}` : "raid:start",
+        boardAction === undefined ? `raid:${raidAction?.action}` : "raid:review",
         changedAt,
       ))
     ) {
       return ephemeral("That action was already received.");
     }
     try {
-      if (boardAction?.action === "start") {
+      if (boardAction?.action === "review") {
         const raidId = Number(selectedValue(interaction));
-        const planned = await this.repository.getRaid(raidId);
-        if (planned === undefined || planned.state !== "planned") {
+        if (!Number.isSafeInteger(raidId) || raidId < 1) {
+          throw new RepositoryInvariantError("Choose a current raid to review.");
+        }
+        const reviewed = await this.repository.reviewRaid({ groupId: raidId, changedAt });
+        const messageId = await this.ensureReviewMessage(reviewed, interaction.discordUserId);
+        this.refreshBoardLater();
+        return ephemeral(
+          `[Open raid details](${discordMessageUrl(
+            communityConfig.discord.guildId,
+            communityConfig.discord.staffChannelId,
+            messageId,
+          )})`,
+        );
+      }
+      const raid = await this.repository.getRaid(raidAction?.raidId ?? 0);
+      if (raid === undefined) throw new RepositoryInvariantError("That raid no longer exists.");
+      const isStreamer = interaction.discordUserId === communityConfig.discord.streamerUserId;
+      if (raidAction?.action === "call") {
+        if (raid.state !== "planned" || raid.staffMessageId === undefined) {
           throw new RepositoryInvariantError("That raid is no longer available to start.");
         }
-        const isStreamer = interaction.discordUserId === communityConfig.discord.streamerUserId;
         if (
-          !planned.automaticFill &&
+          raid.leaderDiscordUserId !== undefined &&
           !isStreamer &&
-          planned.leaderDiscordUserId !== interaction.discordUserId
+          raid.leaderDiscordUserId !== interaction.discordUserId
         ) {
           throw new RepositoryInvariantError(
             "Only the reserved leader or streamer can start this postponed raid.",
           );
         }
-        let raid = await this.repository.startRaid({
-          groupId: raidId,
+        let started = await this.repository.startRaid({
+          groupId: raid.id,
           leaderDiscordUserId: interaction.discordUserId,
           leaderType: isStreamer ? "streamer" : "volunteer",
           requestTwitchCall: isStreamer,
+          canOverrideReservedLeader: isStreamer,
           changedAt,
         });
-        await sendRaidCalls(raid, this.dependencies, this.repository);
-        raid = (await this.repository.getRaid(raidId)) ?? raid;
-        const message = await createDiscordMessage(
-          environment,
-          communityConfig.discord.staffChannelId,
-          renderRaidMessage(raid, communityConfig.policies.attemptLimit, true),
-        );
-        await this.repository.setRaidStaffMessage(raidId, message.id, changedAt);
-        return update(
-          boardMessage(await this.repository.getBoardSnapshot(changedAt), communityConfig),
-        );
+        await sendRaidCalls(started, this.dependencies, this.repository);
+        started = (await this.repository.getRaid(raid.id)) ?? started;
+        this.refreshBoardLater();
+        return update(renderRaidMessage(started, communityConfig.policies.attemptLimit));
       }
-      const raid = await this.repository.getRaid(raidAction?.raidId ?? 0);
-      if (raid === undefined) throw new RepositoryInvariantError("That raid no longer exists.");
+      const isReviewedPlanned =
+        raid.state === "planned" && !raid.automaticFill && raid.staffMessageId !== undefined;
       if (
-        interaction.discordUserId !== communityConfig.discord.streamerUserId &&
+        !isReviewedPlanned &&
+        !isStreamer &&
         interaction.discordUserId !== raid.leaderDiscordUserId
       ) {
         throw new RepositoryInvariantError("Only this raid's leader or the streamer can use it.");
+      }
+      if (isReviewedPlanned && raidAction?.action === "result") {
+        throw new RepositoryInvariantError("Call and start this raid before recording a result.");
       }
       if (raidAction?.action === "result") {
         const result = selectedValue(interaction);

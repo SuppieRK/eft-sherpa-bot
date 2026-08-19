@@ -46,6 +46,7 @@ async function currentMemberCount(groupId: number): Promise<number> {
 }
 
 async function start(repo: D1MvpRepository, raid: StaffBoardRaid): Promise<StaffBoardRaid> {
+  await review(repo, raid);
   return repo.startRaid({
     groupId: raid.id,
     leaderDiscordUserId: "leader",
@@ -53,6 +54,20 @@ async function start(repo: D1MvpRepository, raid: StaffBoardRaid): Promise<Staff
     requestTwitchCall: false,
     changedAt: now,
   });
+}
+
+async function review(
+  repo: D1MvpRepository,
+  raid: StaffBoardRaid,
+  messageId = `review-${raid.id}`,
+): Promise<StaffBoardRaid> {
+  await repo.reviewRaid({ groupId: raid.id, changedAt: now });
+  await repo.compareAndSetRaidStaffMessage({
+    groupId: raid.id,
+    messageId,
+    changedAt: now,
+  });
+  return (await repo.getRaid(raid.id)) as StaffBoardRaid;
 }
 
 async function postpone(
@@ -345,11 +360,18 @@ describe("schedule-independent dual queues", () => {
     await createRequest(repo, 1);
     await materialize(repo);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: raid.id, changedAt: now });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: raid.id,
+      messageId: `review-${raid.id}`,
+      changedAt: now,
+    });
     const started = await repo.startRaid({
       groupId: raid.id,
       leaderDiscordUserId: "streamer",
       leaderType: "streamer",
       requestTwitchCall: true,
+      canOverrideReservedLeader: true,
       changedAt: now,
     });
     expect(started).toMatchObject({
@@ -357,6 +379,154 @@ describe("schedule-independent dual queues", () => {
       discordCallStatus: "pending",
       twitchCallStatus: "pending",
     });
+  });
+
+  it("freezes a reviewed party before later compatible requests are materialized", async () => {
+    const repo = repository();
+    const first = await createRequest(repo, 1);
+    const second = await createRequest(repo, 2);
+    await materialize(repo);
+    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+
+    const reviewed = await review(repo, planned, "frozen-review");
+    expect(reviewed).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      discordCallStatus: "not_requested",
+      twitchCallStatus: "not_requested",
+      staffMessageId: "frozen-review",
+    });
+    expect(reviewed.leaderDiscordUserId).toBeUndefined();
+
+    const later = await createRequest(repo, 3);
+    await materialize(repo);
+    const board = await repo.getBoardSnapshot();
+    expect((await repo.getRaid(reviewed.id))?.members.map((member) => member.requestId)).toEqual([
+      first,
+      second,
+    ]);
+    const laterRaid = board.ordinaryRaids.find((raid) => raid.id !== reviewed.id);
+    expect(laterRaid?.members.map((member) => member.requestId)).toEqual([later]);
+  });
+
+  it("allows exactly one concurrent caller to activate a reviewed raid", async () => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    await materialize(repo);
+    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    await review(repo, planned, "concurrent-start-review");
+
+    const starts = await Promise.allSettled(
+      ["first-volunteer", "second-volunteer"].map((leaderDiscordUserId) =>
+        repo.startRaid({
+          groupId: planned.id,
+          leaderDiscordUserId,
+          leaderType: "volunteer",
+          requestTwitchCall: false,
+          changedAt: now,
+        }),
+      ),
+    );
+    expect(starts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(starts.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const active = await repo.getRaid(planned.id);
+    expect(active).toMatchObject({
+      state: "active",
+      attemptCount: 1,
+      discordCallStatus: "pending",
+      twitchCallStatus: "not_requested",
+      staffMessageId: "concurrent-start-review",
+    });
+    expect(["first-volunteer", "second-volunteer"]).toContain(active?.leaderDiscordUserId);
+  });
+
+  it("keeps reserved follow-up activation restricted to its leader or the streamer", async () => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    await materialize(repo);
+    const source = await start(
+      repo,
+      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+    );
+    const postponed = await repo.postponeRaid({
+      groupId: source.id,
+      actionKey: "reserve-follow-up",
+      changedAt: now,
+    });
+    await review(repo, postponed, "reserved-review");
+
+    await expect(
+      repo.startRaid({
+        groupId: postponed.id,
+        leaderDiscordUserId: "other-volunteer",
+        leaderType: "volunteer",
+        requestTwitchCall: false,
+        changedAt: now,
+      }),
+    ).rejects.toThrow("no longer available to start");
+    await expect(
+      repo.startRaid({
+        groupId: postponed.id,
+        leaderDiscordUserId: "streamer",
+        leaderType: "streamer",
+        requestTwitchCall: true,
+        canOverrideReservedLeader: true,
+        changedAt: now,
+      }),
+    ).resolves.toMatchObject({
+      state: "active",
+      leaderDiscordUserId: "streamer",
+      twitchCallStatus: "pending",
+    });
+  });
+
+  it("moves and removes requesters from a frozen review without starting it", async () => {
+    const repo = repository();
+    const retained = await createRequest(repo, 1);
+    const moved = await createRequest(repo, 2);
+    const removed = await createRequest(repo, 3);
+    await materialize(repo);
+    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    await review(repo, planned, "editable-review");
+
+    const movement = await repo.postponeRequester({
+      groupId: planned.id,
+      requestId: moved,
+      actionKey: "move-before-call",
+      changedAt: now,
+    });
+    expect(movement.source).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      discordCallStatus: "not_requested",
+      twitchCallStatus: "not_requested",
+      staffMessageId: "editable-review",
+    });
+    expect(movement.dedicated.members.map((member) => member.requestId)).toEqual([moved]);
+
+    const afterRemoval = await repo.removeRequester({
+      groupId: planned.id,
+      requestId: removed,
+      actionKey: "remove-before-call",
+      changedAt: now,
+    });
+    expect(afterRemoval).toMatchObject({ state: "planned", automaticFill: false });
+    expect(afterRemoval.members.map((member) => member.requestId)).toEqual([retained]);
+    const removedRequest = await env.DB.prepare("SELECT state FROM help_requests WHERE id = ?")
+      .bind(removed)
+      .first<{ state: number }>();
+    expect(removedRequest?.state).toBe(3);
+
+    const closed = await repo.removeRequester({
+      groupId: planned.id,
+      requestId: retained,
+      actionKey: "remove-last-before-call",
+      changedAt: now,
+    });
+    expect(closed).toMatchObject({ state: "canceled", outcome: "not_run" });
+    expect(closed.staffMessageId).toBeUndefined();
   });
 
   it("starts at any time and advances attempts before completing helped requests", async () => {

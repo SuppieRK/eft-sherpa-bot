@@ -244,6 +244,7 @@ export async function seedOperationRaid(input: {
   isPriority?: boolean;
   visibleFirst?: boolean;
   gameMode?: 0 | 1 | 2;
+  staffMessageId?: string;
 }): Promise<{ groupId: number; requestIds: number[] }> {
   const timestamp = Date.now();
   const groupId = input.seed.groupCount + 1;
@@ -284,7 +285,9 @@ export async function seedOperationRaid(input: {
       input.state === "active" ? 1 : 0,
       input.state === "active" ? 1 : 3,
       input.state === "active" ? 1 : 3,
-      input.state === "active" ? `${OPERATION_PREFIX}detail-${input.suffix}` : null,
+      input.state === "active"
+        ? `${OPERATION_PREFIX}detail-${input.suffix}`
+        : (input.staffMessageId ?? null),
       input.state === "active" ? timestamp : null,
       timestamp,
       timestamp,

@@ -41,10 +41,13 @@ Use only maintainer-owned test accounts and the disposable test D1 database.
 9. Run `!queue` in Twitch.
 10. Run `/board` in the Discord staff channel.
 11. Confirm that each non-empty mode has a visible raid.
-12. Start one streamer-led raid.
-13. Confirm that the Discord call shows the mode and map.
-14. Confirm that the Twitch call shows the mode and map.
-15. Record one raid result.
-16. Confirm that the raid state changes correctly.
+12. Select **Review a raid** for one streamer-led raid.
+13. Confirm that the raid stays planned at attempt zero, no leader is assigned, and no requester receives a call.
+14. Select **Call and start raid**.
+15. Confirm that the caller becomes the leader.
+16. Confirm that the Discord call shows the mode and map.
+17. Confirm that the Twitch call shows the mode and map.
+18. Record one raid result.
+19. Confirm that the raid state changes correctly.
 
 Do not publish the release if one step fails.

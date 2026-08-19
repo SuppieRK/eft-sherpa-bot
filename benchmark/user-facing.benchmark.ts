@@ -398,7 +398,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}board-refresh-${sample}`,
-            customId: "board:v5:refresh",
+            customId: "board:v6:refresh",
           }),
           async verify(response) {
             expect(response.status).toBe(200);
@@ -409,12 +409,12 @@ function operationDefinitions(input: {
       },
     },
     {
-      id: "discord.raid.start.streamer",
-      label: "Discord streamer-led raid start",
+      id: "discord.raid.review",
+      label: "Discord planned raid review",
       async prepare(seed, sample) {
         const raid = await seedOperationRaid({
           seed,
-          suffix: "start",
+          suffix: "review",
           memberCount: 3,
           state: "planned",
           streamerDiscordUserId: streamerId,
@@ -423,9 +423,53 @@ function operationDefinitions(input: {
         });
         return {
           request: await component({
-            id: `${OPERATION_PREFIX}raid-start-${sample}`,
-            customId: "board:v5:start",
+            id: `${OPERATION_PREFIX}raid-review-${sample}`,
+            customId: "board:v6:review",
             values: [String(raid.groupId)],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const row = await env.DB.prepare(
+              `SELECT state, automatic_fill AS automaticFill, attempt_count AS attemptCount,
+                      leader_discord_user_id AS leaderId,
+                      discord_call_status AS discordCallStatus,
+                      twitch_call_status AS twitchCallStatus, staff_message_id AS staffMessageId
+               FROM raid_groups WHERE id = ?`,
+            )
+              .bind(raid.groupId)
+              .first<Record<string, number | string | null>>();
+            expect(row).toEqual({
+              state: 0,
+              automaticFill: 0,
+              attemptCount: 0,
+              leaderId: null,
+              discordCallStatus: 3,
+              twitchCallStatus: 3,
+              staffMessageId: `${OPERATION_PREFIX}message-1`,
+            });
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.raid.call-start.streamer",
+      label: "Discord streamer-led Call and start raid",
+      async prepare(seed, sample) {
+        const raid = await seedOperationRaid({
+          seed,
+          suffix: "call_start",
+          memberCount: 3,
+          state: "planned",
+          streamerDiscordUserId: streamerId,
+          isPriority: true,
+          visibleFirst: true,
+          staffMessageId: `${OPERATION_PREFIX}detail-call-start`,
+        });
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}raid-call-start-${sample}`,
+            customId: `raid:v2:call:${raid.groupId}`,
           }),
           async verify(response) {
             expect(response.status).toBe(200);
@@ -456,7 +500,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}raid-helped-${sample}`,
-            customId: `raid:v1:result:${raid.groupId}`,
+            customId: `raid:v2:result:${raid.groupId}`,
             values: ["helped"],
           }),
           async verify(response) {
@@ -486,7 +530,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}postpone-${last ? "last" : "remaining"}-${sample}`,
-            customId: `raid:v1:postpone:${raid.groupId}`,
+            customId: `raid:v2:postpone:${raid.groupId}`,
             values: [String(requestId)],
           }),
           async verify(response) {
@@ -522,7 +566,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}remove-${last ? "last" : "remaining"}-${sample}`,
-            customId: `raid:v1:remove:${raid.groupId}`,
+            customId: `raid:v2:remove:${raid.groupId}`,
             values: [String(requestId)],
           }),
           async verify(response) {

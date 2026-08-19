@@ -4,8 +4,8 @@ import type { StaffBoardRaid, StaffBoardSnapshot } from "../../domain/staff-boar
 import { discordMessageUrl } from "./messages";
 
 export const DISCORD_STAFF_BOARD_COMMAND = "board";
-const BOARD_PREFIX = "board:v5";
-const RAID_PREFIX = "raid:v1";
+const BOARD_PREFIX = "board:v6";
+const RAID_PREFIX = "raid:v2";
 
 interface Button {
   type: 2;
@@ -54,20 +54,28 @@ export interface DiscordBotMessage {
   components: ActionRow[];
 }
 
-export type StaffBoardAction = { action: "refresh" | "start" };
-export type RaidMessageAction = { action: "result" | "postpone" | "remove"; raidId: number };
+export type StaffBoardAction = { action: "refresh" | "review" | "retired_start" };
+export type RaidMessageAction = {
+  action: "call" | "result" | "postpone" | "remove";
+  raidId: number;
+};
 
 export function parseStaffBoardAction(value: string): StaffBoardAction | undefined {
-  const match = /^board:v5:(refresh|start)$/.exec(value);
-  return match === null ? undefined : { action: match[1] as StaffBoardAction["action"] };
+  const current = /^board:v6:(refresh|review)$/.exec(value);
+  if (current !== null) return { action: current[1] as "refresh" | "review" };
+  if (value === "board:v5:refresh") return { action: "refresh" };
+  if (value === "board:v5:start") return { action: "retired_start" };
+  return undefined;
 }
 
 export function parseRaidMessageAction(value: string): RaidMessageAction | undefined {
-  const match = /^raid:v1:(result|postpone|remove):(\d+)$/.exec(value);
-  if (match === null) return undefined;
-  const raidId = Number(match[2]);
+  const match = /^raid:v2:(call|result|postpone|remove):(\d+)$/.exec(value);
+  const legacy = /^raid:v1:(result|postpone|remove):(\d+)$/.exec(value);
+  const selected = match ?? legacy;
+  if (selected === null) return undefined;
+  const raidId = Number(selected[2]);
   return Number.isSafeInteger(raidId) && raidId > 0
-    ? { action: match[1] as RaidMessageAction["action"], raidId }
+    ? { action: selected[1] as RaidMessageAction["action"], raidId }
     : undefined;
 }
 
@@ -96,6 +104,10 @@ function participantTags(raid: StaffBoardRaid): string {
     .slice(0, 100);
 }
 
+function boardRequesterTags(raid: StaffBoardRaid): string {
+  return raid.members.map((member) => `@${escapeMarkdown(member.twitchLogin)}`).join(" · ");
+}
+
 function boardRaidField(
   raid: StaffBoardRaid,
   displayIndex: number,
@@ -105,17 +117,17 @@ function boardRaidField(
 ): EmbedField {
   const leader =
     raid.leaderDiscordUserId === undefined
-      ? "Leader: claim when starting"
+      ? "Leader: assigned when called"
       : raid.state === "planned"
         ? `Reserved leader: <@${raid.leaderDiscordUserId}>`
         : `Leader: <@${raid.leaderDiscordUserId}>`;
   const details =
-    raid.state !== "active" || raid.staffMessageId === undefined
+    raid.staffMessageId === undefined
       ? ""
       : ` · [Raid details](${discordMessageUrl(guildId, staffChannelId, raid.staffMessageId)})`;
   return {
-    name: `${displayIndex + 1}. ${raidName(raid)} (${occupancy(raid)})`,
-    value: `${raid.state === "active" ? "Active" : "Planned"} · Attempt ${raid.attemptCount}/${attemptLimit} · ${leader}${details}`,
+    name: `${displayIndex + 1}. ${raidName(raid)}`,
+    value: `Requesters: ${boardRequesterTags(raid)}\n${raid.state === "active" ? "Active" : "Planned"} · Attempt ${raid.attemptCount}/${attemptLimit} · ${leader}${details}`,
     inline: false,
   };
 }
@@ -162,8 +174,8 @@ export function renderStaffBoard(
       components: [
         {
           type: 3,
-          custom_id: `${BOARD_PREFIX}:start`,
-          placeholder: "Start a raid",
+          custom_id: `${BOARD_PREFIX}:review`,
+          placeholder: "Review a raid",
           min_values: 1,
           max_values: 1,
           options: planned.map(({ raid, queueOrdinal }) => ({
@@ -193,12 +205,14 @@ export function renderStaffBoard(
 export function renderRaidMessage(
   raid: StaffBoardRaid,
   attemptLimit: number,
-  pingLeader = false,
+  notificationUserId?: string,
 ): DiscordBotMessage {
   const terminal = raid.state === "completed" || raid.state === "canceled";
   const status = terminal
     ? `Result: ${raid.outcome === "helped" ? "Helped" : "Not run"}`
-    : `Status: Attempt ${raid.attemptCount}/${attemptLimit} active`;
+    : raid.state === "planned"
+      ? `Status: Planned review · Attempt ${raid.attemptCount}/${attemptLimit}`
+      : `Status: Attempt ${raid.attemptCount}/${attemptLimit} active`;
   const fields: EmbedField[] = raid.members.map((member) => {
     const identity = [
       `Twitch: @${escapeMarkdown(member.twitchLogin)}`,
@@ -213,7 +227,19 @@ export function renderRaidMessage(
     fields.push({ name: "No current requesters", value: "This raid will not run.", inline: false });
   }
   const components: ActionRow[] = [];
-  if (!terminal) {
+  if (raid.state === "planned") {
+    components.push({
+      type: 1,
+      components: [
+        {
+          type: 2,
+          style: 1,
+          custom_id: `${RAID_PREFIX}:call:${raid.id}`,
+          label: "Call and start raid",
+        },
+      ],
+    });
+  } else if (!terminal) {
     const finalAttempt = raid.attemptCount >= attemptLimit;
     const outcomes: SelectOption[] = [
       {
@@ -249,60 +275,61 @@ export function renderRaidMessage(
         },
       ],
     });
-    if (raid.members.length > 0) {
-      components.push({
-        type: 1,
-        components: [
-          {
-            type: 3,
-            custom_id: `${RAID_PREFIX}:postpone:${raid.id}`,
-            placeholder: "Postpone requester",
-            min_values: 1,
-            max_values: 1,
-            options: raid.members.map((member) => ({
-              label: `@${member.twitchLogin}`.slice(0, 100),
-              value: String(member.requestId),
-              description: member.objective.slice(0, 100),
-            })),
-          },
-        ],
-      });
-      components.push({
-        type: 1,
-        components: [
-          {
-            type: 3,
-            custom_id: `${RAID_PREFIX}:remove:${raid.id}`,
-            placeholder: "Remove requester",
-            min_values: 1,
-            max_values: 1,
-            options: raid.members.map((member) => ({
-              label: `@${member.twitchLogin}`.slice(0, 100),
-              value: String(member.requestId),
-              description: member.objective.slice(0, 100),
-            })),
-          },
-        ],
-      });
-    }
+  }
+  if (!terminal && raid.members.length > 0) {
+    components.push({
+      type: 1,
+      components: [
+        {
+          type: 3,
+          custom_id: `${RAID_PREFIX}:postpone:${raid.id}`,
+          placeholder:
+            raid.state === "planned" ? "Move requester to next raid" : "Postpone requester",
+          min_values: 1,
+          max_values: 1,
+          options: raid.members.map((member) => ({
+            label: `@${member.twitchLogin}`.slice(0, 100),
+            value: String(member.requestId),
+            description: member.objective.slice(0, 100),
+          })),
+        },
+      ],
+    });
+    components.push({
+      type: 1,
+      components: [
+        {
+          type: 3,
+          custom_id: `${RAID_PREFIX}:remove:${raid.id}`,
+          placeholder: "Remove requester",
+          min_values: 1,
+          max_values: 1,
+          options: raid.members.map((member) => ({
+            label: `@${member.twitchLogin}`.slice(0, 100),
+            value: String(member.requestId),
+            description: member.objective.slice(0, 100),
+          })),
+        },
+      ],
+    });
   }
   return {
     content:
-      raid.leaderDiscordUserId === undefined
-        ? ""
-        : `<@${raid.leaderDiscordUserId}> this raid is ready.`,
+      notificationUserId !== undefined
+        ? `<@${notificationUserId}> review this proposed raid.`
+        : raid.state === "active" && raid.leaderDiscordUserId !== undefined
+          ? `<@${raid.leaderDiscordUserId}> this raid is ready.`
+          : "",
     embeds: [
       {
         title: `${raidName(raid)} raid`,
-        description: `${status}\nParty: ${occupancy(raid)}\nLeader: ${raid.leaderDiscordUserId === undefined ? "Not assigned" : `<@${raid.leaderDiscordUserId}>`}\nCalls: Discord ${raid.discordCallStatus} · Twitch ${raid.twitchCallStatus}`,
+        description: `${status}\nParty: ${occupancy(raid)}\nLeader: ${raid.leaderDiscordUserId === undefined ? "Not assigned" : `<@${raid.leaderDiscordUserId}>`}\n${raid.state === "planned" ? "Calls: No requesters have been called." : `Calls: Discord ${raid.discordCallStatus} · Twitch ${raid.twitchCallStatus}`}`,
         fields,
       },
     ],
     allowed_mentions: {
       parse: [],
-      ...(pingLeader && raid.leaderDiscordUserId !== undefined
-        ? { users: [raid.leaderDiscordUserId] }
-        : {}),
+      ...(notificationUserId === undefined ? {} : { users: [notificationUserId] }),
     },
     components,
   };

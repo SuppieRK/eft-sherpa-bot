@@ -139,6 +139,13 @@ async function seedActiveRaid(input: {
     recipientLimit: config.policies.recipientLimit,
   });
   const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+  await repo.reviewRaid({ groupId: planned.id, changedAt });
+  const reviewMessageId = input.staffMessageId ?? `seed-review-${planned.id}`;
+  await repo.compareAndSetRaidStaffMessage({
+    groupId: planned.id,
+    messageId: reviewMessageId,
+    changedAt,
+  });
   let raid = await repo.startRaid({
     groupId: planned.id,
     leaderDiscordUserId: "volunteer",
@@ -155,12 +162,40 @@ async function seedActiveRaid(input: {
       changedAt,
     });
   }
-  if (input.staffMessageId !== undefined) {
-    await repo.setRaidStaffMessage(raid.id, input.staffMessageId, changedAt);
+  if (input.staffMessageId === undefined) {
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: raid.id,
+      expectedMessageId: reviewMessageId,
+      changedAt,
+    });
     raid = (await repo.getRaid(raid.id)) as StaffBoardRaid;
   }
   await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
   return { repo, raid };
+}
+
+async function activateRaid(input: {
+  repo: D1MvpRepository;
+  raid: StaffBoardRaid;
+  leaderDiscordUserId: string;
+  leaderType?: "streamer" | "volunteer";
+  requestTwitchCall?: boolean;
+  staffMessageId: string;
+}): Promise<StaffBoardRaid> {
+  await input.repo.reviewRaid({ groupId: input.raid.id, changedAt });
+  await input.repo.compareAndSetRaidStaffMessage({
+    groupId: input.raid.id,
+    messageId: input.staffMessageId,
+    changedAt,
+  });
+  return input.repo.startRaid({
+    groupId: input.raid.id,
+    leaderDiscordUserId: input.leaderDiscordUserId,
+    leaderType: input.leaderType ?? "volunteer",
+    requestTwitchCall: input.requestTwitchCall ?? false,
+    canOverrideReservedLeader: input.leaderType === "streamer",
+    changedAt,
+  });
 }
 
 async function refreshBoard(interactionId: string): Promise<Response> {
@@ -367,7 +402,7 @@ describe("Discord progressive raid workflow", () => {
     });
   });
 
-  it("creates one canonical board, starts a volunteer-led raid, and advances its attempt", async () => {
+  it("reviews one raid before a volunteer calls, starts, and advances its attempt", async () => {
     await worker.fetch(
       await signedRequest(requestModal("create-request")),
       testEnvironment,
@@ -393,13 +428,51 @@ describe("Discord progressive raid workflow", () => {
     const repo = new D1MvpRepository(env.DB);
     const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id;
     expect(raidId).toBeDefined();
+    const review = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "review",
+          type: 3,
+          data: { custom_id: "board:v6:review", values: [String(raidId)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(review.status).toBe(200);
+    expect(await review.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("/message-2") },
+    });
+    expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
+      false,
+    );
+    expect(await repo.getRaid(raidId ?? 0)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      discordCallStatus: "not_requested",
+      twitchCallStatus: "not_requested",
+      staffMessageId: "message-2",
+    });
+    const reviewMessage = outbound.find(
+      (request) =>
+        request.method === "POST" &&
+        request.url.includes(`/channels/${config.discord.staffChannelId}/messages`) &&
+        JSON.stringify(request.body).includes("review this proposed raid"),
+    );
+    expect(reviewMessage?.body).toMatchObject({
+      content: "<@volunteer> review this proposed raid.",
+      allowed_mentions: { parse: [], users: ["volunteer"] },
+    });
     const start = await worker.fetch(
       await signedRequest(
         context({
           ...staff,
           id: "start",
           type: 3,
-          data: { custom_id: "board:v5:start", values: [String(raidId)] },
+          data: { custom_id: `raid:v2:call:${raidId}`, values: [] },
         }),
       ),
       testEnvironment,
@@ -424,7 +497,7 @@ describe("Discord progressive raid workflow", () => {
       leaderDiscordUserId: "volunteer",
       discordCallStatus: "sent",
       twitchCallStatus: "not_requested",
-      staffMessageId: "message-3",
+      staffMessageId: "message-2",
     });
     const result = await worker.fetch(
       await signedRequest(
@@ -432,7 +505,7 @@ describe("Discord progressive raid workflow", () => {
           ...staff,
           id: "attempt-two",
           type: 3,
-          data: { custom_id: `raid:v1:result:${raidId}`, values: ["unsuccessful"] },
+          data: { custom_id: `raid:v2:result:${raidId}`, values: ["unsuccessful"] },
         }),
       ),
       testEnvironment,
@@ -453,6 +526,183 @@ describe("Discord progressive raid workflow", () => {
     ).toHaveLength(1);
   });
 
+  it("reuses one review message and resolves concurrent review candidates", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("concurrent-review-request")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id ?? 0;
+    const reviewRequest = async (id: string, userId: string) =>
+      worker.fetch(
+        await signedRequest(
+          context({
+            channel_id: config.discord.staffChannelId,
+            member: {
+              user: { id: userId, username: userId },
+              roles: [config.discord.volunteerRoleId],
+            },
+            id,
+            type: 3,
+            data: { custom_id: "board:v6:review", values: [String(raidId)] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+    createBarrierTarget = 2;
+
+    const responses = await Promise.all([
+      reviewRequest("concurrent-review-one", "volunteer-one"),
+      reviewRequest("concurrent-review-two", "volunteer-two"),
+    ]);
+
+    const creates = outbound.filter((request) => request.method === "POST");
+    const deletes = outbound.filter((request) => request.method === "DELETE");
+    expect(creates).toHaveLength(2);
+    expect(deletes).toHaveLength(1);
+    const retained = await repo.getRaid(raidId);
+    expect(retained).toMatchObject({ state: "planned", automaticFill: false });
+    expect(retained?.staffMessageId).toMatch(/^message-[12]$/);
+    for (const response of responses) {
+      expect(await response.json()).toMatchObject({
+        type: 4,
+        data: { content: expect.stringContaining(`/${retained?.staffMessageId}`) },
+      });
+    }
+
+    outbound = [];
+    const repeated = await reviewRequest("repeat-review", "volunteer-one");
+    expect(await repeated.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining(`/${retained?.staffMessageId}`) },
+    });
+    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
+  });
+
+  it("moves a requester during review without calling or starting the raid", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("review-move-first")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "review-move-second",
+      twitchUserId: "review-move-twitch",
+      twitchLogin: "second_viewer",
+      gameMode: "pve",
+      inGameName: "Second PMC",
+      mapId: "customs",
+      objective: "Second goal",
+      observedAt: changedAt,
+    });
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const staff = {
+      channel_id: config.discord.staffChannelId,
+      member: {
+        user: { id: "volunteer", username: "Volunteer" },
+        roles: [config.discord.volunteerRoleId],
+      },
+    };
+    await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "review-before-move",
+          type: 3,
+          data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    outbound = [];
+    const movedRequestId = planned.members[1]?.requestId;
+    const moved = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "move-before-call",
+          type: 3,
+          data: {
+            custom_id: `raid:v2:postpone:${planned.id}`,
+            values: [String(movedRequestId)],
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await moved.json()).toMatchObject({
+      type: 7,
+      data: {
+        embeds: [
+          expect.objectContaining({ description: expect.stringContaining("Planned review") }),
+        ],
+      },
+    });
+    const source = await repo.getRaid(planned.id);
+    expect(source).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      discordCallStatus: "not_requested",
+      twitchCallStatus: "not_requested",
+    });
+    expect(source?.members).toHaveLength(1);
+    expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
+      false,
+    );
+  });
+
+  it("refresh replaces retired board controls with the current review controls", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("refresh-controls-request")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+
+    const response = await refreshBoard("refresh-old-controls");
+    const body = JSON.stringify(await response.json());
+    expect(body).toContain("board:v6:refresh");
+    expect(body).toContain("board:v6:review");
+    expect(body).toContain("Review a raid");
+    expect(body).not.toContain("board:v5:start");
+    expect(body).not.toContain("Start a raid");
+  });
+
+  it("rejects the retired immediate-start selector with refresh guidance", async () => {
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          channel_id: config.discord.staffChannelId,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          id: "retired-start",
+          type: 3,
+          data: { custom_id: "board:v5:start", values: ["1"] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("Use Refresh") },
+    });
+  });
+
   it("names the game mode in streamer-led Discord and Twitch calls", async () => {
     await worker.fetch(
       await signedRequest(requestModal("streamer-call-request", "pvp")),
@@ -464,14 +714,29 @@ describe("Discord progressive raid workflow", () => {
     const twitchFetch = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(Response.json({ data: [{ message_id: "call-message", is_sent: true }] }));
+    const staff = {
+      channel_id: config.discord.staffChannelId,
+      member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+    };
+    await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "streamer-review",
+          type: 3,
+          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
     const response = await worker.fetch(
       await signedRequest(
         context({
-          channel_id: config.discord.staffChannelId,
-          member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+          ...staff,
           id: "streamer-start",
           type: 3,
-          data: { custom_id: "board:v5:start", values: [String(raid.id)] },
+          data: { custom_id: `raid:v2:call:${raid.id}`, values: [] },
         }),
       ),
       testEnvironment,
@@ -484,6 +749,67 @@ describe("Discord progressive raid workflow", () => {
     expect(discordCall?.body.content).toContain("Starting PvP · Customs");
     const twitchBody = twitchFetch.mock.calls[0]?.[1]?.body;
     expect(typeof twitchBody === "string" ? twitchBody : "").toContain("Starting PvP · Customs");
+  });
+
+  it("keeps the raid active and reports partial call delivery failure", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("partial-call-request")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const staff = {
+      channel_id: config.discord.staffChannelId,
+      member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+    };
+    await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "partial-call-review",
+          type: 3,
+          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    createResponseStatus = 500;
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ data: [{ message_id: "partial-call", is_sent: true }] }));
+
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "partial-call-start",
+          type: 3,
+          data: { custom_id: `raid:v2:call:${raid.id}`, values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+
+    expect(await response.json()).toMatchObject({
+      type: 7,
+      data: {
+        embeds: [
+          expect.objectContaining({
+            description: expect.stringContaining("Discord failed · Twitch sent"),
+          }),
+        ],
+      },
+    });
+    expect(await repo.getRaid(raid.id)).toMatchObject({
+      state: "active",
+      leaderDiscordUserId: config.discord.streamerUserId,
+      discordCallStatus: "failed",
+      twitchCallStatus: "sent",
+    });
+    twitchFetch.mockRestore();
   });
 
   it("deletes the obsolete details message after recording Helped", async () => {
@@ -623,6 +949,181 @@ describe("Discord progressive raid workflow", () => {
     expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/deleted-detail");
   });
 
+  it("recreates a deleted planned review without assigning a leader or calling users", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("repair-planned-review")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "deleted-planned-detail",
+      changedAt,
+    });
+    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    messageReadStatuses.set("deleted-planned-detail", 404);
+    outbound = [];
+
+    await refreshBoard("refresh-deleted-planned");
+
+    const repaired = await repo.getRaid(planned.id);
+    expect(repaired).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      discordCallStatus: "not_requested",
+      twitchCallStatus: "not_requested",
+      staffMessageId: "message-1",
+    });
+    expect(repaired?.leaderDiscordUserId).toBeUndefined();
+    const replacement = outbound.find((request) => request.method === "POST");
+    expect(JSON.stringify(replacement?.body)).toContain("Calls: No requesters have been called.");
+    expect(replacement?.body).toMatchObject({ allowed_mentions: { parse: [] } });
+    expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
+      false,
+    );
+  });
+
+  it("tracks multiple raid detail messages through recovery and independent actions", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (const [index, mapId] of ["customs", "woods", "shoreline"].entries()) {
+      await repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: `multi-detail-${mapId}`,
+        twitchUserId: `multi-twitch-${index}`,
+        twitchLogin: `multi_viewer_${index}`,
+        gameMode: "pve",
+        inGameName: `Multi PMC ${index}`,
+        mapId,
+        objective: `Goal for ${mapId}`,
+        observedAt: new Date(changedAt.getTime() + index),
+      });
+    }
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    const staff = {
+      channel_id: config.discord.staffChannelId,
+      member: {
+        user: { id: "volunteer", username: "Volunteer" },
+        roles: [config.discord.volunteerRoleId],
+      },
+    };
+    const component = async (id: string, customId: string, values: string[] = []) => {
+      const executionContext = createExecutionContext();
+      const response = await worker.fetch(
+        await signedRequest(
+          context({ ...staff, id, type: 3, data: { custom_id: customId, values } }),
+        ),
+        testEnvironment,
+        executionContext,
+      );
+      await waitOnExecutionContext(executionContext);
+      return response;
+    };
+    const initialRaids = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids;
+    expect(initialRaids).toHaveLength(3);
+
+    for (const raid of initialRaids) {
+      const response = await component(`multi-review-${raid.mapId}`, "board:v6:review", [
+        String(raid.id),
+      ]);
+      expect(response.status).toBe(200);
+    }
+
+    const reviewed = await Promise.all(initialRaids.map((raid) => repo.getRaid(raid.id)));
+    const reviewedByMap = new Map(reviewed.map((raid) => [raid?.mapId, raid]));
+    const messageIds = reviewed.map((raid) => raid?.staffMessageId);
+    expect(new Set(messageIds).size).toBe(3);
+    expect(messageIds.every((messageId) => messageId !== undefined)).toBe(true);
+    for (const raid of reviewed) {
+      expect(raid).toMatchObject({
+        state: "planned",
+        automaticFill: false,
+        attemptCount: 0,
+        discordCallStatus: "not_requested",
+        twitchCallStatus: "not_requested",
+      });
+      const message = outbound.find(
+        (request) =>
+          request.method === "POST" &&
+          JSON.stringify(request.body).includes(`Goal for ${raid?.mapId}`),
+      );
+      expect(JSON.stringify(message?.body)).toContain(
+        raid?.mapId === "customs" ? "Customs" : raid?.mapId === "woods" ? "Woods" : "Shoreline",
+      );
+    }
+
+    const customs = reviewedByMap.get("customs") as StaffBoardRaid;
+    const woods = reviewedByMap.get("woods") as StaffBoardRaid;
+    const shoreline = reviewedByMap.get("shoreline") as StaffBoardRaid;
+    messageReadStatuses.set(woods.staffMessageId as string, 404);
+    outbound = [];
+    await refreshBoard("multi-detail-refresh");
+
+    const recoveredCustoms = (await repo.getRaid(customs.id)) as StaffBoardRaid;
+    const recoveredWoods = (await repo.getRaid(woods.id)) as StaffBoardRaid;
+    const recoveredShoreline = (await repo.getRaid(shoreline.id)) as StaffBoardRaid;
+    expect(recoveredCustoms.staffMessageId).toBe(customs.staffMessageId);
+    expect(recoveredShoreline.staffMessageId).toBe(shoreline.staffMessageId);
+    expect(recoveredWoods.staffMessageId).not.toBe(woods.staffMessageId);
+    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(1);
+    const refreshedBoard = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
+    const refreshedBody = JSON.stringify(refreshedBoard?.body);
+    expect(refreshedBody).toContain(`/${recoveredCustoms.staffMessageId}`);
+    expect(refreshedBody).toContain(`/${recoveredWoods.staffMessageId}`);
+    expect(refreshedBody).toContain(`/${recoveredShoreline.staffMessageId}`);
+    expect(refreshedBody).not.toContain(`/${woods.staffMessageId}`);
+
+    outbound = [];
+    await component("multi-start-customs", `raid:v2:call:${customs.id}`);
+    expect(await repo.getRaid(customs.id)).toMatchObject({
+      state: "active",
+      leaderDiscordUserId: "volunteer",
+      attemptCount: 1,
+    });
+    expect(await repo.getRaid(woods.id)).toMatchObject({ state: "planned", attemptCount: 0 });
+    expect(await repo.getRaid(shoreline.id)).toMatchObject({ state: "planned", attemptCount: 0 });
+
+    await component("multi-remove-shoreline", `raid:v2:remove:${shoreline.id}`, [
+      String(shoreline.members[0]?.requestId),
+    ]);
+    expect(await repo.getRaid(shoreline.id)).toMatchObject({
+      state: "canceled",
+      outcome: "not_run",
+    });
+    expect(await repo.getRaid(customs.id)).toMatchObject({ state: "active", attemptCount: 1 });
+
+    await component("multi-move-woods", `raid:v2:postpone:${woods.id}`, [
+      String(woods.members[0]?.requestId),
+    ]);
+    expect(await repo.getRaid(woods.id)).toMatchObject({ state: "canceled", outcome: "not_run" });
+    const woodsFollowUp = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids.find(
+      (raid) => raid.mapId === "woods",
+    );
+    expect(woodsFollowUp).toMatchObject({ state: "planned", automaticFill: true });
+
+    await component("multi-help-customs", `raid:v2:result:${customs.id}`, ["helped"]);
+    expect(await repo.getRaid(customs.id)).toMatchObject({ state: "completed", outcome: "helped" });
+    const deletedUrls = outbound
+      .filter((request) => request.method === "DELETE")
+      .map((request) => request.url);
+    expect(deletedUrls.some((url) => url.endsWith(`/${recoveredCustoms.staffMessageId}`))).toBe(
+      true,
+    );
+    expect(deletedUrls.some((url) => url.endsWith(`/${recoveredWoods.staffMessageId}`))).toBe(true);
+    expect(deletedUrls.some((url) => url.endsWith(`/${recoveredShoreline.staffMessageId}`))).toBe(
+      true,
+    );
+  });
+
   it("retains an active message identity on a temporary Discord read failure", async () => {
     const { repo, raid } = await seedActiveRaid({
       interactionId: "retain-temporary",
@@ -676,14 +1177,12 @@ describe("Discord progressive raid workflow", () => {
     );
     const repo = new D1MvpRepository(env.DB);
     const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
-    await repo.startRaid({
-      groupId: raid.id,
+    await activateRaid({
+      repo,
+      raid,
       leaderDiscordUserId: "volunteer",
-      leaderType: "volunteer",
-      requestTwitchCall: false,
-      changedAt,
+      staffMessageId: "postpone-last-message",
     });
-    await repo.setRaidStaffMessage(raid.id, "postpone-last-message", changedAt);
     const response = await worker.fetch(
       await signedRequest(
         context({
@@ -729,14 +1228,12 @@ describe("Discord progressive raid workflow", () => {
     );
     const repo = new D1MvpRepository(env.DB);
     const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
-    await repo.startRaid({
-      groupId: raid.id,
+    await activateRaid({
+      repo,
+      raid,
       leaderDiscordUserId: "volunteer",
-      leaderType: "volunteer",
-      requestTwitchCall: false,
-      changedAt,
+      staffMessageId: "remove-last-message",
     });
-    await repo.setRaidStaffMessage(raid.id, "remove-last-message", changedAt);
     deleteResponseStatus = 500;
     const response = await worker.fetch(
       await signedRequest(
@@ -786,14 +1283,12 @@ describe("Discord progressive raid workflow", () => {
     );
     const repo = new D1MvpRepository(env.DB);
     const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
-    await repo.startRaid({
-      groupId: raid.id,
+    await activateRaid({
+      repo,
+      raid,
       leaderDiscordUserId: "volunteer",
-      leaderType: "volunteer",
-      requestTwitchCall: false,
-      changedAt,
+      staffMessageId: "postpone-whole-message",
     });
-    await repo.setRaidStaffMessage(raid.id, "postpone-whole-message", changedAt);
     const response = await worker.fetch(
       await signedRequest(
         context({
@@ -843,12 +1338,12 @@ describe("Discord progressive raid workflow", () => {
     );
     const repo = new D1MvpRepository(env.DB);
     const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id ?? 0;
-    await repo.startRaid({
-      groupId: raidId,
+    const raid = (await repo.getRaid(raidId)) as StaffBoardRaid;
+    await activateRaid({
+      repo,
+      raid,
       leaderDiscordUserId: "assigned-leader",
-      leaderType: "volunteer",
-      requestTwitchCall: false,
-      changedAt,
+      staffMessageId: "assigned-detail",
     });
     const response = await worker.fetch(
       await signedRequest(

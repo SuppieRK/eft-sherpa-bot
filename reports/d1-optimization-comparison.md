@@ -97,3 +97,16 @@ The added writes come from the mode-aware request and raid indexes and from comp
 | 100,000 | 61,407,232 | 64,266,240 | +4.66% |
 
 The 100,000-request database adds about 2.73 MiB for two required mode columns and three mode-aware indexes. The increase is accepted because it enforces mode-safe uniqueness, grouping, and bounded fair board reads. Wall-time changes are local observations; D1 row and write counts remain the release decision signals.
+
+## Pre-call Review Comparison
+
+The review-first candidate replaces one immediate-start operation with two deliberate user operations. **Review a raid** freezes the proposed party and stores its detail-message identity. **Call and start raid** later assigns the caller as leader, starts attempt one, and sends the calls. The prior tracked report is the immediate-start baseline. Both reports use the same fully local D1 benchmark guard, scales, warmups, and samples.
+
+| Active requests | Prior immediate-start rows read | Review rows read | Call/start rows read | Two-step total rows read | Prior rows written | Two-step rows written |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 211 | 184 | 210 | 394 | 10 | 13 |
+| 1,000 | 220 | 193 | 219 | 412 | 10 | 13 |
+| 10,000 | 220 | 193 | 219 | 412 | 10 | 13 |
+| 100,000 | 224 | 197 | 223 | 420 | 10 | 13 |
+
+The additional cost is the new staff confirmation step, not scale-dependent query growth. Review reads increase by 13 rows and call/start reads increase by 13 rows from 100 to 100,000 active requests. Call/start uses fewer reads and writes than the old immediate start at every scale. The complete two-step workflow adds three writes for the frozen review state and message identity. This cost is accepted because the review step prevents calls before staff confirm the grouped requests.
