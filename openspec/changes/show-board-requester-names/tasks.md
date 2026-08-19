@@ -11,5 +11,5 @@
 ## 3. Verification and DEV delivery
 
 - [x] 3.1 Run formatting, lint, type checking, tests, and strict OpenSpec validation.
-- [ ] 3.2 Commit and push the verified change on the current branch.
-- [ ] 3.3 Deploy the committed revision to the existing DEV Worker with variables preserved and verify live health and authenticated diagnostics.
+- [x] 3.2 Commit and push the verified change on the current branch.
+- [x] 3.3 Deploy the committed revision to the existing DEV Worker with variables preserved and verify live health and authenticated diagnostics.
