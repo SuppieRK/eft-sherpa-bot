@@ -18,6 +18,7 @@ let messageSequence = 0;
 let deleteResponseStatus = 204;
 let createResponseStatus = 200;
 let messageReadStatuses = new Map<string, number>();
+let messagePatchStatuses = new Map<string, number>();
 let createBarrierTarget = 0;
 let createBarrierResolvers: Array<() => void> = [];
 let outbound: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
@@ -34,6 +35,10 @@ const discordFetcher = {
       return new Response(null, { status: deleteResponseStatus });
     }
     const existingId = /\/messages\/([^/]+)$/.exec(new URL(request.url).pathname)?.[1];
+    if (request.method === "PATCH" && existingId !== undefined) {
+      const status = messagePatchStatuses.get(existingId) ?? 200;
+      if (status !== 200) return new Response(null, { status });
+    }
     if (request.method === "GET" && existingId !== undefined) {
       const status = messageReadStatuses.get(existingId) ?? 200;
       return status === 200 ? Response.json({ id: existingId }) : new Response(null, { status });
@@ -198,6 +203,25 @@ async function activateRaid(input: {
   });
 }
 
+async function createRepositoryRequest(
+  repo: D1MvpRepository,
+  index: number,
+  mapId = "customs",
+): Promise<number> {
+  const created = await repo.createRequest({
+    sourcePlatform: "twitch",
+    sourceDeliveryId: `pull-delivery-${index}`,
+    twitchUserId: `pull-twitch-${index}`,
+    twitchLogin: `pull_viewer_${index}`,
+    gameMode: "pve",
+    inGameName: `Pull PMC ${index}`,
+    mapId,
+    objective: `Pull goal ${index}`,
+    observedAt: new Date(changedAt.getTime() + index),
+  });
+  return created.request.id;
+}
+
 async function refreshBoard(interactionId: string): Promise<Response> {
   const executionContext = createExecutionContext();
   const response = await worker.fetch(
@@ -272,6 +296,7 @@ beforeEach(async () => {
   deleteResponseStatus = 204;
   createResponseStatus = 200;
   messageReadStatuses = new Map();
+  messagePatchStatuses = new Map();
   createBarrierTarget = 0;
   createBarrierResolvers = [];
 });
@@ -1365,5 +1390,321 @@ describe("Discord progressive raid workflow", () => {
       data: { content: expect.stringContaining("Only this raid's leader") },
     });
     expect((await repo.getRaid(raidId))?.state).toBe("active");
+  });
+});
+
+describe("Discord requester pull-up workflow", () => {
+  function pullInteraction(input: {
+    id: string;
+    customId: string;
+    values?: string[];
+    discordUserId?: string;
+    roleIds?: string[];
+  }) {
+    return context({
+      channel_id: config.discord.staffChannelId,
+      member: {
+        user: { id: input.discordUserId ?? config.discord.streamerUserId, username: "Staff" },
+        roles: input.roleIds ?? [],
+      },
+      id: input.id,
+      type: 3,
+      data: { custom_id: input.customId, values: input.values ?? [] },
+    });
+  }
+
+  async function reviewedDestinationWithSource(input: {
+    requestCount?: number;
+    messageId: string;
+  }): Promise<{
+    repo: D1MvpRepository;
+    destination: StaffBoardRaid;
+    source: StaffBoardRaid;
+  }> {
+    const repo = new D1MvpRepository(env.DB);
+    for (let index = 1; index <= (input.requestCount ?? 5); index += 1) {
+      await createRepositoryRequest(repo, index);
+    }
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    await repo.reviewRaid({ groupId: first?.id as number, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: first?.id as number,
+      messageId: input.messageId,
+      changedAt,
+    });
+    const reviewed = (await repo.getRaid(first?.id as number)) as StaffBoardRaid;
+    await repo.removeRequester({
+      groupId: reviewed.id,
+      requestId: reviewed.members[0]?.requestId as number,
+      actionKey: `${input.messageId}-open-seat`,
+      changedAt,
+    });
+    await repo.setCanonicalBoardMessage({ messageId: "canonical-pull-board", changedAt });
+    return {
+      repo,
+      destination: (await repo.getRaid(reviewed.id)) as StaffBoardRaid,
+      source: source as StaffBoardRaid,
+    };
+  }
+
+  it("shows Twitch nicknames with goals and pulls without starting or calling", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "pull-detail",
+    });
+    const candidateResponse = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-candidates",
+          customId: `raid:v3:pull_candidates:${destination.id}`,
+          discordUserId: "volunteer",
+          roleIds: [config.discord.volunteerRoleId],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await candidateResponse.json()).toMatchObject({
+      type: 4,
+      data: {
+        flags: 64,
+        components: [
+          {
+            components: [
+              {
+                custom_id: `raid:v3:pull:${destination.id}:${source.id}`,
+                options: [
+                  {
+                    label: `@${source.members[0]?.twitchLogin}`,
+                    description: source.members[0]?.objective,
+                    value: String(source.members[0]?.requestId),
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    outbound = [];
+    const executionContext = createExecutionContext();
+    const pullResponse = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-selected",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+    expect(await pullResponse.json()).toMatchObject({
+      type: 7,
+      data: { content: "Requester pulled up. The empty source raid was closed." },
+    });
+    expect(outbound).toContainEqual(
+      expect.objectContaining({
+        method: "PATCH",
+        url: expect.stringContaining("/messages/pull-detail"),
+      }),
+    );
+    expect(outbound).toContainEqual(
+      expect.objectContaining({
+        method: "PATCH",
+        url: expect.stringContaining("/messages/canonical-pull-board"),
+      }),
+    );
+    expect(
+      outbound.some(
+        (request) =>
+          request.method === "POST" &&
+          request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+      ),
+    ).toBe(false);
+    expect(await repo.getRaid(destination.id)).toMatchObject({
+      state: "planned",
+      attemptCount: 0,
+      discordCallStatus: "not_requested",
+      twitchCallStatus: "not_requested",
+    });
+
+    const duplicate = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-selected",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await duplicate.json()).toMatchObject({
+      type: 4,
+      data: { content: "That action was already received." },
+    });
+  });
+
+  it("does not offer or move members of a concurrent volunteer-led active raid", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (let index = 1; index <= 9; index += 1) await createRepositoryRequest(repo, index);
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    const [first, volunteerPlanned, later] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const active = await activateRaid({
+      repo,
+      raid: volunteerPlanned as StaffBoardRaid,
+      leaderDiscordUserId: "volunteer",
+      staffMessageId: "volunteer-active-detail",
+    });
+    const activeRequestIds = active.members.map((member) => member.requestId);
+    await repo.reviewRaid({ groupId: first?.id as number, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: first?.id as number,
+      messageId: "streamer-review-detail",
+      changedAt,
+    });
+    const destination = (await repo.getRaid(first?.id as number)) as StaffBoardRaid;
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "streamer-review-open-seat",
+      changedAt,
+    });
+
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "active-source-excluded",
+          customId: `raid:v3:pull_candidates:${destination.id}`,
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const body = JSON.stringify(await response.json());
+    expect(body).toContain(`raid:v3:pull:${destination.id}:${later?.id}`);
+    for (const requestId of activeRequestIds) expect(body).not.toContain(`"value":"${requestId}"`);
+
+    await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-past-active-source",
+          customId: `raid:v3:pull:${destination.id}:${later?.id}`,
+          values: [String(later?.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect((await repo.getRaid(active.id))?.members.map((member) => member.requestId)).toEqual(
+      activeRequestIds,
+    );
+    expect((await repo.getRaid(active.id))?.state).toBe("active");
+    expect(
+      outbound.some((request) => request.url.includes("/messages/volunteer-active-detail")),
+    ).toBe(false);
+  });
+
+  it("reports when a non-fitting source remainder stays in place", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      requestCount: 10,
+      messageId: "retained-pull-detail",
+    });
+    const sourceRemainder = source.members.slice(1).map((member) => member.requestId);
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "retained-pull",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 7,
+      data: { content: "Requester pulled up. The remaining source raid stayed in place." },
+    });
+    expect((await repo.getRaid(source.id))?.members.map((member) => member.requestId)).toEqual(
+      sourceRemainder,
+    );
+  });
+
+  it("returns a short response when no safe source is available", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "no-source-pull-detail",
+    });
+    await repo.reviewRaid({ groupId: source.id, changedAt });
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "no-pull-source",
+          customId: `raid:v3:pull_candidates:${destination.id}`,
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "No later requester is available for this raid." },
+    });
+  });
+
+  it("repairs a manually deleted destination detail after a pull", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "deleted-pull-detail",
+    });
+    messagePatchStatuses.set("deleted-pull-detail", 404);
+    messageReadStatuses.set("deleted-pull-detail", 404);
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-deleted-detail",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 7,
+      data: { content: expect.stringContaining("Requester pulled up") },
+    });
+    const repaired = await repo.getRaid(destination.id);
+    expect(repaired?.staffMessageId).toMatch(/^message-/);
+    expect(repaired?.staffMessageId).not.toBe("deleted-pull-detail");
+  });
+
+  it("denies pull controls to a non-staff user", async () => {
+    const { destination } = await reviewedDestinationWithSource({
+      messageId: "denied-pull-detail",
+    });
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "denied-pull",
+          customId: `raid:v3:pull_candidates:${destination.id}`,
+          discordUserId: "viewer",
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Only the streamer or a volunteer sherpa can use these controls." },
+    });
   });
 });

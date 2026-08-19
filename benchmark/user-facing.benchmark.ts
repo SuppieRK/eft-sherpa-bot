@@ -140,6 +140,39 @@ function operationDefinitions(input: {
       eventSubSecret: "benchmark-eventsub-secret-is-long-enough",
       broadcasterUserId: config.twitch.broadcasterUserId,
     });
+  const seedPullFixture = async (seed: SeedState) => {
+    const destination = await seedOperationRaid({
+      seed,
+      suffix: "pull_destination",
+      fixtureOrdinal: 1,
+      memberCount: 2,
+      state: "planned",
+      streamerDiscordUserId: streamerId,
+      isPriority: true,
+      staffMessageId: `${OPERATION_PREFIX}detail-pull`,
+    });
+    const source = await seedOperationRaid({
+      seed,
+      suffix: "pull_source",
+      fixtureOrdinal: 2,
+      memberCount: 3,
+      state: "planned",
+      streamerDiscordUserId: streamerId,
+      automaticFill: true,
+      visibleFirst: true,
+    });
+    const pushTarget = await seedOperationRaid({
+      seed,
+      suffix: "pull_target",
+      fixtureOrdinal: 3,
+      memberCount: 1,
+      state: "planned",
+      streamerDiscordUserId: streamerId,
+      automaticFill: true,
+      visibleFirst: true,
+    });
+    return { destination, source, pushTarget };
+  };
   const queueDefinitions = (platform: "discord" | "twitch") =>
     ([10, 50, 90] as const).map<OperationDefinition>((percentile) => ({
       id: `${platform}.queue.p${percentile}`,
@@ -480,6 +513,65 @@ function operationDefinitions(input: {
               .first<{ state: number; leaderId: string }>();
             expect(row).toEqual({ state: 1, leaderId: streamerId });
             expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(true);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.requester.pull.candidates",
+      label: "Discord pull requester candidate selector",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}pull-candidates-${sample}`,
+            customId: `raid:v3:pull_candidates:${fixture.destination.groupId}`,
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const body = await responseText(response);
+            expect(body).toContain(
+              `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            );
+            expect(body).toContain("@op_pull_source_1");
+            expect(body).toContain("Benchmark goal 1");
+          },
+        };
+      },
+    },
+    {
+      id: "discord.requester.pull.with-push",
+      label: "Discord pull requester with bounded push-down",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        const selectedRequestId = fixture.source.requestIds[0] as number;
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}pull-with-push-${sample}`,
+            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            values: [String(selectedRequestId)],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("remaining source requesters moved");
+            const groups = await env.DB.prepare(
+              `SELECT id, state, current_member_count AS memberCount
+               FROM raid_groups WHERE id IN (?, ?, ?) ORDER BY id`,
+            )
+              .bind(fixture.destination.groupId, fixture.source.groupId, fixture.pushTarget.groupId)
+              .all<{ id: number; state: number; memberCount: number }>();
+            expect(groups.results).toEqual([
+              { id: fixture.destination.groupId, state: 0, memberCount: 3 },
+              { id: fixture.source.groupId, state: 3, memberCount: 0 },
+              { id: fixture.pushTarget.groupId, state: 0, memberCount: 3 },
+            ]);
+            const selected = await env.DB.prepare(
+              "SELECT is_priority AS isPriority FROM help_requests WHERE id = ?",
+            )
+              .bind(selectedRequestId)
+              .first<{ isPriority: number }>();
+            expect(selected?.isPriority).toBe(1);
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
           },
         };
       },

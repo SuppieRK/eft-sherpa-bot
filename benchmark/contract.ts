@@ -26,6 +26,8 @@ export const USER_OPERATION_IDS = [
   "discord.requester.postpone.last",
   "discord.requester.remove.remaining",
   "discord.requester.remove.last",
+  "discord.requester.pull.candidates",
+  "discord.requester.pull.with-push",
 ] as const;
 
 export type UserOperationId = (typeof USER_OPERATION_IDS)[number];
@@ -44,6 +46,7 @@ export const BENCHMARK_OPERATION_FAMILIES = [
   "raid:result",
   "raid:postpone-requester",
   "raid:remove-requester",
+  "raid:pull-requester",
 ] as const;
 
 export type BenchmarkOperationFamily = (typeof BENCHMARK_OPERATION_FAMILIES)[number];
@@ -71,4 +74,6 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "discord.requester.postpone.last": "raid:postpone-requester",
   "discord.requester.remove.remaining": "raid:remove-requester",
   "discord.requester.remove.last": "raid:remove-requester",
+  "discord.requester.pull.candidates": "raid:pull-requester",
+  "discord.requester.pull.with-push": "raid:pull-requester",
 };

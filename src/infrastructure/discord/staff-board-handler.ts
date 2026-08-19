@@ -24,6 +24,7 @@ import {
 import {
   parseRaidMessageAction,
   parseStaffBoardAction,
+  renderPullRequesterSelector,
   renderRaidMessage,
   renderStaffBoard,
   type DiscordBotMessage,
@@ -45,6 +46,13 @@ function ephemeral(content: string): Response {
   return Response.json({
     type: DISCORD_INTERACTION_RESPONSE_CHANNEL_MESSAGE,
     data: { content, flags: DISCORD_EPHEMERAL_MESSAGE_FLAG, allowed_mentions: { parse: [] } },
+  });
+}
+
+function ephemeralMessage(message: DiscordBotMessage): Response {
+  return Response.json({
+    type: DISCORD_INTERACTION_RESPONSE_CHANNEL_MESSAGE,
+    data: { ...message, flags: DISCORD_EPHEMERAL_MESSAGE_FLAG },
   });
 }
 
@@ -339,6 +347,26 @@ class StaffBoardHandler {
     }
   }
 
+  private async refreshPulledRaidMessage(raid: StaffBoardRaid): Promise<void> {
+    const { communityConfig, environment } = this.dependencies;
+    if (raid.staffMessageId === undefined) return;
+    try {
+      await updateDiscordMessage(
+        environment,
+        communityConfig.discord.staffChannelId,
+        raid.staffMessageId,
+        renderRaidMessage(raid, communityConfig.policies.attemptLimit),
+      );
+    } catch (error) {
+      if (!(error instanceof DiscordApiError) || error.status !== 404) throw error;
+      await reconcileRaidMessage({
+        ...this.dependencies,
+        raid,
+        repository: this.repository,
+      });
+    }
+  }
+
   async open(interaction: StaffInteraction): Promise<Response> {
     const { communityConfig } = this.dependencies;
     if (!hasAccess(interaction, communityConfig)) {
@@ -411,6 +439,35 @@ class StaffBoardHandler {
       const raid = await this.repository.getRaid(raidAction?.raidId ?? 0);
       if (raid === undefined) throw new RepositoryInvariantError("That raid no longer exists.");
       const isStreamer = interaction.discordUserId === communityConfig.discord.streamerUserId;
+      if (raidAction?.action === "pull_candidates") {
+        const candidates = await this.repository.getPullRequesterCandidates(raid.id);
+        if (candidates === undefined) {
+          return ephemeral("No later requester is available for this raid.");
+        }
+        return ephemeralMessage(renderPullRequesterSelector(raid, candidates.source));
+      }
+      if (raidAction?.action === "pull") {
+        const requestId = Number(selectedValue(interaction));
+        if (!Number.isSafeInteger(requestId) || requestId < 1) {
+          throw new RepositoryInvariantError("Choose a current requester.");
+        }
+        const pulled = await this.repository.pullRequester({
+          destinationGroupId: raid.id,
+          sourceGroupId: raidAction.sourceRaidId,
+          requestId,
+          actionKey: interaction.interactionId,
+          changedAt,
+        });
+        await this.refreshPulledRaidMessage(pulled.destination);
+        this.refreshBoardLater();
+        const result =
+          pulled.sourceDisposition === "closed"
+            ? "Requester pulled up. The empty source raid was closed."
+            : pulled.sourceDisposition === "pushed"
+              ? "Requester pulled up. The remaining source requesters moved to the next compatible raid."
+              : "Requester pulled up. The remaining source raid stayed in place.";
+        return update({ content: result, allowed_mentions: { parse: [] }, components: [] });
+      }
       if (raidAction?.action === "call") {
         if (raid.state !== "planned" || raid.staffMessageId === undefined) {
           throw new RepositoryInvariantError("That raid is no longer available to start.");

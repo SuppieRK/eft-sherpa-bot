@@ -245,19 +245,22 @@ export async function seedOperationRaid(input: {
   visibleFirst?: boolean;
   gameMode?: 0 | 1 | 2;
   staffMessageId?: string;
+  fixtureOrdinal?: number;
+  automaticFill?: boolean;
 }): Promise<{ groupId: number; requestIds: number[] }> {
   const timestamp = Date.now();
-  const groupId = input.seed.groupCount + 1;
+  const fixtureOrdinal = input.fixtureOrdinal ?? 1;
+  const groupId = input.seed.groupCount + fixtureOrdinal;
   const requestIds = Array.from(
     { length: input.memberCount },
-    (_, index) => input.seed.scale + index + 1,
+    (_, index) => input.seed.scale + (fixtureOrdinal - 1) * 4 + index + 1,
   );
   const isPriority = input.isPriority === true ? 1 : 0;
   const gameMode = input.gameMode ?? 2;
   const sortKey = input.visibleFirst
-    ? SORT_STEP
+    ? fixtureOrdinal * SORT_STEP
     : (isPriority === 1 ? input.seed.priorityMaxSortKey : input.seed.ordinaryMaxSortKey) +
-      SORT_STEP;
+      fixtureOrdinal * SORT_STEP;
   const requestRows = requestIds.map((id, index) => ({ id, position: index + 1 }));
   for (const row of requestRows) {
     await seedOperationMapping({
@@ -273,7 +276,7 @@ export async function seedOperationRaid(input: {
         leader_discord_user_id, leader_type, automatic_fill, attempt_count, state,
         discord_call_status, twitch_call_status, staff_message_id, started_at,
         created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'customs', 3, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'customs', 3, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       groupId,
       isPriority,
@@ -281,6 +284,7 @@ export async function seedOperationRaid(input: {
       sortKey,
       input.state === "active" ? input.streamerDiscordUserId : null,
       input.state === "active" ? 0 : null,
+      input.automaticFill === true ? 1 : 0,
       input.state === "active" ? 1 : 0,
       input.state === "active" ? 1 : 0,
       input.state === "active" ? 1 : 3,

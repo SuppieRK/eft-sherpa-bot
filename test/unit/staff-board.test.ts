@@ -3,6 +3,7 @@ import type { StaffBoardRaid, StaffBoardSnapshot } from "../../src/domain/staff-
 import {
   parseRaidMessageAction,
   parseStaffBoardAction,
+  renderPullRequesterSelector,
   renderRaidMessage,
   renderStaffBoard,
 } from "../../src/infrastructure/discord/staff-board";
@@ -160,12 +161,54 @@ describe("split staff board", () => {
     expect(serialized).toContain("Goal: Task");
     expect(serialized).toContain("Notes: Bring markers");
     expect(serialized).toContain("Call and start raid");
+    expect(serialized).toContain("Pull requester up");
     expect(serialized).toContain("Move requester to next raid");
     expect(serialized).toContain("Remove requester");
     expect(serialized).not.toContain("Record a raid result");
     expect(serialized).not.toContain("Postpone raid");
     expect(message.content).toBe("<@reviewer> review this proposed raid.");
     expect(message.allowed_mentions.users).toEqual(["reviewer"]);
+  });
+
+  it("shows Pull requester up only during a planned frozen review with capacity", () => {
+    expect(JSON.stringify(renderRaidMessage(raid, 3))).not.toContain("Pull requester up");
+    expect(
+      JSON.stringify(
+        renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" }, 3),
+      ),
+    ).toContain("Pull requester up");
+    expect(
+      JSON.stringify(
+        renderRaidMessage(
+          {
+            ...raid,
+            automaticFill: false,
+            staffMessageId: "full-review-message",
+            members: Array.from({ length: raid.requesterCapacity }, (_, index) => ({
+              ...requester,
+              id: index + 1,
+              requestId: index + 1,
+              position: index + 1,
+            })),
+          },
+          3,
+        ),
+      ),
+    ).not.toContain("Pull requester up");
+    expect(
+      JSON.stringify(
+        renderRaidMessage(
+          {
+            ...raid,
+            state: "active",
+            automaticFill: false,
+            staffMessageId: "active-message",
+            leaderDiscordUserId: "leader",
+          },
+          3,
+        ),
+      ),
+    ).not.toContain("Pull requester up");
   });
 
   it("renders full raid disclosure and the attempt-dependent controls", () => {
@@ -186,6 +229,7 @@ describe("split staff board", () => {
     expect(JSON.stringify(message)).toContain("Remove requester");
     expect(JSON.stringify(message)).toContain("Postpone raid");
     expect(JSON.stringify(message)).not.toContain("Call and start raid");
+    expect(JSON.stringify(message)).not.toContain("Pull requester up");
     expect(message.allowed_mentions.users).toEqual(["leader"]);
     const updated = renderRaidMessage({ ...active, attemptCount: 3 }, 3);
     expect(JSON.stringify(updated)).not.toContain("Try again");
@@ -224,6 +268,39 @@ describe("split staff board", () => {
       0,
     );
     expect(embedCharacters).toBeLessThanOrEqual(6_000);
+    expect(JSON.stringify(message)).not.toContain("Pull requester up");
+  });
+
+  it("labels pull candidates with Twitch nicknames and describes them with goals", () => {
+    const destination = { ...raid, automaticFill: false, staffMessageId: "review-message" };
+    const source = {
+      ...raid,
+      id: 8,
+      sortKey: 2_000_000,
+      members: [
+        requester,
+        {
+          ...requester,
+          id: 10,
+          requestId: 3,
+          twitchLogin: "chosen_viewer",
+          objective: "Reach the IceBreaker bridge",
+          position: 2,
+        },
+      ],
+    };
+    const message = renderPullRequesterSelector(destination, source);
+    expect(message.components[0]?.components[0]).toMatchObject({
+      custom_id: "raid:v3:pull:7:8",
+      options: [
+        { label: "@viewer", description: "Task", value: "2" },
+        {
+          label: "@chosen_viewer",
+          description: "Reach the IceBreaker bridge",
+          value: "3",
+        },
+      ],
+    });
   });
 
   it("accepts only current board and raid component IDs", () => {
@@ -234,6 +311,15 @@ describe("split staff board", () => {
     expect(parseStaffBoardAction("board:v4:refresh")).toBeUndefined();
     expect(parseStaffBoardAction("staff:v3:end:4")).toBeUndefined();
     expect(parseRaidMessageAction("raid:v2:call:7")).toEqual({ action: "call", raidId: 7 });
+    expect(parseRaidMessageAction("raid:v3:pull_candidates:7")).toEqual({
+      action: "pull_candidates",
+      raidId: 7,
+    });
+    expect(parseRaidMessageAction("raid:v3:pull:7:8")).toEqual({
+      action: "pull",
+      raidId: 7,
+      sourceRaidId: 8,
+    });
     expect(parseRaidMessageAction("raid:v2:result:7")).toEqual({ action: "result", raidId: 7 });
     expect(parseRaidMessageAction("raid:v2:postpone:7")).toEqual({
       action: "postpone",

@@ -82,6 +82,7 @@ describe("six-table dual-queue schema", () => {
          'raid_groups_open_sort_key_idx',
          'raid_groups_compatible_idx',
          'raid_groups_compatible_mode_idx',
+         'raid_groups_pull_source_idx',
          'raid_groups_outstanding_mode_idx',
          'raid_group_members_group_idx',
          'raid_group_members_one_open_request_idx'
@@ -97,6 +98,7 @@ describe("six-table dual-queue schema", () => {
         "raid_groups_outstanding_mode_idx",
         "raid_groups_open_sort_key_idx",
         "raid_groups_compatible_mode_idx",
+        "raid_groups_pull_source_idx",
         "raid_group_members_group_idx",
         "raid_group_members_one_open_request_idx",
       ]),
@@ -133,6 +135,22 @@ describe("six-table dual-queue schema", () => {
     expect(membershipPlan.results.map((row) => row.detail).join(" ")).toContain(
       "raid_group_members_group_idx",
     );
+  });
+
+  it("uses the ordered pull-source index for full planned raids", async () => {
+    const plan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM raid_groups
+       WHERE is_priority = 0 AND game_mode = 2 AND map_id = 'customs'
+         AND state = 0 AND automatic_fill = 1
+         AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+         AND current_member_count > 0 AND sort_key > 1000000
+       ORDER BY sort_key LIMIT 1`,
+    ).all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail).join(" ");
+    expect(details).toContain("raid_groups_pull_source_idx");
+    expect(details).not.toContain("SCAN raid_groups");
+    expect(details).not.toContain("USE TEMP B-TREE");
   });
 
   it("uses ordered indexes for queue ranges and open-queue maxima", async () => {

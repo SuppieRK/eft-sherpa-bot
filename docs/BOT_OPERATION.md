@@ -29,10 +29,17 @@ Select **Review a raid**. The bot freezes the proposed group and opens one raid 
 The planned raid message has these controls:
 
 - **Call and start raid**;
+- **Pull requester up**;
 - **Move requester to next raid**;
 - **Remove requester**.
 
 Use **Move requester to next raid** or **Remove requester** before you call the raid when the proposed group must change. Automatic grouping and requester limits do not change. A reviewed raid does not accept a new automatic requester.
+
+Use **Pull requester up** to fill an open requester place from a later raid with the same mode and map. The private list shows each Twitch name and goal. Select one requester after you review the goals.
+
+The pull does not call a requester, assign a leader, or start an attempt. A priority raid can pull one selected ordinary requester. Only that selected request becomes priority.
+
+After the pull, the bot can move all requesters who remain in the source raid to the next compatible raid. The bot makes this move only when all remaining requesters fit. Otherwise, the source raid stays in its current place.
 
 Select **Call and start raid** when the group is correct. The staff member who selects this control becomes the leader. The bot starts attempt one and calls only the current requesters. The bot sends a Discord call with the mode and map. The bot also sends a Twitch call with the mode and map when the streamer is the leader.
 

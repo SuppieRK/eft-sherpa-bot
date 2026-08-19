@@ -1150,3 +1150,457 @@ describe("schedule-independent dual queues", () => {
     expect(receipts.results).toEqual([{ deliveryId: "recent" }]);
   });
 });
+
+describe("requester pull-up", () => {
+  it("pulls one requester and pushes the complete source remainder into one successor", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, source, successor] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const destination = await review(repo, first as StaffBoardRaid, "pull-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "open-destination-seat",
+      changedAt: now,
+    });
+
+    const candidates = await repo.getPullRequesterCandidates(destination.id);
+    expect(candidates?.source.id).toBe(source?.id);
+    const selected = candidates?.source.members[0]?.requestId as number;
+    const remainder = candidates?.source.members.slice(1).map((member) => member.requestId) ?? [];
+    const result = await repo.pullRequester({
+      destinationGroupId: destination.id,
+      sourceGroupId: candidates?.source.id as number,
+      requestId: selected,
+      actionKey: "pull-with-push",
+      changedAt: now,
+    });
+
+    expect(result.sourceDisposition).toBe("pushed");
+    expect(result.destination.members.map((member) => member.requestId)).toContain(selected);
+    expect(await repo.getRaid(source?.id as number)).toMatchObject({
+      state: "canceled",
+      outcome: "not_run",
+      members: [],
+    });
+    expect(
+      (await repo.getRaid(successor?.id as number))?.members.map((member) => member.requestId),
+    ).toEqual([successor?.members[0]?.requestId, ...remainder]);
+    const history = await env.DB.prepare(
+      `SELECT group_id AS groupId, request_id AS requestId, state
+       FROM raid_group_members
+       WHERE request_id IN (${[selected, ...remainder].map(() => "?").join(",")})
+       ORDER BY request_id, id`,
+    )
+      .bind(selected, ...remainder)
+      .all<{ groupId: number; requestId: number; state: number }>();
+    expect(history.results.filter((member) => member.state === 2)).toHaveLength(3);
+    expect(history.results.filter((member) => member.state === 0)).toHaveLength(3);
+  });
+
+  it("retains the complete source party when the immediate successor cannot fit it", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 8; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, source, successor] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const destination = await review(repo, first as StaffBoardRaid, "retained-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "retained-open-seat",
+      changedAt: now,
+    });
+    const selected = source?.members[0]?.requestId as number;
+    const sourceRemainder = source?.members.slice(1).map((member) => member.requestId) ?? [];
+    const successorMembers = successor?.members.map((member) => member.requestId) ?? [];
+
+    const result = await repo.pullRequester({
+      destinationGroupId: destination.id,
+      sourceGroupId: source?.id as number,
+      requestId: selected,
+      actionKey: "pull-retained",
+      changedAt: now,
+    });
+
+    expect(result.sourceDisposition).toBe("retained");
+    expect(
+      (await repo.getRaid(source?.id as number))?.members.map((member) => member.requestId),
+    ).toEqual(sourceRemainder);
+    expect(
+      (await repo.getRaid(successor?.id as number))?.members.map((member) => member.requestId),
+    ).toEqual(successorMembers);
+  });
+
+  it("promotes only the selected Ordinary requester into a reviewed Priority raid", async () => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    await createRequest(repo, 2);
+    await materialize(repo);
+    const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const active = await start(repo, ordinary);
+    const priority = await repo.postponeRaid({
+      groupId: active.id,
+      actionKey: "make-priority-destination",
+      changedAt: now,
+    });
+    const destination = await review(repo, priority, "priority-pull-destination");
+    for (let index = 3; index <= 6; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const candidates = await repo.getPullRequesterCandidates(destination.id);
+    const selected = candidates?.source.members[0]?.requestId as number;
+    const unselected = candidates?.source.members.slice(1).map((member) => member.requestId) ?? [];
+
+    const result = await repo.pullRequester({
+      destinationGroupId: destination.id,
+      sourceGroupId: candidates?.source.id as number,
+      requestId: selected,
+      actionKey: "pull-ordinary-into-priority",
+      changedAt: now,
+    });
+
+    expect(result.destination.queueKind).toBe("priority");
+    expect(result.sourceDisposition).toBe("pushed");
+    const priorities = await env.DB.prepare(
+      `SELECT id, is_priority AS isPriority FROM help_requests
+       WHERE id IN (${[selected, ...unselected].map(() => "?").join(",")}) ORDER BY id`,
+    )
+      .bind(selected, ...unselected)
+      .all<{ id: number; isPriority: number }>();
+    expect(priorities.results.find((request) => request.id === selected)?.isPriority).toBe(1);
+    expect(
+      priorities.results
+        .filter((request) => unselected.includes(request.id))
+        .map((request) => request.isPriority),
+    ).toEqual(unselected.map(() => 0));
+  });
+
+  it("never pulls a requester from a concurrent volunteer-led active raid", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, volunteerRaid, later] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const active = await start(repo, volunteerRaid as StaffBoardRaid);
+    const activeRequestIds = active.members.map((member) => member.requestId);
+    const reviewed = await review(repo, first as StaffBoardRaid, "streamer-reviewed-destination");
+    await repo.removeRequester({
+      groupId: reviewed.id,
+      requestId: reviewed.members[0]?.requestId as number,
+      actionKey: "streamer-opens-seat",
+      changedAt: now,
+    });
+
+    const candidates = await repo.getPullRequesterCandidates(reviewed.id);
+    expect(candidates?.source.id).toBe(later?.id);
+    expect(candidates?.source.members.map((member) => member.requestId)).not.toEqual(
+      expect.arrayContaining(activeRequestIds),
+    );
+    await repo.pullRequester({
+      destinationGroupId: reviewed.id,
+      sourceGroupId: candidates?.source.id as number,
+      requestId: candidates?.source.members[0]?.requestId as number,
+      actionKey: "streamer-pulls-past-active",
+      changedAt: now,
+    });
+    expect((await repo.getRaid(active.id))?.members.map((member) => member.requestId)).toEqual(
+      activeRequestIds,
+    );
+    expect((await repo.getRaid(active.id))?.state).toBe("active");
+  });
+
+  it("rejects a stale source selection without moving any requester", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const reviewed = await review(repo, first as StaffBoardRaid, "stale-pull-destination");
+    await repo.removeRequester({
+      groupId: reviewed.id,
+      requestId: reviewed.members[0]?.requestId as number,
+      actionKey: "stale-open-seat",
+      changedAt: now,
+    });
+    const candidates = await repo.getPullRequesterCandidates(reviewed.id);
+    const sourceBefore = candidates?.source.members.map((member) => member.requestId) ?? [];
+    await start(repo, candidates?.source as StaffBoardRaid);
+
+    await expect(
+      repo.pullRequester({
+        destinationGroupId: reviewed.id,
+        sourceGroupId: candidates?.source.id as number,
+        requestId: candidates?.source.members[0]?.requestId as number,
+        actionKey: "stale-pull",
+        changedAt: now,
+      }),
+    ).rejects.toThrow("out of date");
+    expect((await repo.getRaid(reviewed.id))?.members).toHaveLength(2);
+    expect(
+      (await repo.getRaid(candidates?.source.id as number))?.members.map(
+        (member) => member.requestId,
+      ),
+    ).toEqual(sourceBefore);
+  });
+
+  it.each(TARKOV_MAPS)("enforces $name requester capacity during a pull", async (map) => {
+    const repo = repository();
+    const requesterCapacity = map.sherpaPartyCapacity - 1;
+    for (let index = 1; index <= requesterCapacity + 1; index += 1) {
+      await createRequest(repo, index, map.id);
+    }
+    await repo.materializeWaitingRequests({ recipientLimit: 99, changedAt: now });
+    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const reviewed = await review(repo, first as StaffBoardRaid, "icebreaker-pull");
+    await repo.removeRequester({
+      groupId: reviewed.id,
+      requestId: reviewed.members[0]?.requestId as number,
+      actionKey: "icebreaker-open-seat",
+      changedAt: now,
+    });
+    const result = await repo.pullRequester({
+      destinationGroupId: reviewed.id,
+      sourceGroupId: source?.id as number,
+      requestId: source?.members[0]?.requestId as number,
+      actionKey: "icebreaker-pull-requester",
+      changedAt: now,
+    });
+    expect(result.destination.members).toHaveLength(requesterCapacity);
+    expect(result.destination.requesterCapacity).toBe(requesterCapacity);
+    await expect(currentMemberCount(result.destination.id)).resolves.toBe(requesterCapacity);
+  });
+
+  it("skips different modes and maps before selecting the first compatible source", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 3; index += 1) {
+      await createRequest(repo, index, "customs", "pve");
+    }
+    for (let index = 4; index <= 6; index += 1) {
+      await createRequest(repo, index, "customs", "pvp");
+    }
+    for (let index = 7; index <= 9; index += 1) {
+      await createRequest(repo, index, "woods", "pve");
+    }
+    const compatibleRequest = await createRequest(repo, 10, "customs", "pve");
+    await materialize(repo);
+    const destinationSeed = (await repo.getBoardSnapshot()).ordinaryRaids.find(
+      (raid) => raid.gameMode === "pve" && raid.mapId === "customs",
+    ) as StaffBoardRaid;
+    const destination = await review(repo, destinationSeed, "compatibility-pull-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "compatibility-open-seat",
+      changedAt: now,
+    });
+
+    const candidates = await repo.getPullRequesterCandidates(destination.id);
+    expect(candidates?.source).toMatchObject({ gameMode: "pve", mapId: "customs" });
+    expect(candidates?.source.members.map((member) => member.requestId)).toEqual([
+      compatibleRequest,
+    ]);
+  });
+
+  it("uses a later Priority source before an Ordinary source", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 9; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, second, ordinarySource] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    await postpone(repo, first as StaffBoardRaid, "first-priority-pull-raid");
+    await postpone(repo, second as StaffBoardRaid, "second-priority-pull-raid");
+    const priorityRaids = (await repo.getBoardSnapshot()).priorityRaids;
+    await env.DB.prepare(
+      `UPDATE raid_groups SET automatic_fill = 1,
+              leader_discord_user_id = NULL, leader_type = NULL
+       WHERE id = ?`,
+    )
+      .bind(priorityRaids[1]?.id)
+      .run();
+    const destination = await review(
+      repo,
+      priorityRaids[0] as StaffBoardRaid,
+      "priority-source-destination",
+    );
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "priority-source-open-seat",
+      changedAt: now,
+    });
+
+    const candidates = await repo.getPullRequesterCandidates(destination.id);
+    expect(candidates?.source.id).toBe(priorityRaids[1]?.id);
+    expect(candidates?.source.id).not.toBe(ordinarySource?.id);
+    expect(candidates?.source.queueKind).toBe("priority");
+  });
+
+  it("never offers a Priority source to an Ordinary destination", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 9; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [prioritySeed, ordinaryDestinationSeed, ordinarySource] = (await repo.getBoardSnapshot())
+      .ordinaryRaids;
+    await postpone(repo, prioritySeed as StaffBoardRaid, "priority-before-ordinary-pull");
+    const priority = (await repo.getBoardSnapshot()).priorityRaids[0] as StaffBoardRaid;
+    const destination = await review(
+      repo,
+      ordinaryDestinationSeed as StaffBoardRaid,
+      "ordinary-pull-destination",
+    );
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "ordinary-pull-open-seat",
+      changedAt: now,
+    });
+
+    const candidates = await repo.getPullRequesterCandidates(destination.id);
+    expect(candidates?.source.id).toBe(ordinarySource?.id);
+    expect(candidates?.source.id).not.toBe(priority.id);
+    expect(candidates?.source.queueKind).toBe("ordinary");
+  });
+
+  it("stops push-down at a reviewed compatible boundary", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 10; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, source, boundary, farther] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const frozenBoundary = await review(repo, boundary as StaffBoardRaid, "frozen-push-boundary");
+    const destination = await review(repo, first as StaffBoardRaid, "bounded-push-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "bounded-push-open-seat",
+      changedAt: now,
+    });
+    const sourceRemainder = source?.members.slice(1).map((member) => member.requestId) ?? [];
+    const fartherMembers = farther?.members.map((member) => member.requestId) ?? [];
+
+    const result = await repo.pullRequester({
+      destinationGroupId: destination.id,
+      sourceGroupId: source?.id as number,
+      requestId: source?.members[0]?.requestId as number,
+      actionKey: "bounded-push-pull",
+      changedAt: now,
+    });
+    expect(result.sourceDisposition).toBe("retained");
+    expect(
+      (await repo.getRaid(source?.id as number))?.members.map((member) => member.requestId),
+    ).toEqual(sourceRemainder);
+    expect(await repo.getRaid(frozenBoundary.id)).toMatchObject({
+      automaticFill: false,
+      staffMessageId: "frozen-push-boundary",
+    });
+    expect(
+      (await repo.getRaid(farther?.id as number))?.members.map((member) => member.requestId),
+    ).toEqual(fartherMembers);
+  });
+
+  it("does not offer a reviewed or leader-reserved source", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    await review(repo, source as StaffBoardRaid, "reviewed-source-boundary");
+    const destination = await review(repo, first as StaffBoardRaid, "reviewed-source-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "reviewed-source-open-seat",
+      changedAt: now,
+    });
+    await expect(repo.getPullRequesterCandidates(destination.id)).resolves.toBeUndefined();
+
+    await env.DB.prepare(
+      `UPDATE raid_groups SET automatic_fill = 1, staff_message_id = NULL,
+              leader_discord_user_id = 'reserved-volunteer', leader_type = 1
+       WHERE id = ?`,
+    )
+      .bind(source?.id)
+      .run();
+    await expect(repo.getPullRequesterCandidates(destination.id)).resolves.toBeUndefined();
+  });
+
+  it("rolls back the complete pull when a push membership write fails", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 8; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, source, target] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const destination = await review(repo, first as StaffBoardRaid, "rollback-pull-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "rollback-open-seat",
+      changedAt: now,
+    });
+    const destinationBefore = (await repo.getRaid(destination.id))?.members.map(
+      (member) => member.requestId,
+    );
+    const sourceBefore = source?.members.map((member) => member.requestId) ?? [];
+    const targetBefore = target?.members.map((member) => member.requestId) ?? [];
+    await env.DB.prepare("UPDATE raid_groups SET current_member_count = 0 WHERE id = ?")
+      .bind(target?.id)
+      .run();
+
+    await expect(
+      repo.pullRequester({
+        destinationGroupId: destination.id,
+        sourceGroupId: source?.id as number,
+        requestId: source?.members[0]?.requestId as number,
+        actionKey: "rollback-failing-push",
+        changedAt: now,
+      }),
+    ).rejects.toThrow("out of date");
+    expect((await repo.getRaid(destination.id))?.members.map((member) => member.requestId)).toEqual(
+      destinationBefore,
+    );
+    expect(
+      (await repo.getRaid(source?.id as number))?.members.map((member) => member.requestId),
+    ).toEqual(sourceBefore);
+    expect(
+      (await repo.getRaid(target?.id as number))?.members.map((member) => member.requestId),
+    ).toEqual(targetBefore);
+    const selectedOpenMemberships = await env.DB.prepare(
+      `SELECT count(*) AS count FROM raid_group_members
+       WHERE request_id = ? AND state = 0`,
+    )
+      .bind(source?.members[0]?.requestId)
+      .first<{ count: number }>();
+    expect(selectedOpenMemberships?.count).toBe(1);
+    await env.DB.prepare("UPDATE raid_groups SET current_member_count = ? WHERE id = ?")
+      .bind(targetBefore.length, target?.id)
+      .run();
+  });
+
+  it("allows only one concurrent pull of the same requester", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
+    await materialize(repo);
+    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const reviewed = await review(repo, first as StaffBoardRaid, "concurrent-pull-destination");
+    await repo.removeRequester({
+      groupId: reviewed.id,
+      requestId: reviewed.members[0]?.requestId as number,
+      actionKey: "concurrent-open-seat",
+      changedAt: now,
+    });
+    const selected = source?.members[0]?.requestId as number;
+    const pulls = await Promise.allSettled(
+      ["concurrent-pull-one", "concurrent-pull-two"].map((actionKey) =>
+        repo.pullRequester({
+          destinationGroupId: reviewed.id,
+          sourceGroupId: source?.id as number,
+          requestId: selected,
+          actionKey,
+          changedAt: now,
+        }),
+      ),
+    );
+    expect(pulls.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(pulls.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const openMemberships = await env.DB.prepare(
+      `SELECT count(*) AS count FROM raid_group_members WHERE request_id = ? AND state = 0`,
+    )
+      .bind(selected)
+      .first<{ count: number }>();
+    expect(openMemberships?.count).toBe(1);
+  });
+});

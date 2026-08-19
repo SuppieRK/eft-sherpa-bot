@@ -127,6 +127,26 @@ interface RequesterFollowUpWindow {
   reusableGroupId: number | null;
 }
 
+interface PullBoundaryRow {
+  automaticFill: number;
+  currentMemberCount: number;
+  groupId: number;
+  leaderDiscordUserId: string | null;
+  requesterCapacity: number;
+  staffMessageId: string | null;
+  state: "planned" | "active";
+}
+
+export interface PullRequesterCandidates {
+  source: StaffBoardRaid;
+}
+
+export interface PullRequesterResult {
+  destination: StaffBoardRaid;
+  sourceDisposition: "closed" | "pushed" | "retained";
+  pushTarget?: StaffBoardRaid;
+}
+
 function epoch(date: Date): number {
   return date.getTime();
 }
@@ -253,6 +273,42 @@ function boundedBoardRaidSql(): string {
   return `SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(1, 3)})
           UNION ALL
           SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(0, 7)})`;
+}
+
+function pullSourceIdSql(): string {
+  return `WITH destination AS (
+            SELECT id, is_priority, game_mode, map_id, sort_key
+            FROM raid_groups
+            WHERE id = ? AND state = 0 AND automatic_fill = 0
+              AND staff_message_id IS NOT NULL
+              AND current_member_count < requester_capacity
+          ), selected AS (
+            SELECT coalesce(
+              (SELECT source.id
+               FROM raid_groups AS source INDEXED BY raid_groups_pull_source_idx
+               WHERE source.is_priority = destination.is_priority
+                 AND source.game_mode = destination.game_mode
+                 AND source.map_id = destination.map_id
+                 AND source.state = 0 AND source.automatic_fill = 1
+                 AND source.leader_discord_user_id IS NULL
+                 AND source.staff_message_id IS NULL
+                 AND source.current_member_count > 0
+                 AND source.sort_key > destination.sort_key
+               ORDER BY source.sort_key LIMIT 1),
+              (SELECT source.id
+               FROM raid_groups AS source INDEXED BY raid_groups_pull_source_idx
+               WHERE destination.is_priority = 1 AND source.is_priority = 0
+                 AND source.game_mode = destination.game_mode
+                 AND source.map_id = destination.map_id
+                 AND source.state = 0 AND source.automatic_fill = 1
+                 AND source.leader_discord_user_id IS NULL
+                 AND source.staff_message_id IS NULL
+                 AND source.current_member_count > 0
+               ORDER BY source.sort_key LIMIT 1)
+            ) AS groupId
+            FROM destination
+          )
+          SELECT groupId FROM selected WHERE groupId IS NOT NULL`;
 }
 
 export interface TwitchReplyReceipt {
@@ -707,6 +763,319 @@ export class D1MvpRepository implements QueueQueryRepository {
     const raid = await this.getRaid(input.groupId);
     if (raid === undefined) throw new RepositoryInvariantError("The reviewed raid was not found.");
     return raid;
+  }
+
+  async getPullRequesterCandidates(
+    destinationGroupId: number,
+  ): Promise<PullRequesterCandidates | undefined> {
+    const selected = await this.database
+      .prepare(pullSourceIdSql())
+      .bind(destinationGroupId)
+      .first<{ groupId: number }>();
+    if (selected === null) return undefined;
+    const source = await this.getRaid(selected.groupId);
+    if (source === undefined || source.members.length === 0) return undefined;
+    return { source };
+  }
+
+  private async pullBoundary(source: StaffBoardRaid): Promise<PullBoundaryRow | null> {
+    return this.database
+      .prepare(
+        `SELECT id AS groupId,
+                CASE state WHEN 0 THEN 'planned' ELSE 'active' END AS state,
+                automatic_fill AS automaticFill,
+                current_member_count AS currentMemberCount,
+                requester_capacity AS requesterCapacity,
+                leader_discord_user_id AS leaderDiscordUserId,
+                staff_message_id AS staffMessageId
+         FROM raid_groups
+         WHERE is_priority = ? AND game_mode = ? AND map_id = ?
+           AND state IN (0, 1) AND sort_key > ?
+         ORDER BY sort_key LIMIT 1`,
+      )
+      .bind(
+        source.queueKind === "priority" ? 1 : 0,
+        gameModeCode(source.gameMode),
+        source.mapId,
+        source.sortKey,
+      )
+      .first<PullBoundaryRow>();
+  }
+
+  async pullRequester(input: {
+    destinationGroupId: number;
+    sourceGroupId: number;
+    requestId: number;
+    actionKey: string;
+    changedAt: Date;
+  }): Promise<PullRequesterResult> {
+    const [destination, candidates] = await Promise.all([
+      this.getRaid(input.destinationGroupId),
+      this.getPullRequesterCandidates(input.destinationGroupId),
+    ]);
+    if (
+      destination === undefined ||
+      destination.state !== "planned" ||
+      destination.automaticFill ||
+      destination.staffMessageId === undefined ||
+      destination.members.length >= destination.requesterCapacity ||
+      candidates?.source.id !== input.sourceGroupId
+    ) {
+      throw new RepositoryInvariantError(
+        "That pull selection is out of date. Review the raid again.",
+      );
+    }
+    const source = candidates.source;
+    if (!source.members.some((member) => member.requestId === input.requestId)) {
+      throw new RepositoryInvariantError("That requester is no longer available to pull.");
+    }
+    const remainder = source.members.filter((member) => member.requestId !== input.requestId);
+    const remainderIds = remainder.map((member) => member.requestId);
+    const remainderJson = JSON.stringify(remainderIds);
+    const boundary = remainder.length === 0 ? null : await this.pullBoundary(source);
+    const canPush =
+      boundary !== null &&
+      boundary.state === "planned" &&
+      boundary.automaticFill === 1 &&
+      boundary.leaderDiscordUserId === null &&
+      boundary.staffMessageId === null &&
+      boundary.currentMemberCount + remainder.length <= boundary.requesterCapacity;
+    const sourceDisposition: PullRequesterResult["sourceDisposition"] =
+      remainder.length === 0 ? "closed" : canPush ? "pushed" : "retained";
+    const crossQueue = destination.queueKind === "priority" && source.queueKind === "ordinary";
+    const timestamp = epoch(input.changedAt);
+    const statements: D1PreparedStatement[] = [
+      this.database
+        .prepare(
+          `UPDATE raid_group_members SET state = 2, updated_at = ?
+           WHERE group_id = ? AND request_id = ? AND state = 0
+             AND ? = (${pullSourceIdSql()})`,
+        )
+        .bind(
+          timestamp,
+          input.sourceGroupId,
+          input.requestId,
+          input.sourceGroupId,
+          input.destinationGroupId,
+        ),
+    ];
+    if (crossQueue) {
+      statements.push(
+        this.database
+          .prepare(
+            `UPDATE help_requests SET is_priority = 1, updated_at = ?
+             WHERE id = ? AND state = 1 AND is_priority = 0
+               AND EXISTS (
+                 SELECT 1 FROM raid_group_members
+                 WHERE group_id = ? AND request_id = ? AND state = 2 AND updated_at = ?
+               )`,
+          )
+          .bind(timestamp, input.requestId, input.sourceGroupId, input.requestId, timestamp),
+      );
+    }
+    if (canPush && boundary !== null) {
+      statements.push(
+        this.database
+          .prepare(
+            `UPDATE raid_group_members SET state = 2, updated_at = ?
+             WHERE group_id = ? AND state = 0
+               AND request_id IN (SELECT value FROM json_each(?))`,
+          )
+          .bind(timestamp, input.sourceGroupId, remainderJson),
+        this.database
+          .prepare(
+            `INSERT INTO raid_group_members
+               (group_id, request_id, position, created_at, updated_at)
+             SELECT
+               CASE WHEN
+                 target.id = (
+                   SELECT id FROM raid_groups
+                   WHERE is_priority = ? AND game_mode = ? AND map_id = ?
+                     AND state IN (0, 1) AND sort_key > ?
+                   ORDER BY sort_key LIMIT 1
+                 )
+                 AND target.state = 0 AND target.automatic_fill = 1
+                 AND target.leader_discord_user_id IS NULL
+                 AND target.staff_message_id IS NULL
+                 AND target.current_member_count + json_array_length(?) <= target.requester_capacity
+                 AND (
+                   SELECT count(*) FROM raid_group_members AS removed
+                   JOIN json_each(?) AS expected ON expected.value = removed.request_id
+                   WHERE removed.group_id = ? AND removed.state = 2 AND removed.updated_at = ?
+                 ) = json_array_length(?)
+               THEN target.id ELSE NULL END,
+               item.value,
+               (SELECT coalesce(max(position), 0) FROM raid_group_members
+                WHERE group_id = target.id AND state = 0) + CAST(item.key AS INTEGER) + 1,
+               ?, ?
+             FROM json_each(?) AS item
+             JOIN raid_groups AS target ON target.id = ?`,
+          )
+          .bind(
+            source.queueKind === "priority" ? 1 : 0,
+            gameModeCode(source.gameMode),
+            source.mapId,
+            source.sortKey,
+            remainderJson,
+            remainderJson,
+            input.sourceGroupId,
+            timestamp,
+            remainderJson,
+            timestamp,
+            timestamp,
+            remainderJson,
+            boundary.groupId,
+          ),
+      );
+    }
+    if (sourceDisposition !== "retained") {
+      statements.push(
+        this.database
+          .prepare(
+            `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
+                    last_action_key = ?, completed_at = ?, updated_at = ?
+             WHERE id = ? AND state = 0 AND automatic_fill = 1
+               AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+               AND current_member_count = 0`,
+          )
+          .bind(input.actionKey, timestamp, timestamp, input.sourceGroupId),
+      );
+    } else {
+      statements.push(
+        this.database
+          .prepare(
+            `UPDATE raid_groups SET last_action_key = ?, updated_at = ?
+             WHERE id = ? AND state = 0 AND automatic_fill = 1
+               AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+               AND current_member_count = ?`,
+          )
+          .bind(input.actionKey, timestamp, input.sourceGroupId, remainder.length),
+      );
+    }
+    statements.push(
+      this.database
+        .prepare(`UPDATE raid_groups SET updated_at = ? WHERE id = ?`)
+        .bind(timestamp, input.destinationGroupId),
+    );
+
+    const sourceStateAssertion =
+      sourceDisposition === "retained"
+        ? `source.state = 0 AND source.automatic_fill = 1
+           AND source.leader_discord_user_id IS NULL AND source.staff_message_id IS NULL
+           AND source.current_member_count = ?
+           AND (SELECT count(*) FROM raid_group_members AS current
+                JOIN json_each(?) AS expected ON expected.value = current.request_id
+                WHERE current.group_id = source.id AND current.state = 0) = json_array_length(?)`
+        : `source.state = 3 AND source.outcome = 1 AND source.current_member_count = 0`;
+    const sourceStateBindings: unknown[] =
+      sourceDisposition === "retained" ? [remainder.length, remainderJson, remainderJson] : [];
+    const pushAssertion =
+      sourceDisposition === "pushed" && boundary !== null
+        ? `AND (SELECT count(*) FROM raid_group_members AS pushed
+                JOIN json_each(?) AS expected ON expected.value = pushed.request_id
+                WHERE pushed.group_id = ? AND pushed.state = 0) = json_array_length(?)`
+        : "";
+    const pushBindings: unknown[] =
+      sourceDisposition === "pushed" && boundary !== null
+        ? [remainderJson, boundary.groupId, remainderJson]
+        : [];
+    const retainedBoundaryAssertion =
+      sourceDisposition !== "retained"
+        ? ""
+        : boundary === null
+          ? `AND NOT EXISTS (
+               SELECT 1 FROM raid_groups AS next
+               WHERE next.is_priority = source.is_priority
+                 AND next.game_mode = source.game_mode AND next.map_id = source.map_id
+                 AND next.state IN (0, 1) AND next.sort_key > source.sort_key
+             )`
+          : `AND ? = (
+               SELECT id FROM raid_groups AS next
+               WHERE next.is_priority = source.is_priority
+                 AND next.game_mode = source.game_mode AND next.map_id = source.map_id
+                 AND next.state IN (0, 1) AND next.sort_key > source.sort_key
+               ORDER BY next.sort_key LIMIT 1
+             )
+             AND EXISTS (
+               SELECT 1 FROM raid_groups AS boundary
+               WHERE boundary.id = ? AND (
+                 boundary.state <> 0 OR boundary.automatic_fill <> 1
+                 OR boundary.leader_discord_user_id IS NOT NULL
+                 OR boundary.staff_message_id IS NOT NULL
+                 OR boundary.current_member_count + ? > boundary.requester_capacity
+               )
+             )`;
+    const retainedBoundaryBindings: unknown[] =
+      sourceDisposition === "retained" && boundary !== null
+        ? [boundary.groupId, boundary.groupId, remainder.length]
+        : [];
+    statements.push(
+      this.database
+        .prepare(
+          `INSERT INTO raid_group_members
+             (group_id, request_id, position, created_at, updated_at)
+           SELECT
+             CASE WHEN
+               destination.state = 0 AND destination.automatic_fill = 0
+               AND destination.staff_message_id IS NOT NULL
+               AND destination.current_member_count < destination.requester_capacity
+               AND destination.game_mode = source.game_mode
+               AND destination.map_id = source.map_id
+               AND request.state = 1 AND request.game_mode = destination.game_mode
+               AND request.map_id = destination.map_id
+               AND request.is_priority = destination.is_priority
+               AND ${sourceStateAssertion}
+               AND EXISTS (
+                 SELECT 1 FROM raid_group_members AS removed
+                 WHERE removed.group_id = source.id AND removed.request_id = request.id
+                   AND removed.state = 2 AND removed.updated_at = ?
+               )
+               ${pushAssertion}
+               ${retainedBoundaryAssertion}
+             THEN destination.id ELSE NULL END,
+             request.id,
+             (SELECT coalesce(max(position), 0) + 1 FROM raid_group_members
+              WHERE group_id = destination.id AND state = 0),
+             ?, ?
+           FROM raid_groups AS destination
+           JOIN raid_groups AS source ON source.id = ?
+           JOIN help_requests AS request ON request.id = ?
+           WHERE destination.id = ?`,
+        )
+        .bind(
+          ...sourceStateBindings,
+          timestamp,
+          ...pushBindings,
+          ...retainedBoundaryBindings,
+          timestamp,
+          timestamp,
+          input.sourceGroupId,
+          input.requestId,
+          input.destinationGroupId,
+        ),
+    );
+
+    try {
+      await this.database.batch(statements);
+    } catch {
+      throw new RepositoryInvariantError(
+        "That pull selection is out of date. Review the raid again.",
+      );
+    }
+    const [updatedDestination, pushTarget] = await Promise.all([
+      this.getRaid(input.destinationGroupId),
+      sourceDisposition === "pushed" && boundary !== null
+        ? this.getRaid(boundary.groupId)
+        : Promise.resolve(undefined),
+    ]);
+    if (updatedDestination === undefined) {
+      throw new RepositoryInvariantError("The requester pull was not stored.");
+    }
+    return {
+      destination: updatedDestination,
+      sourceDisposition,
+      ...(pushTarget === undefined ? {} : { pushTarget }),
+    };
   }
 
   async startRaid(input: {

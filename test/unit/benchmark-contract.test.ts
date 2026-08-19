@@ -54,6 +54,7 @@ describe("local user-facing benchmark contract", () => {
       "raid:result",
       "raid:postpone-requester",
       "raid:remove-requester",
+      "raid:pull-requester",
     ]) {
       expect(families.has(family as (typeof BENCHMARK_OPERATION_FAMILIES)[number])).toBe(true);
     }
