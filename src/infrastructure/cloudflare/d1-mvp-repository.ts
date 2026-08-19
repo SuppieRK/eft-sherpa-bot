@@ -693,11 +693,28 @@ export class D1MvpRepository implements QueueQueryRepository {
       .run();
   }
 
+  async reviewRaid(input: { groupId: number; changedAt: Date }): Promise<StaffBoardRaid> {
+    const result = await this.database
+      .prepare(
+        `UPDATE raid_groups SET automatic_fill = 0, updated_at = ?
+         WHERE id = ? AND state = 0 AND current_member_count > 0`,
+      )
+      .bind(epoch(input.changedAt), input.groupId)
+      .run();
+    if (Number(result.meta.changes) !== 1) {
+      throw new RepositoryInvariantError("That raid is no longer available to review.");
+    }
+    const raid = await this.getRaid(input.groupId);
+    if (raid === undefined) throw new RepositoryInvariantError("The reviewed raid was not found.");
+    return raid;
+  }
+
   async startRaid(input: {
     groupId: number;
     leaderDiscordUserId: string;
     leaderType: "streamer" | "volunteer";
     requestTwitchCall: boolean;
+    canOverrideReservedLeader?: boolean;
     changedAt: Date;
   }): Promise<StaffBoardRaid> {
     const timestamp = epoch(input.changedAt);
@@ -705,7 +722,9 @@ export class D1MvpRepository implements QueueQueryRepository {
       .prepare(
         `UPDATE raid_groups SET state = 1, leader_discord_user_id = ?, leader_type = ?,
          attempt_count = 1, discord_call_status = 0, twitch_call_status = ?,
-         started_at = ?, updated_at = ? WHERE id = ? AND state = 0`,
+         started_at = ?, updated_at = ?
+         WHERE id = ? AND state = 0 AND automatic_fill = 0 AND staff_message_id IS NOT NULL
+           AND (leader_discord_user_id IS NULL OR leader_discord_user_id = ? OR ? = 1)`,
       )
       .bind(
         input.leaderDiscordUserId,
@@ -714,6 +733,8 @@ export class D1MvpRepository implements QueueQueryRepository {
         timestamp,
         timestamp,
         input.groupId,
+        input.leaderDiscordUserId,
+        input.canOverrideReservedLeader === true ? 1 : 0,
       )
       .run();
     if (Number(result.meta.changes) !== 1)
@@ -752,7 +773,8 @@ export class D1MvpRepository implements QueueQueryRepository {
     const result = await this.database
       .prepare(
         `UPDATE raid_groups SET staff_message_id = ?, updated_at = ?
-       WHERE id = ? AND state = 1 AND staff_message_id IS ?`,
+       WHERE id = ? AND state IN (0, 1) AND (state = 1 OR automatic_fill = 0)
+         AND staff_message_id IS ?`,
       )
       .bind(
         input.messageId ?? null,
@@ -824,7 +846,7 @@ export class D1MvpRepository implements QueueQueryRepository {
       .prepare(
         `WITH source AS (
            SELECT id, is_priority, game_mode, sort_key, map_id
-           FROM raid_groups WHERE id = ? AND state = 1
+           FROM raid_groups WHERE id = ? AND state IN (0, 1)
          ),
          follow_ups AS (
            SELECT DISTINCT target.id, target.sort_key, target.state, target.automatic_fill,
@@ -867,13 +889,15 @@ export class D1MvpRepository implements QueueQueryRepository {
     changedAt: Date;
   }): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
     const source = await this.getRaid(input.groupId);
-    if (source === undefined || source.state !== "active")
-      throw new RepositoryInvariantError("That raid is no longer active.");
+    const isReviewedPlanned =
+      source?.state === "planned" && !source.automaticFill && source.staffMessageId !== undefined;
+    if (source === undefined || (source.state !== "active" && !isReviewedPlanned))
+      throw new RepositoryInvariantError("That raid is no longer available.");
     if (!source.members.some((member) => member.requestId === input.requestId))
       throw new RepositoryInvariantError("That requester is no longer in this raid.");
     const sourceBecomesEmpty = source.members.length === 1;
     const window = await this.requesterFollowUpWindow(input.groupId);
-    if (window === null) throw new RepositoryInvariantError("That raid is no longer active.");
+    if (window === null) throw new RepositoryInvariantError("That raid is no longer available.");
     const reusableGroupId = window.reusableGroupId;
     const followUpSortKey =
       sourceBecomesEmpty && window.followUpCount === 0
@@ -891,7 +915,7 @@ export class D1MvpRepository implements QueueQueryRepository {
          staff_message_id = CASE WHEN ? = 1 THEN NULL ELSE staff_message_id END,
          completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END,
          last_action_key = ?, updated_at = ?
-       WHERE id = ? AND state = 1 AND EXISTS (
+       WHERE id = ? AND state IN (0, 1) AND EXISTS (
          SELECT 1 FROM raid_group_members
          WHERE group_id = ? AND request_id = ? AND state = 0
        )`,
@@ -985,8 +1009,10 @@ export class D1MvpRepository implements QueueQueryRepository {
     changedAt: Date;
   }): Promise<StaffBoardRaid> {
     const source = await this.getRaid(input.groupId);
-    if (source === undefined || source.state !== "active")
-      throw new RepositoryInvariantError("That raid is no longer active.");
+    const isReviewedPlanned =
+      source?.state === "planned" && !source.automaticFill && source.staffMessageId !== undefined;
+    if (source === undefined || (source.state !== "active" && !isReviewedPlanned))
+      throw new RepositoryInvariantError("That raid is no longer available.");
     if (!source.members.some((member) => member.requestId === input.requestId))
       throw new RepositoryInvariantError("That requester is no longer in this raid.");
     const timestamp = epoch(input.changedAt);
@@ -1003,14 +1029,14 @@ export class D1MvpRepository implements QueueQueryRepository {
         .prepare(
           `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
            last_action_key = ?, completed_at = ?, updated_at = ?
-         WHERE id = ? AND state = 1 AND NOT EXISTS (
+         WHERE id = ? AND state IN (0, 1) AND NOT EXISTS (
            SELECT 1 FROM raid_group_members WHERE group_id = ? AND state = 0
          )`,
         )
         .bind(input.actionKey, timestamp, timestamp, input.groupId, input.groupId),
       this.database
         .prepare(
-          `UPDATE raid_groups SET last_action_key = ?, updated_at = ? WHERE id = ? AND state = 1`,
+          `UPDATE raid_groups SET last_action_key = ?, updated_at = ? WHERE id = ? AND state IN (0, 1)`,
         )
         .bind(input.actionKey, timestamp, input.groupId),
     ]);
