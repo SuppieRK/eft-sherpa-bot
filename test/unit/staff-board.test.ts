@@ -7,6 +7,17 @@ import {
   renderStaffBoard,
 } from "../../src/infrastructure/discord/staff-board";
 
+const requester: StaffBoardRaid["members"][number] = {
+  id: 9,
+  requestId: 2,
+  twitchLogin: "viewer",
+  inGameName: "PMC Name",
+  discordUserId: "discord-viewer",
+  objective: "Task",
+  notes: "Bring markers",
+  position: 1,
+};
+
 const raid: StaffBoardRaid = {
   gameMode: "pve",
   id: 7,
@@ -19,18 +30,7 @@ const raid: StaffBoardRaid = {
   attemptCount: 0,
   discordCallStatus: "not_requested",
   twitchCallStatus: "not_requested",
-  members: [
-    {
-      id: 9,
-      requestId: 2,
-      twitchLogin: "viewer",
-      inGameName: "PMC Name",
-      discordUserId: "discord-viewer",
-      objective: "Task",
-      notes: "Bring markers",
-      position: 1,
-    },
-  ],
+  members: [requester],
 };
 
 const snapshot: StaffBoardSnapshot = {
@@ -58,6 +58,8 @@ describe("split staff board", () => {
     expect(serialized).toContain("board:v6:review");
     expect(serialized).toContain("Review a raid");
     expect(serialized).toContain("PvE · The Lab");
+    expect(serialized).toContain("Requesters: @viewer");
+    expect(serialized).not.toContain("PvE · The Lab (2/5)");
     expect(
       JSON.stringify(
         renderStaffBoard(
@@ -69,6 +71,71 @@ describe("split staff board", () => {
     expect(serialized).not.toContain("schedule");
     expect(serialized).not.toMatch(/Pause|End night|Reassign|Previous|Next page|Goal:|Notes:/);
     expect(message.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  it("lists every grouped requester without a leader-inclusive occupancy fraction", () => {
+    const grouped = {
+      ...raid,
+      members: Array.from({ length: 4 }, (_, index) => ({
+        ...requester,
+        id: index + 1,
+        requestId: index + 1,
+        twitchLogin: `viewer_${index + 1}`,
+        position: index + 1,
+      })),
+    };
+    const message = renderStaffBoard(
+      { ...snapshot, ordinaryRaids: [grouped] },
+      { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },
+    );
+    const serialized = JSON.stringify(message);
+    expect(message.embeds?.[1]?.fields[0]?.value).toContain(
+      "Requesters: @viewer\\_1 · @viewer\\_2 · @viewer\\_3 · @viewer\\_4",
+    );
+    expect(serialized).not.toContain("(5/5)");
+    expect(message.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  it("keeps a maximum ten-raid board within the Discord embed limit", () => {
+    const raids = Array.from({ length: 10 }, (_, raidIndex) => ({
+      ...raid,
+      id: raidIndex + 1,
+      members: Array.from({ length: 4 }, (_, memberIndex) => ({
+        ...requester,
+        id: raidIndex * 4 + memberIndex + 1,
+        requestId: raidIndex * 4 + memberIndex + 1,
+        twitchLogin: `viewer${raidIndex}${memberIndex}${"x".repeat(16)}`,
+        position: memberIndex + 1,
+      })),
+    }));
+    const message = renderStaffBoard(
+      {
+        priorityRaidCount: 3,
+        ordinaryRaidCount: 7,
+        priorityRaids: raids.slice(0, 3).map((item) => ({
+          ...item,
+          queueKind: "priority" as const,
+        })),
+        ordinaryRaids: raids.slice(3),
+      },
+      { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },
+    );
+    const embedCharacters = (message.embeds ?? []).reduce(
+      (total, embed) =>
+        total +
+        embed.title.length +
+        embed.description.length +
+        embed.fields.reduce(
+          (fieldTotal, field) => fieldTotal + field.name.length + field.value.length,
+          0,
+        ),
+      0,
+    );
+    expect(embedCharacters).toBeLessThanOrEqual(6_000);
+    for (const item of raids) {
+      for (const member of item.members)
+        expect(JSON.stringify(message)).toContain(member.twitchLogin);
+    }
   });
 
   it("derives review-selector ordinals before active raids are removed", () => {

@@ -104,6 +104,10 @@ function participantTags(raid: StaffBoardRaid): string {
     .slice(0, 100);
 }
 
+function boardRequesterTags(raid: StaffBoardRaid): string {
+  return raid.members.map((member) => `@${escapeMarkdown(member.twitchLogin)}`).join(" · ");
+}
+
 function boardRaidField(
   raid: StaffBoardRaid,
   displayIndex: number,
@@ -122,8 +126,8 @@ function boardRaidField(
       ? ""
       : ` · [Raid details](${discordMessageUrl(guildId, staffChannelId, raid.staffMessageId)})`;
   return {
-    name: `${displayIndex + 1}. ${raidName(raid)} (${occupancy(raid)})`,
-    value: `${raid.state === "active" ? "Active" : "Planned"} · Attempt ${raid.attemptCount}/${attemptLimit} · ${leader}${details}`,
+    name: `${displayIndex + 1}. ${raidName(raid)}`,
+    value: `Requesters: ${boardRequesterTags(raid)}\n${raid.state === "active" ? "Active" : "Planned"} · Attempt ${raid.attemptCount}/${attemptLimit} · ${leader}${details}`,
     inline: false,
   };
 }
