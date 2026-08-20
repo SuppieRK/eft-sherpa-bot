@@ -24,6 +24,21 @@ const publicInterfaceFiles = [
     .map((file) => `.github/workflows/${file}`),
 ];
 const failures = [];
+
+function markdownLinkTargets(contents) {
+  const targets = [];
+  let cursor = 0;
+  while (cursor < contents.length) {
+    const targetStart = contents.indexOf("](", cursor);
+    if (targetStart === -1) break;
+    const valueStart = targetStart + 2;
+    const targetEnd = contents.indexOf(")", valueStart);
+    if (targetEnd === -1) break;
+    targets.push(contents.slice(valueStart, targetEnd));
+    cursor = targetEnd + 1;
+  }
+  return targets;
+}
 const installerSetup = readFileSync("docs/INSTALLER_SETUP.md", "utf8");
 const productionWorkflow = readFileSync(
   ".github/workflows/check-production-configuration.yml",
@@ -119,8 +134,8 @@ for (const file of publicMarkdown) {
     }
   }
 
-  for (const match of contents.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
-    const target = match[1].split("#", 1)[0];
+  for (const linkTarget of markdownLinkTargets(contents)) {
+    const target = linkTarget.split("#", 1)[0];
     if (target.length === 0) continue;
     if (target.startsWith("https://")) continue;
     if (/^[a-z]+:/i.test(target)) {

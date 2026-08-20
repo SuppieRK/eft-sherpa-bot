@@ -37,14 +37,27 @@ for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith
   ) {
     failures.push(`${path}: pull_request_target is forbidden`);
   }
-  for (const match of contents.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)) {
-    const reference = match[1];
-    if (!/@[0-9a-f]{40}$/.test(reference)) {
-      failures.push(`${path}: Action must use a full commit SHA: ${reference}`);
-    }
-  }
   for (const job of Object.values(workflow.jobs ?? {})) {
+    if (typeof job.uses === "string" && !/@[0-9a-f]{40}$/.test(job.uses)) {
+      failures.push(`${path}: Action must use a full commit SHA: ${job.uses}`);
+    }
     for (const step of job.steps ?? []) {
+      if (typeof step.uses === "string" && !/@[0-9a-f]{40}$/.test(step.uses)) {
+        failures.push(`${path}: Action must use a full commit SHA: ${step.uses}`);
+      }
+      const shellTokens = typeof step.run === "string" ? step.run.split(/\s+/) : [];
+      if (shellTokens.includes("npx")) {
+        failures.push(
+          `${path}: npx can download unpinned packages; use an installed binary directly`,
+        );
+      }
+      if (
+        typeof step.run === "string" &&
+        step.run.includes("npm install --global") &&
+        !shellTokens.includes("--ignore-scripts")
+      ) {
+        failures.push(`${path}: global npm installation must disable package lifecycle scripts`);
+      }
       if (
         typeof step.uses === "string" &&
         step.uses.startsWith("actions/upload-artifact@") &&
@@ -113,12 +126,15 @@ if (
 
 const ciJob = ciWorkflow?.jobs?.verify;
 const ciSteps = ciJob?.steps ?? [];
+const ciPushBranches = ciWorkflow?.on?.push?.branches;
 const verificationStep = ciSteps.find((step) => step.name === "Verify release candidate");
 const sonarStep = ciSteps.find((step) => step.name === "Analyze with SonarQube Cloud");
 const sonarEnabledExpression = `\${{ secrets.SONAR_TOKEN != '' }}`;
 const coverageConditionExpression = `\${{ env.SONAR_ENABLED }}`;
 const sonarTokenExpression = `\${{ secrets.SONAR_TOKEN }}`;
 if (
+  !Array.isArray(ciPushBranches) ||
+  !ciPushBranches.includes("**") ||
   ciJob?.env?.SONAR_ENABLED !== sonarEnabledExpression ||
   verificationStep?.env?.VITEST_COVERAGE !== coverageConditionExpression ||
   typeof sonarStep?.uses !== "string" ||
@@ -131,7 +147,13 @@ if (
   );
 }
 const benchmarkStep = ciSteps.find((step) => step.name === "Run fully local D1 benchmark");
-if (benchmarkStep?.run !== "npm run benchmark:d1") {
+const benchmarkArtifactStep = ciSteps.find((step) => step.name === "Upload benchmark evidence");
+const benchmarkCondition = "github.event_name == 'pull_request' || github.ref == 'refs/heads/main'";
+if (
+  benchmarkStep?.run !== "npm run benchmark:d1" ||
+  benchmarkStep.if !== benchmarkCondition ||
+  benchmarkArtifactStep?.if !== `always() && (${benchmarkCondition})`
+) {
   failures.push(`${workflowDirectory}/ci.yml: CI must generate local D1 benchmark evidence`);
 }
 const releaseSteps = releaseWorkflow?.jobs?.publish?.steps ?? [];
