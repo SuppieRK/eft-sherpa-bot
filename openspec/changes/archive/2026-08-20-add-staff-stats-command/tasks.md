@@ -28,10 +28,10 @@
 - [x] 4.4 Update ASD-STE100 operator documentation and command-registration checks for staff-only `/stats` and `/users`, caller-only visibility, list definitions, pagination, `/link-twitch` corrections, and the absence of Twitch equivalents or persistent messages.
 - [x] 4.5 Create a scenario-to-test traceability matrix and close every uncovered specification scenario, pagination boundary, or Discord-limit boundary.
 - [x] 4.6 Run formatting, linting, type checking, dead-code and static analysis, migration and checksum checks, documentation and workflow checks, tests, build, secret scan, strict OpenSpec validation, and diff validation.
-- [ ] 4.7 Create a new feature branch from the current accepted main revision, commit and push all change-scoped files, create a GitHub pull request with benchmark evidence, manually deploy the exact commit to DEV, register commands, and smoke-test both staff roles, unauthorized denial, caller-only visibility, statistics lists, user pagination, missing-detail completion, identity guidance, no message persistence, and no Twitch handling.
+- [x] 4.7 Create a new feature branch from the current accepted main revision, commit and push all change-scoped files, create a GitHub pull request with benchmark evidence, manually deploy the exact commit to DEV, register commands, and smoke-test both staff roles, unauthorized denial, caller-only visibility, statistics lists, user pagination, missing-detail completion, identity guidance, no message persistence, and no Twitch handling.
 
 ## 5. Staff Channel and Statistics Rollup Corrections
 
 - [x] 5.1 Restrict `/stats`, `/users`, and every user-directory interaction to the configured Discord staff channel and add denial tests and operator guidance.
 - [x] 5.2 Add migration `0004` with backfilled transactionally maintained statistics rollups, bounded repository reads, source-equivalence and schema tests, and immutable migration evidence.
-- [ ] 5.3 Regenerate the fully local D1 benchmark, verify scale-independent `/stats` reads and bounded trigger writes, run the complete verification suite, update the pull request, deploy the exact commit to DEV, and smoke-test the correction.
+- [x] 5.3 Regenerate the fully local D1 benchmark, verify scale-independent `/stats` reads and bounded trigger writes, run the complete verification suite, update the pull request, deploy the exact commit to DEV, and smoke-test the correction.
