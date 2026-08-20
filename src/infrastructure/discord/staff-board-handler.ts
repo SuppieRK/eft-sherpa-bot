@@ -262,12 +262,11 @@ async function sendRaidCalls(
   const unlinkedNames = raid.members
     .filter((member) => member.discordUserId === undefined)
     .map((member) => `@${member.twitchLogin}`);
+  const discordMentions = [...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ");
+  const twitchMentions = raid.members.map((member) => `@${member.twitchLogin}`).join(" ");
   try {
     await createDiscordMessage(environment, communityConfig.discord.requestChannelId, {
-      content: appendRaidBringSuffix(
-        `Starting ${raidName}: ${[...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ")}`,
-        resolvedMap,
-      ),
+      content: appendRaidBringSuffix(`Starting ${raidName}: ${discordMentions}`, resolvedMap),
       allowed_mentions: { parse: [], users: uniqueUsers },
     });
     await repository.updateCallStatus(raid.id, "discord", "sent", changedAt);
@@ -285,7 +284,7 @@ async function sendRaidCalls(
       {
         broadcasterId: communityConfig.twitch.broadcasterUserId,
         message: appendRaidBringSuffix(
-          `Starting ${raidName}: ${raid.members.map((member) => `@${member.twitchLogin}`).join(" ")}. Check Discord for details.`,
+          `Starting ${raidName}: ${twitchMentions}. Check Discord for details.`,
           resolvedMap,
         ),
       },
@@ -551,12 +550,13 @@ class StaffBoardHandler {
         });
         await this.refreshPulledRaidMessage(pulled.destination);
         this.refreshBoardLater();
-        const result =
-          pulled.sourceDisposition === "closed"
-            ? "Requester pulled up. The empty source raid was closed."
-            : pulled.sourceDisposition === "pushed"
-              ? "Requester pulled up. The remaining source requesters moved to the next compatible raid."
-              : "Requester pulled up. The remaining source raid stayed in place.";
+        let result = "Requester pulled up. The remaining source raid stayed in place.";
+        if (pulled.sourceDisposition === "closed") {
+          result = "Requester pulled up. The empty source raid was closed.";
+        } else if (pulled.sourceDisposition === "pushed") {
+          result =
+            "Requester pulled up. The remaining source requesters moved to the next compatible raid.";
+        }
         return ephemeral(result);
       }
       if (raidAction?.action === "call") {

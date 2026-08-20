@@ -207,6 +207,14 @@ function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
       };
       raids.set(row.id, raid);
     }
+    let memberStateMatches: boolean;
+    if (raid.state === "planned" || raid.state === "active") {
+      memberStateMatches = row.memberState === MEMBER_STATE.planned;
+    } else if (raid.outcome === "helped") {
+      memberStateMatches = row.memberState === MEMBER_STATE.completed;
+    } else {
+      memberStateMatches = row.memberState !== MEMBER_STATE.removed;
+    }
     const includeMember =
       row.memberId !== null &&
       row.requestId !== null &&
@@ -214,11 +222,7 @@ function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
       row.inGameName !== null &&
       row.objective !== null &&
       row.memberPosition !== null &&
-      (raid.state === "planned" || raid.state === "active"
-        ? row.memberState === MEMBER_STATE.planned
-        : raid.outcome === "helped"
-          ? row.memberState === MEMBER_STATE.completed
-          : row.memberState !== MEMBER_STATE.removed);
+      memberStateMatches;
     if (includeMember) {
       const member: StaffBoardMember = {
         id: row.memberId as number,
@@ -865,8 +869,12 @@ export class D1MvpRepository
       boundary.leaderDiscordUserId === null &&
       boundary.staffMessageId === null &&
       boundary.currentMemberCount + remainder.length <= boundary.requesterCapacity;
-    const sourceDisposition: PullRequesterResult["sourceDisposition"] =
-      remainder.length === 0 ? "closed" : canPush ? "pushed" : "retained";
+    let sourceDisposition: PullRequesterResult["sourceDisposition"] = "retained";
+    if (remainder.length === 0) {
+      sourceDisposition = "closed";
+    } else if (canPush) {
+      sourceDisposition = "pushed";
+    }
     const crossQueue = destination.queueKind === "priority" && source.queueKind === "ordinary";
     const timestamp = epoch(input.changedAt);
     const statements: D1PreparedStatement[] = [
@@ -1004,10 +1012,10 @@ export class D1MvpRepository
       sourceDisposition === "pushed" && boundary !== null
         ? [remainderJson, boundary.groupId, remainderJson]
         : [];
-    const retainedBoundaryAssertion =
-      sourceDisposition !== "retained"
-        ? ""
-        : boundary === null
+    let retainedBoundaryAssertion = "";
+    if (sourceDisposition === "retained") {
+      retainedBoundaryAssertion =
+        boundary === null
           ? `AND NOT EXISTS (
                SELECT 1 FROM raid_groups AS next
                WHERE next.is_priority = source.is_priority
@@ -1030,6 +1038,7 @@ export class D1MvpRepository
                  OR boundary.current_member_count + ? > boundary.requester_capacity
                )
              )`;
+    }
     const retainedBoundaryBindings: unknown[] =
       sourceDisposition === "retained" && boundary !== null
         ? [boundary.groupId, boundary.groupId, remainder.length]
@@ -1308,12 +1317,14 @@ export class D1MvpRepository
     const window = await this.requesterFollowUpWindow(input.groupId);
     if (window === null) throw new RepositoryInvariantError("That raid is no longer available.");
     const reusableGroupId = window.reusableGroupId;
-    const followUpSortKey =
-      sourceBecomesEmpty && window.followUpCount === 0
-        ? window.sourceSortKey
-        : window.nextSortKey === null
-          ? window.anchorSortKey + SORT_STEP
-          : Math.floor((window.anchorSortKey + window.nextSortKey) / 2);
+    let followUpSortKey: number;
+    if (sourceBecomesEmpty && window.followUpCount === 0) {
+      followUpSortKey = window.sourceSortKey;
+    } else if (window.nextSortKey === null) {
+      followUpSortKey = window.anchorSortKey + SORT_STEP;
+    } else {
+      followUpSortKey = Math.floor((window.anchorSortKey + window.nextSortKey) / 2);
+    }
     const timestamp = epoch(input.changedAt);
     const followUpAction = `${input.actionKey}:postponed`;
     const sourceUpdate = this.database
@@ -1642,12 +1653,12 @@ export class D1MvpRepository
     const reverse = input.direction === "previous";
     const comparator = reverse ? "<" : ">";
     const order = reverse ? "DESC" : "ASC";
-    const boundary =
-      input.direction === "first"
-        ? ""
-        : input.direction === "at"
-          ? "WHERE twitch_login >= ?"
-          : `WHERE twitch_login ${comparator} ?`;
+    let boundary = "";
+    if (input.direction === "at") {
+      boundary = "WHERE twitch_login >= ?";
+    } else if (input.direction !== "first") {
+      boundary = `WHERE twitch_login ${comparator} ?`;
+    }
     let statement = this.database.prepare(
       `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
               discord_user_id AS discordUserId, discord_display_name AS discordDisplayName,
@@ -1688,17 +1699,20 @@ export class D1MvpRepository
         ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
       }),
     );
+    let hasPrevious: boolean;
+    if (input.direction === "first") {
+      hasPrevious = false;
+    } else if (input.direction === "at") {
+      hasPrevious = hasRowsBeforeCursor ?? false;
+    } else if (reverse) {
+      hasPrevious = lookahead;
+    } else {
+      hasPrevious = true;
+    }
     return {
       entries,
-      hasPrevious:
-        input.direction === "first"
-          ? false
-          : input.direction === "at"
-            ? (hasRowsBeforeCursor ?? false)
-            : reverse
-              ? lookahead
-              : true,
-      hasNext: input.direction === "first" ? lookahead : reverse ? true : lookahead,
+      hasPrevious,
+      hasNext: reverse || lookahead,
     };
   }
 
