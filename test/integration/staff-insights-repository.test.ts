@@ -5,6 +5,48 @@ import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repo
 
 const now = new Date("2096-08-20T12:00:00.000Z");
 
+async function authoritativeStatistics() {
+  const summary = await env.DB.prepare(
+    `SELECT count(*) AS submittedRequests,
+            coalesce(sum(state = 2), 0) AS helpedRequests,
+            coalesce(sum(state IN (0, 1)), 0) AS openRequests,
+            coalesce(sum(state = 3), 0) AS canceledRequests,
+            (SELECT count(*) FROM raid_groups WHERE state = 2 AND outcome = 0)
+              AS successfulRaids
+     FROM help_requests`,
+  ).first<{
+    submittedRequests: number;
+    helpedRequests: number;
+    openRequests: number;
+    canceledRequests: number;
+    successfulRaids: number;
+  }>();
+  const leaders = await env.DB.prepare(
+    `SELECT raid.leader_discord_user_id AS discordUserId,
+            count(member.id) AS helpedRequests,
+            count(DISTINCT raid.id) AS successfulRaids
+     FROM raid_groups AS raid
+     JOIN raid_group_members AS member ON member.group_id = raid.id AND member.state = 1
+     WHERE raid.state = 2 AND raid.outcome = 0
+       AND raid.leader_discord_user_id IS NOT NULL
+     GROUP BY raid.leader_discord_user_id
+     ORDER BY helpedRequests DESC, successfulRaids DESC, discordUserId ASC`,
+  ).all<{ discordUserId: string; helpedRequests: number; successfulRaids: number }>();
+  return {
+    submittedRequests: Number(summary?.submittedRequests ?? 0),
+    helpedRequests: Number(summary?.helpedRequests ?? 0),
+    openRequests: Number(summary?.openRequests ?? 0),
+    canceledRequests: Number(summary?.canceledRequests ?? 0),
+    successfulRaids: Number(summary?.successfulRaids ?? 0),
+    leaders: leaders.results.slice(0, 10).map((leader) => ({
+      ...leader,
+      helpedRequests: Number(leader.helpedRequests),
+      successfulRaids: Number(leader.successfulRaids),
+    })),
+    omittedLeaderCount: Math.max(0, leaders.results.length - 10),
+  };
+}
+
 async function insertUser(
   index: number,
   input: { twitchId?: string; discordId?: string; inGameName?: string } = {},
@@ -162,6 +204,104 @@ describe("staff statistics repository", () => {
     );
     expect(statistics.leaders.every((leader) => leader.helpedRequests === 1)).toBe(true);
     expect(statistics.omittedLeaderCount).toBe(2);
+  });
+
+  it("keeps rollups equal to source data across terminal corrections and deletions", async () => {
+    const repository = new D1MvpRepository(env.DB);
+    const first = await insertRequest(1, 2);
+    const second = await insertRequest(2, 2);
+    const third = await insertRequest(3, 3);
+    const groupId = await insertTerminalRaid({
+      index: 1,
+      leaderDiscordUserId: "leader-a",
+      outcome: 0,
+      members: [
+        { requestId: first, state: 1 },
+        { requestId: second, state: 1 },
+        { requestId: third, state: 2 },
+      ],
+    });
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    await env.DB.prepare(`UPDATE raid_groups SET leader_discord_user_id = 'leader-b' WHERE id = ?`)
+      .bind(groupId)
+      .run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    await env.DB.prepare(
+      `UPDATE raid_group_members SET state = 2 WHERE group_id = ? AND request_id = ?`,
+    )
+      .bind(groupId, first)
+      .run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    await env.DB.prepare(`DELETE FROM raid_group_members WHERE group_id = ? AND request_id = ?`)
+      .bind(groupId, second)
+      .run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    const fourth = await insertRequest(4, 2);
+    const plannedRaid = await env.DB.prepare(
+      `INSERT INTO raid_groups
+       (is_priority, sort_key, game_mode, map_id, requester_capacity,
+        leader_discord_user_id, leader_type, state, created_at, updated_at)
+       VALUES (0, 2000000, 2, 'customs', 4, 'leader-c', 1, 0, ?, ?)
+       RETURNING id`,
+    )
+      .bind(now.getTime(), now.getTime())
+      .first<{ id: number }>();
+    const plannedRaidId = Number(plannedRaid?.id);
+    await env.DB.prepare(
+      `INSERT INTO raid_group_members
+       (group_id, request_id, position, state, created_at, updated_at)
+       VALUES (?, ?, 1, 0, ?, ?)`,
+    )
+      .bind(plannedRaidId, fourth, now.getTime(), now.getTime())
+      .run();
+    await env.DB.prepare(
+      `UPDATE raid_group_members SET state = 1 WHERE group_id = ? AND request_id = ?`,
+    )
+      .bind(plannedRaidId, fourth)
+      .run();
+    await env.DB.prepare(
+      `UPDATE raid_groups
+       SET state = 2, outcome = 0, completed_at = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+      .bind(now.getTime(), now.getTime(), plannedRaidId)
+      .run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    await env.DB.prepare(`UPDATE raid_groups SET outcome = 1 WHERE id = ?`)
+      .bind(plannedRaidId)
+      .run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+    await env.DB.prepare(`UPDATE raid_groups SET outcome = 0 WHERE id = ?`)
+      .bind(plannedRaidId)
+      .run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    const fifth = await insertRequest(5, 2);
+    const transferSourceId = await insertTerminalRaid({
+      index: 3,
+      leaderDiscordUserId: "leader-d",
+      outcome: 0,
+      members: [{ requestId: fifth, state: 1 }],
+    });
+    await env.DB.prepare(
+      `UPDATE raid_group_members SET group_id = ?, position = 2
+       WHERE group_id = ? AND request_id = ?`,
+    )
+      .bind(plannedRaidId, transferSourceId, fifth)
+      .run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    await env.DB.prepare(`DELETE FROM raid_groups WHERE id = ?`).bind(groupId).run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
+
+    await env.DB.prepare(`UPDATE help_requests SET state = 3 WHERE id = ?`).bind(first).run();
+    await env.DB.prepare(`DELETE FROM help_requests WHERE id = ?`).bind(second).run();
+    await expect(repository.getStaffStatistics()).resolves.toEqual(await authoritativeStatistics());
   });
 });
 

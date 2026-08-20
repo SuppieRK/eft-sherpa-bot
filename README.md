@@ -6,7 +6,7 @@ EFT Sherpa Bot plans Escape from Tarkov help raids for the butcoffee community. 
 
 - Twitch viewers use `!request [mode] [map] [goal]` and `!queue`.
 - Discord viewers use `/request`, `/queue`, and `/link-twitch`.
-- The streamer and volunteer sherpas use `/board`, `/stats`, and `/users`.
+- The streamer and volunteer sherpas use `/board`, `/stats`, and `/users` in the Discord staff channel.
 - The bot groups requests only when the game mode and map are the same.
 - The board shows at least one raid for each non-empty game mode.
 - Staff review the complete goals and notes before they call the raid.

@@ -52,6 +52,13 @@ async function clearDatabase(): Promise<void> {
     env.DB.prepare("DELETE FROM user_mappings"),
     env.DB.prepare("DELETE FROM community_state"),
     env.DB.prepare("DELETE FROM event_receipts"),
+    env.DB.prepare("DELETE FROM staff_leader_statistics"),
+    env.DB.prepare(
+      `UPDATE staff_statistics_summary
+       SET submitted_requests = 0, helped_requests = 0, open_requests = 0,
+           canceled_requests = 0, successful_raids = 0, credited_leader_count = 0
+       WHERE singleton = 1`,
+    ),
     env.DB.prepare(
       "DELETE FROM sqlite_sequence WHERE name IN ('help_requests', 'raid_groups', 'raid_group_members')",
     ),

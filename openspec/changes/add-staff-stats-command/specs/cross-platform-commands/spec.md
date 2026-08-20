@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Shared public command words
-Discord SHALL expose `/request` with a required game-mode choice and `/queue` to viewers. Discord SHALL also expose `/stats` and `/users` as staff-only commands. Twitch SHALL expose `!request [mode] [map] [goal]` and `!queue`; it SHALL NOT expose `!stats` or `!users`. Queue SHALL accept no arguments. `/position`, `!position`, and `/spike` SHALL NOT be registered public commands.
+Discord SHALL expose `/request` with a required game-mode choice and `/queue` to viewers. Discord SHALL also expose `/stats` and `/users` as staff-only commands that operate only in the configured staff channel. Twitch SHALL expose `!request [mode] [map] [goal]` and `!queue`; it SHALL NOT expose `!stats` or `!users`. Queue SHALL accept no arguments. `/position`, `!position`, and `/spike` SHALL NOT be registered public commands.
 
 #### Scenario: Queue is checked on either platform
 - **WHEN** `/queue` or `!queue` is invoked
@@ -16,12 +16,16 @@ Discord SHALL expose `/request` with a required game-mode choice and `/queue` to
 - **THEN** no request is created and the bot gives short guidance for PvP Seasonal, PvP, and PvE
 
 #### Scenario: Staff requests statistics in Discord
-- **WHEN** the configured streamer or a current volunteer sherpa invokes `/stats`
+- **WHEN** the configured streamer or a current volunteer sherpa invokes `/stats` in the configured staff channel
 - **THEN** Discord routes the command to the staff statistics workflow
 
 #### Scenario: Staff requests users in Discord
-- **WHEN** the configured streamer or a current volunteer sherpa invokes `/users`
+- **WHEN** the configured streamer or a current volunteer sherpa invokes `/users` in the configured staff channel
 - **THEN** Discord routes the command to the staff user-directory workflow
+
+#### Scenario: Staff command is used outside the staff channel
+- **WHEN** the configured streamer or a current volunteer sherpa invokes `/stats` or `/users` outside the configured staff channel
+- **THEN** the bot returns only a short ephemeral denial and does not reveal statistics or identity data
 
 #### Scenario: Viewer types a staff command in Twitch
 - **WHEN** a Twitch viewer sends `!stats` or `!users`

@@ -1,8 +1,8 @@
 ## Context
 
-The bot retains help requests, raid groups, and membership history in D1. A successful raid preserves its Discord leader ID, Helped outcome, completion time, and completed membership rows. Removed historical memberships remain distinguishable. This is enough to calculate accurate all-time request outcomes and per-leader successful work without a new identity system.
+The bot retains help requests, raid groups, and membership history in D1. A successful raid preserves its Discord leader ID, Helped outcome, completion time, and completed membership rows. Removed historical memberships remain distinguishable. Migration `0004` backfills a singleton summary and one compact row per credited leader from this authoritative history, then D1 triggers maintain those rollups in the same transaction as each source change.
 
-Both new commands are Discord-only and staff-only. Their responses are ephemeral, so they do not need the canonical-board lifecycle, persistent Discord message IDs, deletion recovery, or Twitch-compatible names. `/stats` has no components. `/users` uses stateless page controls over the existing Twitch-first `user_mappings` table. The existing volunteer-role check and streamer ID define authorization.
+Both new commands are Discord-only, staff-only, and restricted to the configured staff channel. Their responses are ephemeral, so they do not need the canonical-board lifecycle, persistent Discord message IDs, deletion recovery, or Twitch-compatible names. `/stats` has no components. `/users` uses stateless page controls over the existing Twitch-first `user_mappings` table. The existing volunteer-role check, streamer ID, and staff-channel ID define authorization.
 
 ## Goals / Non-Goals
 
@@ -12,25 +12,25 @@ Both new commands are Discord-only and staff-only. Their responses are ephemeral
 - Define unambiguous request, raid, and leader-attribution counts.
 - Render one bounded list-based embed without pings or persistent state.
 - Let staff inspect Twitch, Discord, and Escape from Tarkov identity state in bounded pages, add absent Discord or in-game details, and reuse `/link-twitch` for corrections.
-- Keep the repository query read-only and measure its real local D1 cost through 100,000 retained requests.
+- Keep the `/stats` repository query read-only and scale-independent, and measure both its reads and the rollup triggers' bounded indexed write-path costs through 100,000 retained requests.
 
 **Non-Goals:**
 
 - Add `!stats`, `!users`, viewer statistics, public leaderboards, statistics date ranges, statistics pagination, Refresh, or Delete controls.
 - Distinguish no-shows from other cancellations.
 - Report historical attempt counts, because whole-raid postponement resets the current attempt fields.
-- Store volunteer profiles, resolve Discord names through an external API, or add scheduled rollups.
+- Store volunteer profiles, resolve Discord names through an external API, or add scheduled rollup jobs.
 - Add arbitrary identity overwrites, user search or filtering, manual Twitch-ID entry, or stored directory page sessions.
 
 ## Decisions
 
 ### Use a Discord-only staff command
 
-Add `/stats` to the Discord staff command configuration, but not to the shared public command-name parser. Authorize it with the same configured streamer ID and volunteer role used by staff-board access. An unauthorized caller receives a short ephemeral denial containing no statistics.
+Add `/stats` to the Discord staff command configuration, but not to the shared public command-name parser. Authorize it with the same configured streamer ID, volunteer role, and staff-channel restriction used by staff-board access. An unauthorized caller or a caller outside the configured staff channel receives a short ephemeral denial containing no statistics.
 
-The command may be invoked in the configured guild without requiring a public response. Because its response is caller-only, it does not need the staff-channel restriction that protects persistent board messages. Alternative considered: add matching `/stats` and `!stats` commands. Twitch has no reliable readable name for every Discord-only volunteer and would make the leaderboard inconsistent.
+The command may be invoked only in the configured staff channel. The response remains caller-only, but the channel restriction keeps all staff tools in one intentional Discord surface and prevents staff operations from appearing in viewer channels. Alternative considered: allow the ephemeral command in every guild channel. That makes the command harder to discover and operate consistently with `/board`.
 
-Apply the same Discord-only authorization rule to `/users`. Neither command is added to `PUBLIC_COMMAND_NAMES`, so Twitch chat treats `!stats` and `!users` as ordinary text. Alternative considered: make the directory a viewer self-service command. It contains other users' association and in-game details and therefore remains staff-only.
+Apply the same Discord-only authorization and staff-channel rule to `/users` and every `/users` component or modal interaction. Neither command is added to `PUBLIC_COMMAND_NAMES`, so Twitch chat treats `!stats` and `!users` as ordinary text. Alternative considered: make the directory a viewer self-service command. It contains other users' association and in-game details and therefore remains staff-only.
 
 ### Return one ephemeral snapshot embed
 
@@ -60,23 +60,26 @@ Summary counts come from `help_requests.state`: every row is submitted, waiting 
 
 Leader attribution joins only completed membership rows to successful raids and groups by `leader_discord_user_id`. This credits a multi-requester raid once per completed requester and once per raid. Removed memberships and Not Run groups do not count. Ranking uses helped requests descending, successful raids descending, then Discord user ID for deterministic ties.
 
-### Query source-of-truth tables directly
+### Maintain compact statistics rollups transactionally
 
-Add a repository statistics query that executes a constant bounded set of aggregate statements. The summary aggregation reads help requests. The leaderboard begins with successful raids and their completed memberships, returns only the first ten leaders plus the total credited-leader count, and writes nothing.
+Migration `0004` creates one `staff_statistics_summary` singleton row and one `staff_leader_statistics` row per credited Discord leader. It backfills both tables from authoritative source history. D1 triggers update the same rollups in the transaction that inserts, deletes, or changes a help request, successful raid, completed membership, or successful raid leader. The source tables remain authoritative and source-equivalence tests cover every supported transition and repair path.
 
-Do not add aggregate tables or write-path triggers before evidence requires them. The command is staff-only and expected to be infrequent; persistent counters would add write amplification and drift risk to every request and terminal transition. Existing records also become immediately visible with direct aggregation. Alternative considered: migration `0004` with materialized counters. That would make reads constant but complicate rollback, backfill, and every mutation for an infrequently used command.
+The repository reads exactly one summary row and at most ten leader rows ordered by helped requests, successful raids, and Discord user ID. The summary stores the total credited-leader count so omitted leaders do not require an aggregate scan. `/stats` therefore uses two read-only statements, writes nothing, and has a row-read cost independent of retained history.
+
+Alternative considered: query authoritative history on each invocation. The fully local D1 benchmark measured 234,318 rows read at 100,000 retained requests, which is excessive for a brief staff snapshot. Alternative considered: a scheduled rollup. It makes statistics stale and adds scheduling and recovery work that transaction-local D1 triggers avoid.
 
 ### Gate the read path on local D1 evidence
 
 Extend the existing stable benchmark with the full Discord `/stats` interaction at 100, 1,000, 10,000, and 100,000 retained requests. Seed every state and attribution boundary, including more than ten leaders and equal rankings. Report statements, rows read, rows written, D1 duration, and wall time.
 
-Linear row growth is expected for exact all-time source-of-truth aggregation. Statement count must stay constant and writes must stay zero. Superlinear growth or unacceptable measured latency requires query or index work and a regenerated report before release. The benchmark remains fully local.
+The `/stats` statement count and median row reads must stay constant across scales, and the command must write zero rows. The benchmark also measures representative request and raid-result mutations. Their statement and write counts must stay constant, and their indexed reads must remain within a small explicit cross-scale range with no history scan. Any unexplained growth requires query, trigger, schema, or fixture work and a regenerated report before release. The benchmark remains fully local.
 
 Measure `/users` at first, middle, and last keyset positions across the same scales using mixed identity completeness. Statements, rows read, and writes must remain independent of the number of preceding pages. Measure one missing-Discord completion as the representative bounded write path and cover missing-EFT completion with correctness tests. Existing primary-key ordering should require no migration; query-plan and benchmark evidence must confirm that assumption.
 
 ## Risks / Trade-offs
 
-- [Exact all-time aggregation reads retained history] → Keep the command staff-only, use bounded aggregate statements, benchmark through 100,000 rows, and add persistent rollups only with evidence.
+- [A rollup drifts from authoritative history] → Backfill from source tables, update rollups in the same D1 transaction through triggers, and compare rollups with direct source aggregation after every supported transition in integration tests.
+- [Rollup triggers make common writes expensive] → Measure representative request and raid-result mutations through 100,000 retained rows, require constant statements and writes, and reject more than 32 rows of cross-scale read growth.
 - [A Discord mention could notify a leader] → Return the embed with empty allowed-mention parsing and test the payload.
 - [A long leaderboard exceeds Discord limits] → Display at most ten ranked leaders and an omitted count; test worst-case IDs and counts against embed limits.
 - [A user directory page exposes identity details] → Require current staff authorization on the command and every page interaction and return only ephemeral responses.
@@ -90,11 +93,12 @@ Measure `/users` at first, middle, and last keyset positions across the same sca
 
 ## Migration Plan
 
-1. Add `/stats` and `/users` to the Discord guild command configuration and deploy the read-only Worker change.
-2. Re-run idempotent Discord command registration for the DEV guild.
-3. Run the complete local benchmark and verification suite before deployment.
-4. Smoke-test streamer access, volunteer access, unauthorized denial, empty data, ranked data, omitted leaders, caller-only visibility, user identity labels, forward and backward pagination, missing Discord and EFT completion, stale controls, and `/link-twitch` correction guidance in DEV.
-5. If validation fails, restore the prior Worker and command configuration; no D1 migration or data rollback is required.
+1. Apply additive migration `0004`; it backfills rollups from all retained source history before it installs the maintenance triggers.
+2. Deploy the Worker that reads the rollups and adds `/stats` and `/users` to the Discord guild command configuration.
+3. Re-run idempotent Discord command registration for the DEV guild.
+4. Run the complete local benchmark and verification suite before deployment.
+5. Smoke-test streamer access, volunteer access, unauthorized denial, empty data, ranked data, omitted leaders, caller-only visibility, user identity labels, forward and backward pagination, missing Discord and EFT completion, stale controls, and `/link-twitch` correction guidance in DEV.
+6. If validation fails after migration `0004`, restore the prior Worker only when it does not invoke `/stats`; preserve the additive tables and use a forward migration to repair any rollup defect.
 
 ## Open Questions
 

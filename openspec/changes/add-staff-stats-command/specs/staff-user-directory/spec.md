@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Staff can inspect Twitch-first user identity state
-Discord SHALL expose `/users` only to the configured streamer and current volunteer sherpas. It SHALL list retained `user_mappings` records in normalized Twitch-login order. Each row SHALL show the Twitch login, whether a stable Twitch user ID has been observed, the linked Discord member or `Not linked (optional)`, and the stored Escape from Tarkov name or `Missing`. Leader and member mentions SHALL render without sending notifications.
+Discord SHALL expose `/users` only to the configured streamer and current volunteer sherpas in the configured staff channel. It SHALL list retained `user_mappings` records in normalized Twitch-login order. Each row SHALL show the Twitch login, whether a stable Twitch user ID has been observed, the linked Discord member or `Not linked (optional)`, and the stored Escape from Tarkov name or `Missing`. Leader and member mentions SHALL render without sending notifications.
 
 The command SHALL NOT call the list a mandatory registration, require a Discord link, or expose a user record to an unauthorized caller. It SHALL NOT expose stable Twitch or Discord numeric IDs as plain text.
 
@@ -17,10 +17,14 @@ The command SHALL NOT call the list a mandatory registration, require a Discord 
 - **WHEN** a caller is neither the configured streamer nor a current volunteer sherpa
 - **THEN** the bot returns only a short ephemeral denial and reveals no user record or aggregate user count
 
+#### Scenario: Authorized caller invokes users outside the staff channel
+- **WHEN** the configured streamer or a current volunteer sherpa invokes `/users` outside the configured staff channel
+- **THEN** the bot returns only a short ephemeral denial and reveals no user record or aggregate user count
+
 ### Requirement: User pages use bounded stateless pagination
 `/users` SHALL return one ephemeral embed containing at most ten users. It SHALL use stable Twitch-login keyset order and stateless Previous and Next buttons that encode only the version, direction, and page boundary needed to query the adjacent page. It SHALL NOT store page state or message identity in D1 and SHALL NOT use SQL `OFFSET`.
 
-The first page SHALL disable Previous. The last page SHALL disable Next. A page SHALL also expose one `Complete user details` selector containing only displayed users whose Discord member or Escape from Tarkov name is missing; it SHALL be disabled when the page has no editable missing detail. A page interaction SHALL reauthorize the caller, read current mapping state, and replace the same ephemeral response. Inserted, updated, or removed mappings MAY change later pages without corrupting the stable order.
+The first page SHALL disable Previous. The last page SHALL disable Next. A page SHALL also expose one `Complete user details` selector containing only displayed users whose Discord member or Escape from Tarkov name is missing; it SHALL be disabled when the page has no editable missing detail. A page interaction SHALL reauthorize the caller and configured staff channel, read current mapping state, and replace the same ephemeral response. Inserted, updated, or removed mappings MAY change later pages without corrupting the stable order.
 
 #### Scenario: More than ten users exist
 - **WHEN** authorized staff invoke `/users` with more than ten retained mappings

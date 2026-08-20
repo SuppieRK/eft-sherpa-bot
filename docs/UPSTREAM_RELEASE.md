@@ -26,6 +26,8 @@ The release workflow rejects a commit that does not have a successful upstream d
 
 Migration `0002` sets all existing requests and raids to PvE. It also keeps old Worker writes compatible during deployment. After the bot accepts PvP Seasonal or PvP data, use a forward repair instead of a version that has no game-mode support.
 
+Migration `0004` backfills compact staff statistics from retained request and raid history. It then maintains the rollups in the same D1 transactions as source changes. After this migration is applied, preserve the source history and use a forward migration to repair a rollup defect.
+
 ## Complete the smoke test
 
 Use only maintainer-owned test accounts and the disposable test D1 database.

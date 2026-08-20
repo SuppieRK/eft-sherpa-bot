@@ -15,8 +15,8 @@ async function insertMapping(login: string, id: string): Promise<void> {
     .run();
 }
 
-describe("six-table dual-queue schema", () => {
-  it("contains exactly six application tables", async () => {
+describe("eight-table dual-queue schema", () => {
+  it("contains the six operational tables and two statistics rollup tables", async () => {
     const result = await env.DB.prepare(
       `SELECT name FROM sqlite_schema
        WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'
@@ -29,10 +29,53 @@ describe("six-table dual-queue schema", () => {
         "help_requests",
         "raid_group_members",
         "raid_groups",
+        "staff_leader_statistics",
+        "staff_statistics_summary",
         "community_state",
         "user_mappings",
       ].sort(),
     );
+  });
+
+  it("installs the statistics rollup index and transactional maintenance triggers", async () => {
+    const index = await env.DB.prepare(
+      `SELECT name FROM sqlite_schema
+       WHERE type = 'index' AND name = 'staff_leader_statistics_rank_idx'`,
+    ).first<{ name: string }>();
+    const triggers = await env.DB.prepare(
+      `SELECT name FROM sqlite_schema
+       WHERE type = 'trigger' AND name LIKE 'staff_statistics_%'
+       ORDER BY name`,
+    ).all<{ name: string }>();
+    expect(index?.name).toBe("staff_leader_statistics_rank_idx");
+    expect(triggers.results.map((trigger) => trigger.name)).toEqual([
+      "staff_statistics_leader_delete",
+      "staff_statistics_leader_insert",
+      "staff_statistics_member_completed_delete",
+      "staff_statistics_member_completed_insert",
+      "staff_statistics_member_completed_update",
+      "staff_statistics_raid_success_delete",
+      "staff_statistics_raid_success_enter",
+      "staff_statistics_raid_success_insert",
+      "staff_statistics_raid_success_leave",
+      "staff_statistics_raid_success_reassign",
+      "staff_statistics_request_delete",
+      "staff_statistics_request_insert",
+      "staff_statistics_request_state_update",
+    ]);
+  });
+
+  it("uses the ranking index for bounded staff leader reads", async () => {
+    const plan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT discord_user_id, helped_requests, successful_raids
+       FROM staff_leader_statistics
+       ORDER BY helped_requests DESC, successful_raids DESC, discord_user_id ASC
+       LIMIT 10`,
+    ).all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail).join(" ");
+    expect(details).toContain("staff_leader_statistics_rank_idx");
+    expect(details).not.toContain("USE TEMP B-TREE");
   });
 
   it("stores compact queue, attempt, message, and call state without retry machinery", async () => {

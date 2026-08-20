@@ -94,11 +94,10 @@ interface StatisticsSummaryRow {
   openRequests: number;
   canceledRequests: number;
   successfulRaids: number;
-}
-
-interface LeaderStatisticRow extends StaffLeaderStatistic {
   creditedLeaderCount: number;
 }
+
+type LeaderStatisticRow = StaffLeaderStatistic;
 
 interface TwitchReceiptRow {
   replyText: string | null;
@@ -656,7 +655,7 @@ export class D1MvpRepository
     const timestamp = epoch(input.changedAt);
     const groupJson = JSON.stringify(newGroups);
     const assignmentJson = JSON.stringify(assignments);
-    const results = await this.database.batch([
+    await this.database.batch([
       this.database
         .prepare(
           `INSERT INTO raid_groups
@@ -694,7 +693,7 @@ export class D1MvpRepository
         )
         .bind(timestamp, assignmentJson),
     ]);
-    return Number(results[2]?.meta.changes ?? 0);
+    return assignments.length;
   }
 
   async getBoardSnapshot(_now?: Date): Promise<StaffBoardSnapshot> {
@@ -1602,36 +1601,26 @@ export class D1MvpRepository
   async getStaffStatistics(): Promise<StaffStatistics> {
     const results = await this.database.batch([
       this.database.prepare(
-        `SELECT count(*) AS submittedRequests,
-                coalesce(sum(state = 2), 0) AS helpedRequests,
-                coalesce(sum(state IN (0, 1)), 0) AS openRequests,
-                coalesce(sum(state = 3), 0) AS canceledRequests,
-                (SELECT count(*) FROM raid_groups WHERE state = 2 AND outcome = 0)
-                  AS successfulRaids
-         FROM help_requests`,
+        `SELECT submitted_requests AS submittedRequests,
+                helped_requests AS helpedRequests,
+                open_requests AS openRequests,
+                canceled_requests AS canceledRequests,
+                successful_raids AS successfulRaids,
+                credited_leader_count AS creditedLeaderCount
+         FROM staff_statistics_summary WHERE singleton = 1`,
       ),
       this.database.prepare(
-        `WITH credits AS (
-           SELECT raid.leader_discord_user_id AS discordUserId,
-                  count(member.id) AS helpedRequests,
-                  count(DISTINCT raid.id) AS successfulRaids
-           FROM raid_groups AS raid
-           JOIN raid_group_members AS member
-             ON member.group_id = raid.id AND member.state = 1
-           WHERE raid.state = 2 AND raid.outcome = 0
-             AND raid.leader_discord_user_id IS NOT NULL
-           GROUP BY raid.leader_discord_user_id
-         )
-         SELECT discordUserId, helpedRequests, successfulRaids,
-                count(*) OVER () AS creditedLeaderCount
-         FROM credits
-         ORDER BY helpedRequests DESC, successfulRaids DESC, discordUserId ASC
+        `SELECT discord_user_id AS discordUserId,
+                helped_requests AS helpedRequests,
+                successful_raids AS successfulRaids
+         FROM staff_leader_statistics
+         ORDER BY helped_requests DESC, successful_raids DESC, discord_user_id ASC
          LIMIT 10`,
       ),
     ]);
     const summary = results[0]?.results[0] as StatisticsSummaryRow | undefined;
     const leaders = (results[1]?.results ?? []) as unknown as LeaderStatisticRow[];
-    const creditedLeaderCount = Number(leaders[0]?.creditedLeaderCount ?? 0);
+    const creditedLeaderCount = Number(summary?.creditedLeaderCount ?? 0);
     return {
       submittedRequests: Number(summary?.submittedRequests ?? 0),
       helpedRequests: Number(summary?.helpedRequests ?? 0),

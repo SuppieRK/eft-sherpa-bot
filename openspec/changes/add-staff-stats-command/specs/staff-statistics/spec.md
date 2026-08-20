@@ -31,13 +31,17 @@ The system SHALL attribute each helped request to the Discord leader of the succ
 - **THEN** it contributes no helped request or successful raid credit
 
 ### Requirement: Stats use one caller-only list embed
-`/stats` SHALL return one ephemeral Discord message visible only to the caller. The message SHALL contain one embed with an all-time heading, a list of request and successful-raid totals, and a ranked sherpa list. It SHALL contain no component, Delete control, Refresh control, persistent message identity, board link, or requester mention. Leader mentions SHALL render without sending a notification.
+`/stats` SHALL operate only in the configured staff channel and return one ephemeral Discord message visible only to the caller. The message SHALL contain one embed with an all-time heading, a list of request and successful-raid totals, and a ranked sherpa list. It SHALL contain no component, Delete control, Refresh control, persistent message identity, board link, or requester mention. Leader mentions SHALL render without sending a notification.
 
 The sherpa list SHALL show at most ten leaders. When more leaders have successful work, it SHALL state how many additional leaders are omitted. The complete embed SHALL stay within Discord field, item, and 6,000-character aggregate limits.
 
 #### Scenario: Staff member requests statistics
-- **WHEN** an authorized staff member invokes `/stats`
+- **WHEN** an authorized staff member invokes `/stats` in the configured staff channel
 - **THEN** Discord returns one ephemeral list-based embed with no components and no notification mention
+
+#### Scenario: Staff member requests statistics outside the staff channel
+- **WHEN** an authorized staff member invokes `/stats` outside the configured staff channel
+- **THEN** Discord returns only a short ephemeral denial and reveals no statistics
 
 #### Scenario: More than ten leaders have helped requests
 - **WHEN** the attribution query returns more than ten credited leaders
@@ -47,12 +51,22 @@ The sherpa list SHALL show at most ten leaders. When more leaders have successfu
 - **WHEN** request or raid state changes after a statistics embed was returned
 - **THEN** the existing ephemeral snapshot is not refreshed or tracked and a later `/stats` invocation calculates a new snapshot
 
-### Requirement: Statistics read authoritative data without mutation
-The statistics calculation SHALL read authoritative help-request, completed-membership, and raid-group state directly. It SHALL use a constant bounded number of D1 statements and SHALL write no D1 row. The command SHALL NOT maintain aggregate counters, create a scheduled rollup, contact a platform API, or use a remote database benchmark for the MVP.
+### Requirement: Statistics use transactionally maintained rollups
+The system SHALL backfill statistics rollups from authoritative help-request, completed-membership, and raid-group state. It SHALL maintain the rollups in the same D1 transaction as each supported source insert, update, deletion, leader reassignment, or membership transfer. Source tables SHALL remain authoritative, and the rollups SHALL produce the same result as direct source aggregation after each supported transition.
+
+The statistics calculation SHALL read one summary row and at most ten ranked leader rows with a constant bounded number of D1 statements. Its statement count and rows read SHALL remain independent of retained history, and it SHALL write no D1 row. The system SHALL NOT use a scheduled rollup, contact a platform API, or use a remote database benchmark.
 
 #### Scenario: Statistics are requested repeatedly
 - **WHEN** authorized staff invoke `/stats` several times without another state transition
 - **THEN** each invocation returns the same calculated values without changing a request, raid, membership, receipt, or statistics row
+
+#### Scenario: Retained history reaches the largest benchmark scale
+- **WHEN** authorized staff invoke `/stats` with 100,000 retained requests
+- **THEN** the command reads only the singleton summary and at most ten ranked leader rows
+
+#### Scenario: Authoritative state is corrected
+- **WHEN** a request, completed membership, successful raid, or successful raid leader is inserted, changed, transferred, or deleted
+- **THEN** the transaction leaves the rollups equal to a direct aggregation of the resulting source state
 
 #### Scenario: A leader changes their Discord display name
 - **WHEN** Discord renders a stored leader user ID after that user changes their display name

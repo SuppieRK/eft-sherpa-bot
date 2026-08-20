@@ -2058,6 +2058,7 @@ describe("Discord requester pull-up workflow", () => {
 describe("Discord staff insights workflow", () => {
   function staffCommand(name: "stats" | "users", staff = true) {
     return context({
+      channel_id: config.discord.staffChannelId,
       id: `${name}-${staff ? "staff" : "viewer"}`,
       type: 2,
       member: staff
@@ -2067,6 +2068,17 @@ describe("Discord staff insights workflow", () => {
           }
         : { user: { id: "viewer", username: "Viewer" }, roles: [] },
       data: { type: 1, name },
+    });
+  }
+
+  function staffInsightsInteraction(overrides: Record<string, unknown>) {
+    return context({
+      channel_id: config.discord.staffChannelId,
+      member: {
+        user: { id: "volunteer", username: "Volunteer" },
+        roles: [config.discord.volunteerRoleId],
+      },
+      ...overrides,
     });
   }
 
@@ -2082,6 +2094,23 @@ describe("Discord staff insights workflow", () => {
       data: { content: expect.stringContaining("streamer or a volunteer"), flags: 64 },
     });
     expect(JSON.stringify(body)).not.toContain("embeds");
+  });
+
+  it.each(["stats", "users"] as const)("denies /%s outside the staff channel", async (name) => {
+    const response = await worker.fetch(
+      await signedRequest(
+        context({ ...staffCommand(name), channel_id: config.discord.requestChannelId }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: {
+        content: "Use this command in the staff channel as the streamer or a volunteer sherpa.",
+        flags: 64,
+      },
+    });
   });
 
   it("returns independent caller-only statistics snapshots with no controls or pings", async () => {
@@ -2140,13 +2169,9 @@ describe("Discord staff insights workflow", () => {
     expect(nextId).toBeDefined();
     const next = await worker.fetch(
       await signedRequest(
-        context({
+        staffInsightsInteraction({
           id: "users-next",
           type: 3,
-          member: {
-            user: { id: "volunteer", username: "Volunteer" },
-            roles: [config.discord.volunteerRoleId],
-          },
           data: { custom_id: nextId, values: [] },
         }),
       ),
@@ -2157,13 +2182,9 @@ describe("Discord staff insights workflow", () => {
 
     const detail = await worker.fetch(
       await signedRequest(
-        context({
+        staffInsightsInteraction({
           id: "users-detail",
           type: 3,
-          member: {
-            user: { id: "volunteer", username: "Volunteer" },
-            roles: [config.discord.volunteerRoleId],
-          },
           data: {
             custom_id: "users:v1:detail:staff_viewer_00",
             values: ["staff_viewer_00"],
@@ -2177,13 +2198,9 @@ describe("Discord staff insights workflow", () => {
 
     const addDiscord = await worker.fetch(
       await signedRequest(
-        context({
+        staffInsightsInteraction({
           id: "users-add-discord",
           type: 3,
-          member: {
-            user: { id: "volunteer", username: "Volunteer" },
-            roles: [config.discord.volunteerRoleId],
-          },
           data: {
             custom_id: "users:v1:add_discord:staff_viewer_00:staff_viewer_00",
             values: ["selected-member"],
@@ -2204,13 +2221,9 @@ describe("Discord staff insights workflow", () => {
 
     const eftModal = await worker.fetch(
       await signedRequest(
-        context({
+        staffInsightsInteraction({
           id: "users-eft-button",
           type: 3,
-          member: {
-            user: { id: "volunteer", username: "Volunteer" },
-            roles: [config.discord.volunteerRoleId],
-          },
           data: {
             custom_id: "users:v1:add_eft:staff_viewer_00:staff_viewer_00",
             values: [],
@@ -2223,13 +2236,9 @@ describe("Discord staff insights workflow", () => {
     expect(await eftModal.json()).toMatchObject({ type: 9 });
     const eftResult = await worker.fetch(
       await signedRequest(
-        context({
+        staffInsightsInteraction({
           id: "users-eft-submit",
           type: 5,
-          member: {
-            user: { id: "volunteer", username: "Volunteer" },
-            roles: [config.discord.volunteerRoleId],
-          },
           data: {
             custom_id: "users:v1:add_eft:staff_viewer_00:staff_viewer_00",
             components: [
@@ -2258,13 +2267,9 @@ describe("Discord staff insights workflow", () => {
   it("returns restart guidance for a malformed user-page boundary", async () => {
     const response = await worker.fetch(
       await signedRequest(
-        context({
+        staffInsightsInteraction({
           id: "users-malformed",
           type: 3,
-          member: {
-            user: { id: "volunteer", username: "Volunteer" },
-            roles: [config.discord.volunteerRoleId],
-          },
           data: { custom_id: "users:v1:next:BAD-NAME", values: [] },
         }),
       ),
@@ -2274,6 +2279,25 @@ describe("Discord staff insights workflow", () => {
     expect(await response.json()).toMatchObject({
       type: 4,
       data: { content: "Open `/users` again and use a current control.", flags: 64 },
+    });
+  });
+
+  it("denies a user-directory control outside the staff channel", async () => {
+    const response = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          channel_id: config.discord.requestChannelId,
+          id: "users-control-wrong-channel",
+          type: 3,
+          data: { custom_id: "users:v1:next:viewer_001", values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("in the staff channel"), flags: 64 },
     });
   });
 });

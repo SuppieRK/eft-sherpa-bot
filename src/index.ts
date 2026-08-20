@@ -101,19 +101,28 @@ function discordUpdateInsights(message: StaffInsightsMessage): Response {
 }
 
 function hasStaffAccess(
-  interaction: { discordUserId: string; discordRoleIds: readonly string[] },
+  interaction: {
+    channelId: string;
+    discordUserId: string;
+    discordRoleIds: readonly string[];
+  },
   communityConfig: CommunityConfig,
 ): boolean {
-  return isStaffBoardMember({
-    discordUserId: interaction.discordUserId,
-    discordRoleIds: interaction.discordRoleIds,
-    streamerDiscordUserId: communityConfig.discord.streamerUserId,
-    volunteerRoleId: communityConfig.discord.volunteerRoleId,
-  });
+  return (
+    interaction.channelId === communityConfig.discord.staffChannelId &&
+    isStaffBoardMember({
+      discordUserId: interaction.discordUserId,
+      discordRoleIds: interaction.discordRoleIds,
+      streamerDiscordUserId: communityConfig.discord.streamerUserId,
+      volunteerRoleId: communityConfig.discord.volunteerRoleId,
+    })
+  );
 }
 
 function staffDenied(): Response {
-  return discordEphemeralMessage("Only the streamer or a volunteer sherpa can use this command.");
+  return discordEphemeralMessage(
+    "Use this command in the staff channel as the streamer or a volunteer sherpa.",
+  );
 }
 
 function materializeRaidBoard(
