@@ -111,7 +111,25 @@ if (
   );
 }
 
-const ciSteps = ciWorkflow?.jobs?.verify?.steps ?? [];
+const ciJob = ciWorkflow?.jobs?.verify;
+const ciSteps = ciJob?.steps ?? [];
+const verificationStep = ciSteps.find((step) => step.name === "Verify release candidate");
+const sonarStep = ciSteps.find((step) => step.name === "Analyze with SonarQube Cloud");
+const sonarEnabledExpression = `\${{ secrets.SONAR_TOKEN != '' }}`;
+const coverageConditionExpression = `\${{ env.SONAR_ENABLED }}`;
+const sonarTokenExpression = `\${{ secrets.SONAR_TOKEN }}`;
+if (
+  ciJob?.env?.SONAR_ENABLED !== sonarEnabledExpression ||
+  verificationStep?.env?.VITEST_COVERAGE !== coverageConditionExpression ||
+  typeof sonarStep?.uses !== "string" ||
+  !sonarStep.uses.startsWith("SonarSource/sonarqube-scan-action@") ||
+  sonarStep.if !== "env.SONAR_ENABLED == 'true'" ||
+  sonarStep.env?.SONAR_TOKEN !== sonarTokenExpression
+) {
+  failures.push(
+    `${workflowDirectory}/ci.yml: CI must generate coverage and run SonarQube Cloud when SONAR_TOKEN is available`,
+  );
+}
 const benchmarkStep = ciSteps.find((step) => step.name === "Run fully local D1 benchmark");
 if (benchmarkStep?.run !== "npm run benchmark:d1") {
   failures.push(`${workflowDirectory}/ci.yml: CI must generate local D1 benchmark evidence`);

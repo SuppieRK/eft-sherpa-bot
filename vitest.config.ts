@@ -19,6 +19,13 @@ export default defineConfig({
     })),
   ],
   test: {
+    coverage: {
+      enabled: process.env.VITEST_COVERAGE === "true",
+      provider: "istanbul",
+      reporter: ["text-summary", "lcov"],
+      include: ["src/**/*.ts"],
+      exclude: ["src/worker-configuration.d.ts"],
+    },
     fileParallelism: false,
     include: ["test/**/*.test.ts"],
     setupFiles: ["./test/setup.ts"],
