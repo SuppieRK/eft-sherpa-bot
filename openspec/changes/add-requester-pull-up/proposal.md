@@ -4,7 +4,7 @@ Staff can move a requester to a later raid, but they cannot fill an open seat in
 
 ## What Changes
 
-- Add a planned-raid control that lets authorized staff pull one selected requester from a later raid with the same game mode and map.
+- Add a planned-raid requester selector that lets authorized staff pull one selected requester from a later raid with the same game mode and map directly from the raid review message.
 - Permit a postponed Priority raid to pull an explicitly selected requester from an Ordinary raid and promote only that request to Priority.
 - After the pull, attempt to move every remaining source requester together into the immediately following compatible raid when the complete remainder fits; otherwise retain the source party unchanged.
 - Keep all pull and push-down changes atomic, bounded by map requester capacity, and free of requester calls.
@@ -27,3 +27,4 @@ None.
 - D1 repository transitions, membership history, queue counters, and compatibility enforcement.
 - Additive D1 migration `0003`, repository and Discord tests, benchmark contract, and generated performance report.
 - No public Twitch or Discord command changes and no requester notification during rearrangement.
+- Re-reviewing or refreshing a raid whose Discord detail message was deleted recreates that message and its current controls.

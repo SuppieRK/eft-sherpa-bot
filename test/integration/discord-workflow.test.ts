@@ -17,7 +17,6 @@ let worker: ReturnType<typeof createWorker>;
 let messageSequence = 0;
 let deleteResponseStatus = 204;
 let createResponseStatus = 200;
-let messageReadStatuses = new Map<string, number>();
 let messagePatchStatuses = new Map<string, number>();
 let createBarrierTarget = 0;
 let createBarrierResolvers: Array<() => void> = [];
@@ -38,10 +37,6 @@ const discordFetcher = {
     if (request.method === "PATCH" && existingId !== undefined) {
       const status = messagePatchStatuses.get(existingId) ?? 200;
       if (status !== 200) return new Response(null, { status });
-    }
-    if (request.method === "GET" && existingId !== undefined) {
-      const status = messageReadStatuses.get(existingId) ?? 200;
-      return status === 200 ? Response.json({ id: existingId }) : new Response(null, { status });
     }
     if (request.method === "POST" && createResponseStatus !== 200) {
       return new Response(null, { status: createResponseStatus });
@@ -295,7 +290,6 @@ beforeEach(async () => {
   messageSequence = 0;
   deleteResponseStatus = 204;
   createResponseStatus = 200;
-  messageReadStatuses = new Map();
   messagePatchStatuses = new Map();
   createBarrierTarget = 0;
   createBarrierResolvers = [];
@@ -665,7 +659,8 @@ describe("Discord progressive raid workflow", () => {
       testEnvironment,
       createExecutionContext(),
     );
-    expect(await moved.json()).toMatchObject({
+    const movedBody = await moved.json();
+    expect(movedBody).toMatchObject({
       type: 7,
       data: {
         embeds: [
@@ -673,6 +668,7 @@ describe("Discord progressive raid workflow", () => {
         ],
       },
     });
+    expect(JSON.stringify(movedBody)).toContain("Pull requester up");
     const source = await repo.getRaid(planned.id);
     expect(source).toMatchObject({
       state: "planned",
@@ -945,7 +941,7 @@ describe("Discord progressive raid workflow", () => {
       staffMessageId: "deleted-detail",
       attemptTwo: true,
     });
-    messageReadStatuses.set("deleted-detail", 404);
+    messagePatchStatuses.set("deleted-detail", 404);
 
     const response = await refreshBoard("refresh-deleted");
     expect(await response.json()).toMatchObject({ type: 7 });
@@ -989,7 +985,7 @@ describe("Discord progressive raid workflow", () => {
       changedAt,
     });
     await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
-    messageReadStatuses.set("deleted-planned-detail", 404);
+    messagePatchStatuses.set("deleted-planned-detail", 404);
     outbound = [];
 
     await refreshBoard("refresh-deleted-planned");
@@ -1010,6 +1006,103 @@ describe("Discord progressive raid workflow", () => {
     expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
       false,
     );
+  });
+
+  it("recreates a deleted planned detail when staff review the raid again", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("repair-repeat-review")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "deleted-repeat-review",
+      changedAt,
+    });
+    messagePatchStatuses.set("deleted-repeat-review", 404);
+    outbound = [];
+
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "repeat-deleted-review",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("/message-1"), flags: 64 },
+    });
+    expect(await repo.getRaid(planned.id)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      staffMessageId: "message-1",
+    });
+    expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
+      false,
+    );
+  });
+
+  it("keeps one replacement when deleted-detail review actions overlap", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("repair-concurrent-repeat-review")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "deleted-concurrent-review",
+      changedAt,
+    });
+    messagePatchStatuses.set("deleted-concurrent-review", 404);
+    createBarrierTarget = 2;
+    outbound = [];
+    const review = async (id: string) =>
+      worker.fetch(
+        await signedRequest(
+          context({
+            id,
+            type: 3,
+            channel_id: config.discord.staffChannelId,
+            member: {
+              user: { id: "volunteer", username: "Volunteer" },
+              roles: [config.discord.volunteerRoleId],
+            },
+            data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+
+    const responses = await Promise.all([
+      review("concurrent-deleted-review-one"),
+      review("concurrent-deleted-review-two"),
+    ]);
+    const retainedMessageId = (await repo.getRaid(planned.id))?.staffMessageId;
+    expect(retainedMessageId).toMatch(/^message-[12]$/);
+    for (const response of responses) {
+      expect(JSON.stringify(await response.json())).toContain(`/${retainedMessageId}`);
+    }
+    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(2);
+    expect(outbound.filter((request) => request.method === "DELETE")).toHaveLength(1);
   });
 
   it("tracks multiple raid detail messages through recovery and independent actions", async () => {
@@ -1087,7 +1180,7 @@ describe("Discord progressive raid workflow", () => {
     const customs = reviewedByMap.get("customs") as StaffBoardRaid;
     const woods = reviewedByMap.get("woods") as StaffBoardRaid;
     const shoreline = reviewedByMap.get("shoreline") as StaffBoardRaid;
-    messageReadStatuses.set(woods.staffMessageId as string, 404);
+    messagePatchStatuses.set(woods.staffMessageId as string, 404);
     outbound = [];
     await refreshBoard("multi-detail-refresh");
 
@@ -1149,34 +1242,34 @@ describe("Discord progressive raid workflow", () => {
     );
   });
 
-  it("retains an active message identity on a temporary Discord read failure", async () => {
+  it("retains an active message identity on a temporary Discord update failure", async () => {
     const { repo, raid } = await seedActiveRaid({
       interactionId: "retain-temporary",
       staffMessageId: "temporary-detail",
     });
-    messageReadStatuses.set("temporary-detail", 500);
+    messagePatchStatuses.set("temporary-detail", 500);
 
     await refreshBoard("refresh-temporary");
 
     expect((await repo.getRaid(raid.id))?.staffMessageId).toBe("temporary-detail");
     expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
-    const canonicalUpdate = outbound.find((request) => request.method === "PATCH");
+    const canonicalUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
     expect(JSON.stringify(canonicalUpdate?.body)).toContain("/temporary-detail");
   });
 
-  it("clears a confirmed dead link when replacement creation fails", async () => {
+  it("retains a confirmed dead link so replacement creation can retry", async () => {
     const { repo, raid } = await seedActiveRaid({
       interactionId: "failed-replacement",
       staffMessageId: "dead-detail",
     });
-    messageReadStatuses.set("dead-detail", 404);
+    messagePatchStatuses.set("dead-detail", 404);
     createResponseStatus = 500;
 
     await refreshBoard("refresh-failed-replacement");
 
-    expect((await repo.getRaid(raid.id))?.staffMessageId).toBeUndefined();
-    const canonicalUpdate = outbound.find((request) => request.method === "PATCH");
-    expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/dead-detail");
+    expect((await repo.getRaid(raid.id))?.staffMessageId).toBe("dead-detail");
   });
 
   it("keeps one replacement and deletes the duplicate when refreshes overlap", async () => {
@@ -1455,11 +1548,13 @@ describe("Discord requester pull-up workflow", () => {
     const { repo, destination, source } = await reviewedDestinationWithSource({
       messageId: "pull-detail",
     });
-    const candidateResponse = await worker.fetch(
+    outbound = [];
+    const reviewResponse = await worker.fetch(
       await signedRequest(
         pullInteraction({
-          id: "pull-candidates",
-          customId: `raid:v3:pull_candidates:${destination.id}`,
+          id: "refresh-pull-selector",
+          customId: "board:v6:review",
+          values: [String(destination.id)],
           discordUserId: "volunteer",
           roleIds: [config.discord.volunteerRoleId],
         }),
@@ -1467,27 +1562,29 @@ describe("Discord requester pull-up workflow", () => {
       testEnvironment,
       createExecutionContext(),
     );
-    expect(await candidateResponse.json()).toMatchObject({
+    expect(await reviewResponse.json()).toMatchObject({
       type: 4,
-      data: {
-        flags: 64,
-        components: [
-          {
-            components: [
-              {
-                custom_id: `raid:v3:pull:${destination.id}:${source.id}`,
-                options: [
-                  {
-                    label: `@${source.members[0]?.twitchLogin}`,
-                    description: source.members[0]?.objective,
-                    value: String(source.members[0]?.requestId),
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      },
+      data: { content: expect.stringContaining("/pull-detail"), flags: 64 },
+    });
+    const detailUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/pull-detail"),
+    );
+    expect(detailUpdate).toBeDefined();
+    const rows = (detailUpdate?.body.components ?? []) as Array<{
+      components: Array<Record<string, unknown>>;
+    }>;
+    const selector = rows
+      .flatMap((row) => row.components)
+      .find((component) => component.custom_id === `raid:v3:pull:${destination.id}:${source.id}`);
+    expect(selector).toMatchObject({
+      placeholder: "Pull requester up",
+      options: [
+        {
+          label: `@${source.members[0]?.twitchLogin}`,
+          description: source.members[0]?.objective,
+          value: String(source.members[0]?.requestId),
+        },
+      ],
     });
 
     outbound = [];
@@ -1505,8 +1602,11 @@ describe("Discord requester pull-up workflow", () => {
     );
     await waitOnExecutionContext(executionContext);
     expect(await pullResponse.json()).toMatchObject({
-      type: 7,
-      data: { content: "Requester pulled up. The empty source raid was closed." },
+      type: 4,
+      data: {
+        content: "Requester pulled up. The empty source raid was closed.",
+        flags: 64,
+      },
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -1632,8 +1732,11 @@ describe("Discord requester pull-up workflow", () => {
       createExecutionContext(),
     );
     expect(await response.json()).toMatchObject({
-      type: 7,
-      data: { content: "Requester pulled up. The remaining source raid stayed in place." },
+      type: 4,
+      data: {
+        content: "Requester pulled up. The remaining source raid stayed in place.",
+        flags: 64,
+      },
     });
     expect((await repo.getRaid(source.id))?.members.map((member) => member.requestId)).toEqual(
       sourceRemainder,
@@ -1666,7 +1769,6 @@ describe("Discord requester pull-up workflow", () => {
       messageId: "deleted-pull-detail",
     });
     messagePatchStatuses.set("deleted-pull-detail", 404);
-    messageReadStatuses.set("deleted-pull-detail", 404);
     const response = await worker.fetch(
       await signedRequest(
         pullInteraction({
@@ -1679,8 +1781,8 @@ describe("Discord requester pull-up workflow", () => {
       createExecutionContext(),
     );
     expect(await response.json()).toMatchObject({
-      type: 7,
-      data: { content: expect.stringContaining("Requester pulled up") },
+      type: 4,
+      data: { content: expect.stringContaining("Requester pulled up"), flags: 64 },
     });
     const repaired = await repo.getRaid(destination.id);
     expect(repaired?.staffMessageId).toMatch(/^message-/);

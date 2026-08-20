@@ -14,6 +14,8 @@
 - [x] 2.3 Apply a selected pull, re-render the original raid detail message, refresh the canonical board, and report whether the source closed, pushed down, or retained its remainder without sending requester calls.
 - [x] 2.4 Add Discord workflow tests that cover every interaction scenario in the delta specs: streamer and volunteer authorization; unauthorized users; button visibility at every capacity and raid-state boundary; candidate ordering and labels; no-candidate and stale responses; Ordinary-to-Ordinary and Ordinary-to-Priority selection; successful, rejected, and retained push-down results; canonical board refresh; multiple simultaneous detail messages; manually deleted board and detail messages; legacy component identifiers; repeated and concurrent interactions; Discord response deadlines; and absence of Discord or Twitch calls.
 - [x] 2.5 Create a test traceability matrix that maps every scenario in both delta specifications to at least one automated schema, repository, invariant, Discord workflow, or benchmark test, and close every uncovered combination or boundary before release.
+- [x] 2.6 Replace the pull-up button and private intermediate selector with a direct `Pull requester up` select menu on planned review details, retain safe legacy component handling, and refresh selector options after each planned-raid mutation.
+- [x] 2.7 Validate an existing detail message during repeat Review, recreate it after Discord `404` with compare-and-set, and add integration coverage for direct re-review, Refresh recovery, and concurrent replacement.
 
 ## 3. Performance, Documentation, and Release Verification
 
@@ -22,7 +24,9 @@
 - [x] 3.3 Update ASD-STE100 operator documentation for `Pull requester up`, Ordinary-to-Priority promotion, bounded push-down results, and the fact that pulling does not call a requester or start a raid.
 - [x] 3.4 Run formatting, linting, type checking, dead-code and static analysis, migration and checksum checks, documentation and workflow checks, tests, build, secret scan, strict OpenSpec validation, and diff validation.
 - [x] 3.5 Verify the completed implementation against every proposal, design, and delta-spec requirement and confirm that the automated traceability matrix has no uncovered scenario.
+- [x] 3.6 Update operator documentation and traceability, then rerun formatting, static analysis, tests, build, secret scan, strict OpenSpec validation, and diff validation for the corrected Discord UX and recovery path.
 
 ## 4. Publish and Deploy
 
 - [x] 4.1 As the final task, create a Git branch for this change, commit all change-scoped files, push the branch, create a GitHub pull request with the verified behavior and benchmark evidence, manually deploy that exact branch commit to the user's DEV environment, and smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, multiple raid details, deleted details, and no-call behavior.
+- [ ] 4.2 Commit and push the corrections to the existing pull-request branch, update the pull-request summary, manually deploy the exact corrected commit to DEV, and verify the direct selector plus deleted-detail recovery.

@@ -1,13 +1,17 @@
 ## ADDED Requirements
 
 ### Requirement: Staff can pull one requester into a reviewed raid
-A reviewed planned raid with requester capacity SHALL expose `Pull requester up` to the configured streamer and eligible volunteers. Activating the control SHALL privately list every current requester in the first eligible later source raid with the same game mode and map. The source SHALL be planned, unreviewed, automatically fillable, unreserved, and later in service order. An Ordinary destination SHALL search only later Ordinary raids. A Priority destination SHALL search later Priority raids before Ordinary raids. The system SHALL NOT list an active, reviewed, or leader-reserved source.
+A reviewed planned raid with requester capacity SHALL expose a `Pull requester up` select menu directly in its raid detail message when the first eligible later source exists. The menu SHALL list every current requester in that source with Twitch identity and goal. The source SHALL have the same game mode and map and SHALL be planned, unreviewed, automatically fillable, unreserved, and later in service order. An Ordinary destination SHALL search only later Ordinary raids. A Priority destination SHALL search later Priority raids before Ordinary raids. The system SHALL NOT list an active, reviewed, or leader-reserved source.
 
 Selecting one listed requester SHALL atomically append that requester to the reviewed destination without exceeding requester capacity. It SHALL retain the destination's planned state, attempt count, leader reservation, automatic-fill state, and call statuses. It SHALL send no Discord or Twitch requester call. The reviewed detail message and canonical board SHALL refresh from the committed state.
 
 #### Scenario: Ordinary reviewed raid has an open seat
 - **WHEN** eligible staff request pull candidates and the first later unreviewed Ordinary raid has the same game mode and map
-- **THEN** the private selector lists every current requester in that one source raid with Twitch identity and goal
+- **THEN** the raid review message contains a `Pull requester up` selector that lists every current requester in that one source raid with Twitch identity and goal
+
+#### Scenario: No eligible source exists
+- **WHEN** a reviewed raid has requester capacity but no eligible later source
+- **THEN** its raid review message does not contain a `Pull requester up` selector
 
 #### Scenario: Earlier later raid is incompatible
 - **WHEN** a later raid has another game mode or map before an eligible source
@@ -24,6 +28,17 @@ Selecting one listed requester SHALL atomically append that requester to the rev
 #### Scenario: Selection becomes stale
 - **WHEN** the destination fills, the source changes state, or the selected requester moves before the selection commits
 - **THEN** the entire transition is rejected without changing a request, membership, raid, call, or attempt
+
+### Requirement: Deleted raid review details recover
+A board Refresh or repeat Review action for a frozen planned raid SHALL update its stored Discord detail message with current controls. When Discord reports that the stored message does not exist, the system SHALL create one replacement and atomically replace the stale reference. If replacement creation fails, the stale reference SHALL remain available for a later retry. The system SHALL refresh the canonical board link and SHALL NOT assign a leader, start an attempt, or send a call. Concurrent recovery SHALL retain only one canonical replacement.
+
+#### Scenario: Staff review a raid after deleting its details
+- **WHEN** the stored raid detail message returns Discord `404` and staff select that raid from `Review a raid` again
+- **THEN** the bot creates one replacement detail message and returns its new link
+
+#### Scenario: Board refresh finds a deleted reviewed detail
+- **WHEN** a visible reviewed raid points to a Discord detail message that was manually deleted
+- **THEN** Refresh replaces the message and updates the board link without changing raid state
 
 ### Requirement: Priority pull explicitly promotes one Ordinary request
 A reviewed Priority raid MAY pull a selected requester from the first eligible Ordinary source when no eligible later Priority source precedes it. The transaction SHALL promote only the selected help request to Priority before creating its compatible Priority membership. Every other source request SHALL remain Ordinary. Any push-down after that pull SHALL use only an Ordinary destination. An Ordinary raid SHALL NOT pull a Priority requester.

@@ -3,7 +3,6 @@ import type { StaffBoardRaid, StaffBoardSnapshot } from "../../src/domain/staff-
 import {
   parseRaidMessageAction,
   parseStaffBoardAction,
-  renderPullRequesterSelector,
   renderRaidMessage,
   renderStaffBoard,
 } from "../../src/infrastructure/discord/staff-board";
@@ -153,7 +152,8 @@ describe("split staff board", () => {
 
   it("renders planned review details without calls or active-only controls", () => {
     const reviewed = { ...raid, automaticFill: false, staffMessageId: "review-message" };
-    const message = renderRaidMessage(reviewed, 3, "reviewer");
+    const pullSource = { ...raid, id: 8, sortKey: 2_000_000 };
+    const message = renderRaidMessage(reviewed, 3, "reviewer", pullSource);
     const serialized = JSON.stringify(message);
     expect(serialized).toContain("Status: Planned review · Attempt 0/3");
     expect(serialized).toContain("Leader: Not assigned");
@@ -162,6 +162,8 @@ describe("split staff board", () => {
     expect(serialized).toContain("Notes: Bring markers");
     expect(serialized).toContain("Call and start raid");
     expect(serialized).toContain("Pull requester up");
+    expect(serialized).toContain("raid:v3:pull:7:8");
+    expect(serialized).not.toContain("raid:v3:pull_candidates:7");
     expect(serialized).toContain("Move requester to next raid");
     expect(serialized).toContain("Remove requester");
     expect(serialized).not.toContain("Record a raid result");
@@ -171,12 +173,23 @@ describe("split staff board", () => {
   });
 
   it("shows Pull requester up only during a planned frozen review with capacity", () => {
+    const pullSource = { ...raid, id: 8, sortKey: 2_000_000 };
     expect(JSON.stringify(renderRaidMessage(raid, 3))).not.toContain("Pull requester up");
+    expect(
+      JSON.stringify(
+        renderRaidMessage(
+          { ...raid, automaticFill: false, staffMessageId: "review-message" },
+          3,
+          undefined,
+          pullSource,
+        ),
+      ),
+    ).toContain("Pull requester up");
     expect(
       JSON.stringify(
         renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" }, 3),
       ),
-    ).toContain("Pull requester up");
+    ).not.toContain("Pull requester up");
     expect(
       JSON.stringify(
         renderRaidMessage(
@@ -192,6 +205,8 @@ describe("split staff board", () => {
             })),
           },
           3,
+          undefined,
+          pullSource,
         ),
       ),
     ).not.toContain("Pull requester up");
@@ -206,6 +221,8 @@ describe("split staff board", () => {
             leaderDiscordUserId: "leader",
           },
           3,
+          undefined,
+          pullSource,
         ),
       ),
     ).not.toContain("Pull requester up");
@@ -289,8 +306,8 @@ describe("split staff board", () => {
         },
       ],
     };
-    const message = renderPullRequesterSelector(destination, source);
-    expect(message.components[0]?.components[0]).toMatchObject({
+    const message = renderRaidMessage(destination, 3, undefined, source);
+    expect(message.components[1]?.components[0]).toMatchObject({
       custom_id: "raid:v3:pull:7:8",
       options: [
         { label: "@viewer", description: "Task", value: "2" },

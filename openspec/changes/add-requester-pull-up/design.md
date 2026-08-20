@@ -24,13 +24,17 @@ The current D1 model materializes each party as a raid group and preserves histo
 
 ## Decisions
 
-### Discover one source on demand
+### Show one source in the review message
 
-The planned detail message exposes a `Pull requester up` button only while its requester capacity has an open seat. The button performs the source query on demand and returns a private select menu containing every member of the first eligible later raid. This keeps source discovery off normal board refreshes and detail renders, limits the selector to one raid's map-bounded membership, and lets staff inspect Twitch identity and goal before choosing.
+The planned detail message exposes a `Pull requester up` select menu only while its requester capacity has an open seat and the first eligible source exists. The review, recovery, and post-action render paths perform the source query and put every member of that one source raid directly in the selector. This matches the existing `Move requester to next raid` interaction, limits the selector to one raid's map-bounded membership, and lets staff inspect Twitch identity and goal before choosing without an extra button step.
 
 An eligible source is planned, unreviewed, automatically fillable, unreserved, later in service order, and has the same game mode and map. An Ordinary destination searches only later Ordinary raids. A Priority destination searches later Priority raids first and then Ordinary raids. Active, reviewed, and leader-reserved groups form boundaries and are not silently modified.
 
-Alternative considered: include candidates in every detail render. That adds D1 work to unrelated controls and produces stale public components. Alternative considered: select any matching requester in the tail. That weakens stable queue order and requires an unbounded candidate surface.
+Active raid renders do not perform source discovery. Selector data is advisory and can become stale, so selection still revalidates every boundary atomically. Alternative considered: retain a button that opens a private selector. Staff found the extra step inconsistent with the other requester controls. Alternative considered: select any matching requester in the tail. That weakens stable queue order and requires an unbounded candidate surface.
+
+### Recreate deleted review messages before returning their link
+
+Re-reviewing a frozen planned raid validates and refreshes its stored Discord detail message before returning a link. A Discord `404` creates one replacement with current requester controls and atomically replaces the stale message ID with compare-and-set. If replacement creation fails, the stale ID stays available for a later retry. The existing board Refresh reconciliation uses the same recovery behavior. Concurrent recovery keeps one canonical replacement and deletes any duplicate that loses compare-and-set.
 
 ### Promote only the selected cross-queue request
 
@@ -67,13 +71,14 @@ The stable benchmark adds the private source-selector read and a maximum bounded
 - [Concurrent review or start makes selector data stale] → Revalidate all groups and capacity atomically; reject without partial movement.
 - [A later reviewed or reserved raid would change silently] → Exclude it from automatic push-down and retain the source remainder.
 - [A candidate lookup regresses with a skewed queue] → Install the mode-and-map ordered partial index and gate release on local D1 row statistics through 100,000 requests.
-- [Two-step private selection adds one click] → Keep normal detail rendering cheap and expose at most one source raid's members in the selector.
+- [Candidate discovery adds one indexed read to planned review renders] → Query only the first eligible source and do not run it for active raids.
+- [A manually deleted detail leaves a stale database link] → Update stored detail messages during re-review and atomically replace a confirmed Discord `404` with compare-and-set.
 
 ## Migration Plan
 
 1. Apply additive migration `0003` and verify its query plan and checksum locally.
 2. Deploy the Worker after the index exists; old Workers remain compatible during the interval.
-3. Refresh the canonical board and reviewed detail messages to expose current component identifiers.
+3. Refresh the canonical board and reviewed detail messages to expose the direct selector and replace deleted details.
 4. Smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, and no-call behavior in DEV.
 5. If deployment fails, restore the prior Worker without reverting `0003`; the unused index is safe.
 

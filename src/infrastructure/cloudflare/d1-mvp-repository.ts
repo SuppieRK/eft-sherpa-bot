@@ -275,12 +275,12 @@ function boundedBoardRaidSql(): string {
           SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(0, 7)})`;
 }
 
-function pullSourceIdSql(): string {
+function pullSourceIdSql(requireStaffMessage = true): string {
   return `WITH destination AS (
             SELECT id, is_priority, game_mode, map_id, sort_key
             FROM raid_groups
             WHERE id = ? AND state = 0 AND automatic_fill = 0
-              AND staff_message_id IS NOT NULL
+              ${requireStaffMessage ? "AND staff_message_id IS NOT NULL" : ""}
               AND current_member_count < requester_capacity
           ), selected AS (
             SELECT coalesce(
@@ -767,9 +767,10 @@ export class D1MvpRepository implements QueueQueryRepository {
 
   async getPullRequesterCandidates(
     destinationGroupId: number,
+    options: { requireStaffMessage?: boolean } = {},
   ): Promise<PullRequesterCandidates | undefined> {
     const selected = await this.database
-      .prepare(pullSourceIdSql())
+      .prepare(pullSourceIdSql(options.requireStaffMessage ?? true))
       .bind(destinationGroupId)
       .first<{ groupId: number }>();
     if (selected === null) return undefined;

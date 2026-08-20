@@ -221,6 +221,7 @@ export function renderRaidMessage(
   raid: StaffBoardRaid,
   attemptLimit: number,
   notificationUserId?: string,
+  pullSource?: StaffBoardRaid,
 ): DiscordBotMessage {
   const terminal = raid.state === "completed" || raid.state === "canceled";
   const status = terminal
@@ -252,18 +253,32 @@ export function renderRaidMessage(
           custom_id: `${RAID_PREFIX}:call:${raid.id}`,
           label: "Call and start raid",
         },
-        ...(!raid.automaticFill && raid.members.length < raid.requesterCapacity
-          ? [
-              {
-                type: 2 as const,
-                style: 2 as const,
-                custom_id: `${RAID_PREFIX}:pull_candidates:${raid.id}`,
-                label: "Pull requester up",
-              },
-            ]
-          : []),
       ],
     });
+    if (
+      !raid.automaticFill &&
+      raid.members.length < raid.requesterCapacity &&
+      pullSource !== undefined &&
+      pullSource.members.length > 0
+    ) {
+      components.push({
+        type: 1,
+        components: [
+          {
+            type: 3,
+            custom_id: `${RAID_PREFIX}:pull:${raid.id}:${pullSource.id}`,
+            placeholder: "Pull requester up",
+            min_values: 1,
+            max_values: 1,
+            options: pullSource.members.map((member) => ({
+              label: `@${member.twitchLogin}`.slice(0, 100),
+              value: String(member.requestId),
+              description: member.objective.slice(0, 100),
+            })),
+          },
+        ],
+      });
+    }
   } else if (!terminal) {
     const finalAttempt = raid.attemptCount >= attemptLimit;
     const outcomes: SelectOption[] = [

@@ -435,7 +435,7 @@ function operationDefinitions(input: {
           }),
           async verify(response) {
             expect(response.status).toBe(200);
-            expect(discordMock.calls.some((call) => call.method === "GET")).toBe(true);
+            expect(discordMock.calls.some((call) => call.method === "GET")).toBe(false);
             expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(true);
           },
         };
@@ -519,22 +519,26 @@ function operationDefinitions(input: {
     },
     {
       id: "discord.requester.pull.candidates",
-      label: "Discord pull requester candidate selector",
+      label: "Discord direct pull requester selector",
       async prepare(seed, sample) {
         const fixture = await seedPullFixture(seed);
         return {
           request: await component({
             id: `${OPERATION_PREFIX}pull-candidates-${sample}`,
-            customId: `raid:v3:pull_candidates:${fixture.destination.groupId}`,
+            customId: "board:v6:review",
+            values: [String(fixture.destination.groupId)],
           }),
           async verify(response) {
             expect(response.status).toBe(200);
-            const body = await responseText(response);
-            expect(body).toContain(
+            const detailUpdate = discordMock.calls.find(
+              (call) =>
+                call.method === "PATCH" && call.url.endsWith(`/${OPERATION_PREFIX}detail-pull`),
+            );
+            expect(detailUpdate?.body).toContain(
               `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
             );
-            expect(body).toContain("@op_pull_source_1");
-            expect(body).toContain("Benchmark goal 1");
+            expect(detailUpdate?.body).toContain("@op_pull_source_1");
+            expect(detailUpdate?.body).toContain("Benchmark goal 1");
           },
         };
       },

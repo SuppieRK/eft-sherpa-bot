@@ -35,9 +35,11 @@ The planned raid message has these controls:
 
 Use **Move requester to next raid** or **Remove requester** before you call the raid when the proposed group must change. Automatic grouping and requester limits do not change. A reviewed raid does not accept a new automatic requester.
 
-Use **Pull requester up** to fill an open requester place from a later raid with the same mode and map. The private list shows each Twitch name and goal. Select one requester after you review the goals.
+Use the **Pull requester up** list to fill an open requester place from a later raid with the same mode and map. The list is in the raid review message. It shows each Twitch name and goal. Select one requester after you review the goals. The list is not present when there is no compatible later requester.
 
 The pull does not call a requester, assign a leader, or start an attempt. A priority raid can pull one selected ordinary requester. Only that selected request becomes priority.
+
+If someone deletes a raid review message, select the raid from **Review a raid** again or select **Refresh**. The bot creates one replacement message and updates the board link. It does not start the raid or call a requester.
 
 After the pull, the bot can move all requesters who remain in the source raid to the next compatible raid. The bot makes this move only when all remaining requesters fit. Otherwise, the source raid stays in its current place.
 

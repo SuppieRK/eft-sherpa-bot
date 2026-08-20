@@ -18,7 +18,6 @@ import {
   deleteDiscordMessage,
   DiscordApiError,
   discordMessageUrl,
-  getDiscordMessage,
   updateDiscordMessage,
 } from "./messages";
 import {
@@ -89,6 +88,29 @@ function boardMessage(
   });
 }
 
+async function raidDetailMessage(input: {
+  raid: StaffBoardRaid;
+  repository: D1MvpRepository;
+  communityConfig: CommunityConfig;
+  notificationUserId?: string;
+}): Promise<DiscordBotMessage> {
+  const canPull =
+    input.raid.state === "planned" &&
+    !input.raid.automaticFill &&
+    input.raid.members.length < input.raid.requesterCapacity;
+  const candidates = canPull
+    ? await input.repository.getPullRequesterCandidates(input.raid.id, {
+        requireStaffMessage: false,
+      })
+    : undefined;
+  return renderRaidMessage(
+    input.raid,
+    input.communityConfig.policies.attemptLimit,
+    input.notificationUserId,
+    candidates?.source,
+  );
+}
+
 export async function synchronizeCanonicalBoard(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
@@ -146,39 +168,30 @@ async function reconcileRaidMessage(input: {
   communityConfig: CommunityConfig;
   changedAt: Date;
 }): Promise<void> {
-  const isReviewedPlanned =
-    input.raid.state === "planned" && input.raid.staffMessageId !== undefined;
-  if (input.raid.state !== "active" && !isReviewedPlanned) return;
+  const current = await input.repository.getRaid(input.raid.id);
+  const isReviewedPlanned = current?.state === "planned" && !current.automaticFill;
+  if (current === undefined || (current.state !== "active" && !isReviewedPlanned)) return;
   const channelId = input.communityConfig.discord.staffChannelId;
-  if (input.raid.staffMessageId !== undefined) {
+  const message = await raidDetailMessage({
+    raid: current,
+    repository: input.repository,
+    communityConfig: input.communityConfig,
+  });
+  if (current.staffMessageId !== undefined) {
     try {
-      await getDiscordMessage(input.environment, channelId, input.raid.staffMessageId);
+      await updateDiscordMessage(input.environment, channelId, current.staffMessageId, message);
       return;
     } catch (error) {
       if (!(error instanceof DiscordApiError) || error.status !== 404) return;
     }
-    const cleared = await input.repository.compareAndSetRaidStaffMessage({
-      groupId: input.raid.id,
-      expectedMessageId: input.raid.staffMessageId,
-      changedAt: input.changedAt,
-    });
-    if (!cleared) return;
   }
-
-  const current = await input.repository.getRaid(input.raid.id);
-  const canRecover =
-    current?.state === "active" || (current?.state === "planned" && !current.automaticFill);
-  if (current === undefined || !canRecover || current.staffMessageId !== undefined) {
-    return;
-  }
-  const created = await createDiscordMessage(
-    input.environment,
-    channelId,
-    renderRaidMessage(current, input.communityConfig.policies.attemptLimit),
-  );
+  const created = await createDiscordMessage(input.environment, channelId, message);
   try {
     const stored = await input.repository.compareAndSetRaidStaffMessage({
       groupId: current.id,
+      ...(current.staffMessageId === undefined
+        ? {}
+        : { expectedMessageId: current.staffMessageId }),
       messageId: created.id,
       changedAt: input.changedAt,
     });
@@ -301,16 +314,35 @@ class StaffBoardHandler {
     reviewerDiscordUserId: string,
   ): Promise<string> {
     const { communityConfig, changedAt, environment } = this.dependencies;
-    if (raid.staffMessageId !== undefined) return raid.staffMessageId;
+    const message = await raidDetailMessage({
+      raid,
+      repository: this.repository,
+      communityConfig,
+      notificationUserId: reviewerDiscordUserId,
+    });
+    if (raid.staffMessageId !== undefined) {
+      try {
+        await updateDiscordMessage(
+          environment,
+          communityConfig.discord.staffChannelId,
+          raid.staffMessageId,
+          message,
+        );
+        return raid.staffMessageId;
+      } catch (error) {
+        if (!(error instanceof DiscordApiError) || error.status !== 404) throw error;
+      }
+    }
     const created = await createDiscordMessage(
       environment,
       communityConfig.discord.staffChannelId,
-      renderRaidMessage(raid, communityConfig.policies.attemptLimit, reviewerDiscordUserId),
+      message,
     );
     let stored: boolean;
     try {
       stored = await this.repository.compareAndSetRaidStaffMessage({
         groupId: raid.id,
+        ...(raid.staffMessageId === undefined ? {} : { expectedMessageId: raid.staffMessageId }),
         messageId: created.id,
         changedAt,
       });
@@ -350,12 +382,17 @@ class StaffBoardHandler {
   private async refreshPulledRaidMessage(raid: StaffBoardRaid): Promise<void> {
     const { communityConfig, environment } = this.dependencies;
     if (raid.staffMessageId === undefined) return;
+    const message = await raidDetailMessage({
+      raid,
+      repository: this.repository,
+      communityConfig,
+    });
     try {
       await updateDiscordMessage(
         environment,
         communityConfig.discord.staffChannelId,
         raid.staffMessageId,
-        renderRaidMessage(raid, communityConfig.policies.attemptLimit),
+        message,
       );
     } catch (error) {
       if (!(error instanceof DiscordApiError) || error.status !== 404) throw error;
@@ -466,7 +503,7 @@ class StaffBoardHandler {
             : pulled.sourceDisposition === "pushed"
               ? "Requester pulled up. The remaining source requesters moved to the next compatible raid."
               : "Requester pulled up. The remaining source raid stayed in place.";
-        return update({ content: result, allowed_mentions: { parse: [] }, components: [] });
+        return ephemeral(result);
       }
       if (raidAction?.action === "call") {
         if (raid.state !== "planned" || raid.staffMessageId === undefined) {
@@ -557,7 +594,13 @@ class StaffBoardHandler {
         });
         this.refreshBoardLater();
         if (updated.state !== "canceled") {
-          return update(renderRaidMessage(updated, communityConfig.policies.attemptLimit));
+          return update(
+            await raidDetailMessage({
+              raid: updated,
+              repository: this.repository,
+              communityConfig,
+            }),
+          );
         }
         const deleted = await this.deleteRaidMessage(raid.staffMessageId);
         return ephemeral(
@@ -581,7 +624,13 @@ class StaffBoardHandler {
             : "Requester postponed and the empty raid was closed, but its old details message could not be deleted.",
         );
       }
-      return update(renderRaidMessage(postponed.source, communityConfig.policies.attemptLimit));
+      return update(
+        await raidDetailMessage({
+          raid: postponed.source,
+          repository: this.repository,
+          communityConfig,
+        }),
+      );
     } catch (error) {
       if (error instanceof RepositoryInvariantError) return ephemeral(error.message);
       throw error;
