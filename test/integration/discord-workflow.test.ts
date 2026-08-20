@@ -102,6 +102,7 @@ function requestModal(
   interactionId: string,
   gameMode: "pvp-seasonal" | "pvp" | "pve" = "pve",
   legacy = false,
+  mapId = "customs",
 ) {
   const text = (customId: string, value: string) => ({
     type: 18,
@@ -115,7 +116,7 @@ function requestModal(
       components: [
         text("request:twitch-name", "TwitchViewer"),
         text("request:in-game-name", "Helpful PMC"),
-        { type: 18, component: { type: 3, custom_id: "request:map", values: ["customs"] } },
+        { type: 18, component: { type: 3, custom_id: "request:map", values: [mapId] } },
         text("request:objective", "Complete a task"),
         text("request:notes", "Bring markers"),
       ],
@@ -509,6 +510,7 @@ describe("Discord progressive raid workflow", () => {
       content: expect.stringContaining("Starting PvE · Customs"),
       allowed_mentions: { parse: [], users: ["volunteer", "requester"] },
     });
+    expect(requestCall?.body.content).not.toEqual(expect.stringContaining("Bring:"));
     let raid = await repo.getRaid(raidId ?? 0);
     expect(raid).toMatchObject({
       state: "active",
@@ -724,53 +726,81 @@ describe("Discord progressive raid workflow", () => {
     });
   });
 
-  it("names the game mode in streamer-led Discord and Twitch calls", async () => {
-    await worker.fetch(
-      await signedRequest(requestModal("streamer-call-request", "pvp")),
-      testEnvironment,
-      createExecutionContext(),
-    );
-    const repo = new D1MvpRepository(env.DB);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
-    const twitchFetch = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(Response.json({ data: [{ message_id: "call-message", is_sent: true }] }));
-    const staff = {
-      channel_id: config.discord.staffChannelId,
-      member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
-    };
-    await worker.fetch(
-      await signedRequest(
-        context({
-          ...staff,
-          id: "streamer-review",
-          type: 3,
-          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
-        }),
-      ),
-      testEnvironment,
-      createExecutionContext(),
-    );
-    const response = await worker.fetch(
-      await signedRequest(
-        context({
-          ...staff,
-          id: "streamer-start",
-          type: 3,
-          data: { custom_id: `raid:v2:call:${raid.id}`, values: [] },
-        }),
-      ),
-      testEnvironment,
-      createExecutionContext(),
-    );
-    expect(response.status).toBe(200);
-    const discordCall = outbound.find((request) =>
-      request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
-    );
-    expect(discordCall?.body.content).toContain("Starting PvP · Customs");
-    const twitchBody = twitchFetch.mock.calls[0]?.[1]?.body;
-    expect(typeof twitchBody === "string" ? twitchBody : "").toContain("Starting PvP · Customs");
-  });
+  it.each([
+    ["the-lab", "pvp-seasonal", "PvP Seasonal · The Lab", "TerraGroup Labs access keycard"],
+    ["the-labyrinth", "pvp", "PvP · The Labyrinth", "Knossos LLC facility key"],
+    ["terminal", "pve", "PvE · Terminal", "Prapor's letter for the port checkpoint"],
+    ["icebreaker", "pve", "PvE · Icebreaker", "current Euro exit fee"],
+  ] as const)(
+    "adds the %s preparation reminder to streamer-led Discord and Twitch calls",
+    async (mapId, gameMode, raidName, expectedReminder) => {
+      await worker.fetch(
+        await signedRequest(requestModal(`streamer-call-request-${mapId}`, gameMode, false, mapId)),
+        testEnvironment,
+        createExecutionContext(),
+      );
+      const repo = new D1MvpRepository(env.DB);
+      const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+      const twitchFetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(
+          Response.json({ data: [{ message_id: "call-message", is_sent: true }] }),
+        );
+      const staff = {
+        channel_id: config.discord.staffChannelId,
+        member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+      };
+      await worker.fetch(
+        await signedRequest(
+          context({
+            ...staff,
+            id: `streamer-review-${mapId}`,
+            type: 3,
+            data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+      const response = await worker.fetch(
+        await signedRequest(
+          context({
+            ...staff,
+            id: `streamer-start-${mapId}`,
+            type: 3,
+            data: { custom_id: `raid:v2:call:${raid.id}`, values: [] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+      expect(response.status).toBe(200);
+      const discordCall = outbound.find((request) =>
+        request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+      );
+      expect(discordCall?.body).toMatchObject({
+        content: expect.stringContaining(`Starting ${raidName}`),
+        allowed_mentions: { parse: [], users: [config.discord.streamerUserId, "requester"] },
+      });
+      expect(discordCall?.body.content).toEqual(expect.stringContaining("Bring:"));
+      expect(discordCall?.body.content).toEqual(expect.stringContaining(expectedReminder));
+      const twitchBody = twitchFetch.mock.calls[0]?.[1]?.body;
+      const twitchMessage =
+        typeof twitchBody === "string"
+          ? ((JSON.parse(twitchBody) as { message?: string }).message ?? "")
+          : "";
+      expect(twitchMessage).toContain(`Starting ${raidName}`);
+      expect(twitchMessage).toContain("@twitchviewer");
+      expect(twitchMessage).toContain("Bring:");
+      expect(twitchMessage).toContain(expectedReminder);
+      expect(await repo.getRaid(raid.id)).toMatchObject({
+        state: "active",
+        discordCallStatus: "sent",
+        twitchCallStatus: "sent",
+      });
+      twitchFetch.mockRestore();
+    },
+  );
 
   it("keeps the raid active and reports partial call delivery failure", async () => {
     await worker.fetch(

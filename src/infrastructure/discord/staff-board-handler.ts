@@ -1,5 +1,6 @@
 import type { CommunityConfig } from "../../config/community";
 import { resolveTarkovMap } from "../../domain/maps/catalog";
+import { appendRaidBringSuffix } from "../../domain/raid-call";
 import { formatModeMap } from "../../domain/game-mode";
 import { RepositoryInvariantError } from "../../domain/sherpa-repository";
 import { isStaffBoardMember, type StaffBoardRaid } from "../../domain/staff-board";
@@ -248,8 +249,9 @@ async function sendRaidCalls(
   repository: D1MvpRepository,
 ): Promise<void> {
   const { environment, communityConfig, changedAt } = dependencies;
-  const map = resolveTarkovMap(raid.mapId)?.name ?? raid.mapId;
-  const raidName = formatModeMap(raid.gameMode, map);
+  const resolvedMap = resolveTarkovMap(raid.mapId);
+  const mapName = resolvedMap?.name ?? raid.mapId;
+  const raidName = formatModeMap(raid.gameMode, mapName);
   const linkedUsers = [
     ...(raid.leaderDiscordUserId === undefined ? [] : [raid.leaderDiscordUserId]),
     ...raid.members.flatMap((member) =>
@@ -262,7 +264,10 @@ async function sendRaidCalls(
     .map((member) => `@${member.twitchLogin}`);
   try {
     await createDiscordMessage(environment, communityConfig.discord.requestChannelId, {
-      content: `Starting ${raidName}: ${[...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ")}`,
+      content: appendRaidBringSuffix(
+        `Starting ${raidName}: ${[...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ")}`,
+        resolvedMap,
+      ),
       allowed_mentions: { parse: [], users: uniqueUsers },
     });
     await repository.updateCallStatus(raid.id, "discord", "sent", changedAt);
@@ -279,7 +284,10 @@ async function sendRaidCalls(
       },
       {
         broadcasterId: communityConfig.twitch.broadcasterUserId,
-        message: `Starting ${raidName}: ${raid.members.map((member) => `@${member.twitchLogin}`).join(" ")}. Check Discord for details.`,
+        message: appendRaidBringSuffix(
+          `Starting ${raidName}: ${raid.members.map((member) => `@${member.twitchLogin}`).join(" ")}. Check Discord for details.`,
+          resolvedMap,
+        ),
       },
     );
     await repository.updateCallStatus(raid.id, "twitch", "sent", changedAt);
