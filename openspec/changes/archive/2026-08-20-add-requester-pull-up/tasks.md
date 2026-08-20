@@ -36,5 +36,5 @@
 
 - [x] 4.1 As the final task, create a Git branch for this change, commit all change-scoped files, push the branch, create a GitHub pull request with the verified behavior and benchmark evidence, manually deploy that exact branch commit to the user's DEV environment, and smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, multiple raid details, deleted details, and no-call behavior.
 - [x] 4.2 Commit and push the corrections to the existing pull-request branch, update the pull-request summary, manually deploy the exact corrected commit to DEV, and verify the direct selector plus deleted-detail recovery.
-- [ ] 4.3 Commit and push the clarification to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify the disabled selector plus planned-detail dismissal.
-- [ ] 4.4 Commit and push the Cancel review control to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify review cancellation without raid or request changes.
+- [x] 4.3 Commit and push the clarification to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify the disabled selector plus planned-detail dismissal.
+- [x] 4.4 Commit and push the Cancel review control to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify review cancellation without raid or request changes.
