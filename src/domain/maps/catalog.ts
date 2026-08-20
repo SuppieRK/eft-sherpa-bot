@@ -11,11 +11,12 @@ export interface TarkovMapDefinition {
   name: string;
   aliases: readonly string[];
   sherpaPartyCapacity: number;
+  readonly raidPreparationReminder?: string;
   sourceLocationIds: readonly string[];
   sourceNormalizedNames: readonly string[];
 }
 
-export const TARKOV_MAP_CATALOG_VERSION = "2026-08-14.1";
+export const TARKOV_MAP_CATALOG_VERSION = "2026-08-20.1";
 
 export const TARKOV_MAP_CATALOG_SOURCE: TarkovMapCatalogSource = {
   endpoint: "https://json.tarkov.dev/pve/maps?lang=en",
@@ -95,6 +96,7 @@ export const TARKOV_MAPS = [
     name: "The Lab",
     aliases: ["the lab", "lab", "labs", "dark lab", "lab dark"],
     sherpaPartyCapacity: 5,
+    raidPreparationReminder: "Each player: TerraGroup Labs access keycard.",
     sourceLocationIds: ["5b0fc42d86f7744a585f9105", "6a294a5b5eb5f9a1700417b7"],
     sourceNormalizedNames: ["the-lab", "the-lab-dark"],
   },
@@ -115,6 +117,8 @@ export const TARKOV_MAPS = [
     name: "Terminal",
     aliases: ["terminal", "term"],
     sherpaPartyCapacity: 5,
+    raidPreparationReminder:
+      "Each player: Reprogrammed RFID keycard with Mr. Kerman's hash codes + Secure container Alpha-1 with TerraGroup evidence, RFID keycard with unknown name, Reprogrammed RFID keycard with Prapor's hash codes, or Prapor's letter for the port checkpoint. Enter through Shoreline from 21:00 to 06:00.",
     sourceLocationIds: ["65cc8f81a9aac3e77d0cfd3e"],
     sourceNormalizedNames: ["terminal"],
   },
@@ -123,6 +127,8 @@ export const TARKOV_MAPS = [
     name: "The Labyrinth",
     aliases: ["the labyrinth", "labyrinth", "maze"],
     sherpaPartyCapacity: 5,
+    raidPreparationReminder:
+      "Each player: Labrys access keycard. Party: one Knossos LLC facility key.",
     sourceLocationIds: ["6733700029c367a3d40b02af"],
     sourceNormalizedNames: ["the-labyrinth"],
   },
@@ -131,6 +137,7 @@ export const TARKOV_MAPS = [
     name: "Icebreaker",
     aliases: ["icebreaker", "ice breaker", "boreas"],
     sherpaPartyCapacity: 3,
+    raidPreparationReminder: "Each player: current Rouble entry fee and current Euro exit fee.",
     sourceLocationIds: ["69af492a4819ea4ba10a69c5"],
     sourceNormalizedNames: ["icebreaker"],
   },

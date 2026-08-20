@@ -45,6 +45,14 @@ const expectedSourceVariants = [
   "woods",
 ];
 
+const expectedPreparationReminders = {
+  "the-lab": "Each player: TerraGroup Labs access keycard.",
+  "the-labyrinth": "Each player: Labrys access keycard. Party: one Knossos LLC facility key.",
+  terminal:
+    "Each player: Reprogrammed RFID keycard with Mr. Kerman's hash codes + Secure container Alpha-1 with TerraGroup evidence, RFID keycard with unknown name, Reprogrammed RFID keycard with Prapor's hash codes, or Prapor's letter for the port checkpoint. Enter through Shoreline from 21:00 to 06:00.",
+  icebreaker: "Each player: current Rouble entry fee and current Euro exit fee.",
+} as const;
+
 describe("Tarkov map catalog", () => {
   it("contains every supported canonical map", () => {
     expect(TARKOV_MAPS.map((map) => map.id).sort()).toEqual(expectedMapIds);
@@ -67,6 +75,40 @@ describe("Tarkov map catalog", () => {
       expect(Number.isInteger(map.sherpaPartyCapacity)).toBe(true);
       expect(map.sherpaPartyCapacity).toBe(map.id === "icebreaker" ? 3 : 5);
     }
+  });
+
+  it("defines exact preparation reminders only for restricted maps", () => {
+    expect(
+      Object.fromEntries(
+        TARKOV_MAPS.flatMap((map) =>
+          "raidPreparationReminder" in map ? [[map.id, map.raidPreparationReminder] as const] : [],
+        ),
+      ),
+    ).toEqual(expectedPreparationReminders);
+    for (const map of TARKOV_MAPS) {
+      if (map.id in expectedPreparationReminders) continue;
+      expect("raidPreparationReminder" in map).toBe(false);
+    }
+  });
+
+  it("uses the same preparation reminder in every supported game mode", () => {
+    const gameModes = ["pvp-seasonal", "pvp", "pve"] as const;
+    for (const mapId of Object.keys(expectedPreparationReminders)) {
+      const reminder = resolveTarkovMap(mapId)?.raidPreparationReminder;
+      const remindersByMode = Object.fromEntries(
+        gameModes.map((gameMode) => [gameMode, resolveTarkovMap(mapId)?.raidPreparationReminder]),
+      );
+      expect(remindersByMode).toEqual(
+        Object.fromEntries(gameModes.map((mode) => [mode, reminder])),
+      );
+    }
+  });
+
+  it("names both Icebreaker fee currencies without freezing their amounts", () => {
+    const reminder = resolveTarkovMap("icebreaker")?.raidPreparationReminder;
+    expect(reminder).toContain("Rouble entry fee");
+    expect(reminder).toContain("Euro exit fee");
+    expect(reminder).not.toMatch(/\d/);
   });
 
   it("resolves aliases without leaking catalog representation", () => {
