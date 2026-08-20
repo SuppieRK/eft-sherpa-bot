@@ -54,11 +54,13 @@ export type TwitchGameModePrefix = {
   remainingText: string;
 };
 
+const flexibleWhitespacePattern = String.raw`\s+`;
+
 export function resolveTwitchGameModePrefix(value: string): TwitchGameModePrefix | undefined {
   const trimmed = value.trim();
   for (const { alias, mode } of TWITCH_MODE_ALIASES) {
     const pattern = new RegExp(
-      String.raw`^${alias.replaceAll(" ", String.raw`\s+`)}(?:\s+|$)`,
+      String.raw`^${alias.replaceAll(" ", flexibleWhitespacePattern)}(?:\s+|$)`,
       "i",
     );
     const match = pattern.exec(trimmed);
