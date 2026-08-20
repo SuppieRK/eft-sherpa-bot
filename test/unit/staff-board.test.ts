@@ -166,8 +166,13 @@ describe("split staff board", () => {
     expect(serialized).not.toContain("raid:v3:pull_candidates:7");
     expect(serialized).toContain("Move requester to next raid");
     expect(serialized).toContain("Remove requester");
-    expect(serialized).toContain('"label":"Cancel"');
+    expect(serialized).toContain('"label":"Cancel review"');
     expect(serialized).toContain("raid:v3:cancel:7");
+    expect(message.components[0]?.components).toMatchObject([
+      { label: "Call and start raid", style: 1 },
+      { label: "Cancel review", style: 2 },
+    ]);
+    expect(message.components).toHaveLength(4);
     expect(serialized).not.toContain("Record a raid result");
     expect(serialized).not.toContain("Postpone raid");
     expect(message.content).toBe("<@reviewer> review this proposed raid.");
@@ -257,7 +262,7 @@ describe("split staff board", () => {
     expect(JSON.stringify(message)).toContain("Postpone raid");
     expect(JSON.stringify(message)).not.toContain("Call and start raid");
     expect(JSON.stringify(message)).not.toContain("Pull requester up");
-    expect(JSON.stringify(message)).not.toContain('"label":"Cancel"');
+    expect(JSON.stringify(message)).not.toContain('"label":"Cancel review"');
     expect(message.allowed_mentions.users).toEqual(["leader"]);
     const updated = renderRaidMessage({ ...active, attemptCount: 3 }, 3);
     expect(JSON.stringify(updated)).not.toContain("Try again");

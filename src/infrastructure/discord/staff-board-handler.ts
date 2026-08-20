@@ -516,7 +516,7 @@ class StaffBoardHandler {
             changedAt,
           });
           throw new RepositoryInvariantError(
-            "Discord could not close that review. Try Cancel again.",
+            "Discord could not close that review. Try Cancel review again.",
           );
         }
         this.refreshBoardLater();

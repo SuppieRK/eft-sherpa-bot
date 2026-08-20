@@ -260,6 +260,16 @@ export function renderRaidMessage(
           custom_id: `${RAID_PREFIX}:call:${raid.id}`,
           label: "Call and start raid",
         },
+        ...(!raid.automaticFill
+          ? [
+              {
+                type: 2 as const,
+                style: 2 as const,
+                custom_id: `${RAID_PREFIX}:cancel:${raid.id}`,
+                label: "Cancel review",
+              },
+            ]
+          : []),
       ],
     });
     if (!raid.automaticFill && raid.members.length < raid.requesterCapacity) {
@@ -357,19 +367,6 @@ export function renderRaidMessage(
             value: String(member.requestId),
             description: member.objective.slice(0, 100),
           })),
-        },
-      ],
-    });
-  }
-  if (raid.state === "planned" && !raid.automaticFill) {
-    components.push({
-      type: 1,
-      components: [
-        {
-          type: 2,
-          style: 2,
-          custom_id: `${RAID_PREFIX}:cancel:${raid.id}`,
-          label: "Cancel",
         },
       ],
     });

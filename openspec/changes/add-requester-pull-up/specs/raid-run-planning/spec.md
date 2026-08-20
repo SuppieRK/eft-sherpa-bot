@@ -48,16 +48,16 @@ When Refresh finds that an active raid detail message does not exist, the system
 - **THEN** Refresh creates one replacement and updates the board link without changing the attempt, leader, or call state
 
 ### Requirement: Staff can cancel a planned raid review
-A frozen planned raid detail message SHALL expose a secondary `Cancel` button. When authorized staff select it from the canonical detail message, the system SHALL atomically clear that exact stored message reference, delete the Discord message, and refresh the canonical board without a details link. It SHALL retain the planned frozen raid, queue kind, stable order, leader reservation, attempt count, call state, memberships, and help requests. A later explicit Review action MAY create new details.
+A frozen planned raid detail message SHALL expose a secondary `Cancel review` button in the same action row immediately after `Call and start raid`. When authorized staff select it from the canonical detail message, the system SHALL atomically clear that exact stored message reference, delete the Discord message, and refresh the canonical board without a details link. It SHALL retain the planned frozen raid, queue kind, stable order, leader reservation, attempt count, call state, memberships, and help requests. A later explicit Review action MAY create new details.
 
-The system SHALL reject a stale or duplicate message, an unreviewed raid, and an active or terminal raid without deleting its current details or changing raid state. A Discord `404` SHALL count as a successful deletion. If another Discord deletion error occurs after the reference clears, the system SHALL attempt to restore the same reference and SHALL tell staff to retry. Active raid details SHALL NOT expose `Cancel`.
+The system SHALL reject a stale or duplicate message, an unreviewed raid, and an active or terminal raid without deleting its current details or changing raid state. A Discord `404` SHALL count as a successful deletion. If another Discord deletion error occurs after the reference clears, the system SHALL attempt to restore the same reference and SHALL tell staff to retry. Active raid details SHALL NOT expose `Cancel review`.
 
 #### Scenario: Staff cancel a planned review
-- **WHEN** authorized staff select `Cancel` on the canonical details for a frozen planned raid
+- **WHEN** authorized staff select `Cancel review` on the canonical details for a frozen planned raid
 - **THEN** the details message is deleted, its stored link is cleared, and the unchanged raid remains available on the board
 
-#### Scenario: Staff use a stale Cancel control
-- **WHEN** a Cancel interaction comes from a message that is no longer the raid's canonical planned detail
+#### Scenario: Staff use a stale Cancel review control
+- **WHEN** a Cancel review interaction comes from a message that is no longer the raid's canonical planned detail
 - **THEN** the system rejects it without deleting a message or changing the stored link or raid
 
 #### Scenario: Raid starts before cancellation commits

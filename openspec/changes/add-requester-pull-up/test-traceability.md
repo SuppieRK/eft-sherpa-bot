@@ -14,7 +14,7 @@
 | Board refresh finds a deleted reviewed detail | Discord test `dismisses a deleted planned review without assigning a leader or calling users` |
 | Board refresh finds a deleted active detail | Discord test `recreates a deleted active raid message without changing attempt state or pinging users` |
 | Staff cancel a planned review | Repository test `dismisses only the matching planned review and cannot clear active details`; Discord test `cancels one planned review without changing its raid or other details` |
-| Staff use a stale Cancel control | Repository and Discord stale-message assertions in the cancellation tests |
+| Staff use a stale Cancel review control | Repository and Discord stale-message assertions in the cancellation tests |
 | Raid starts before cancellation commits | Repository test `serializes review dismissal against raid start`; Discord active-control rejection assertion |
 | Discord cannot delete the review | Discord test `accepts a missing Cancel target and restores the link after another deletion error` covers both `404` and restoration after another error |
 | Postponed Priority raid pulls from Ordinary | Repository test `promotes only the selected Ordinary requester into a reviewed Priority raid`; local maximum pull benchmark |
@@ -48,4 +48,4 @@
 | Deleted active detail messages recover | Discord test `recreates a deleted active raid message without changing attempt state or pinging users` |
 | Unauthorized viewers cannot pull | Discord test `denies pull controls to a non-staff user` |
 | Multiple active and reviewed raids stay independent | Concurrent volunteer-led active-raid repository and Discord tests |
-| Cancel is planned-review only and preserves other details | Unit planned/active render assertions and Discord independent-detail cancellation test |
+| Cancel review is planned-review only and preserves other details | Unit planned/active render assertions and Discord independent-detail cancellation test |

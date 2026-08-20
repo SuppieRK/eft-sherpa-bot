@@ -18,7 +18,8 @@
 - [x] 2.7 Validate an existing detail message during repeat Review and add initial integration coverage for direct re-review, Refresh recovery, and concurrent handling.
 - [x] 2.8 Keep the pull selector visible and disabled when no compatible requester exists, with unit and Discord coverage for the unavailable state.
 - [x] 2.9 Change missing planned-review handling to clear the stale link without recreation while retaining active-detail recovery, and update repeat Review, Refresh, concurrent, pull-time, and multi-detail tests.
-- [x] 2.10 Add a planned-review `Cancel` button and exact-message interaction identity, implement atomic repository dismissal with deletion-failure restoration, and cover authorized, stale, active-race, `404`, other deletion-error, repeated, and independent-detail scenarios.
+- [x] 2.10 Add a planned-review `Cancel review` button and exact-message interaction identity, implement atomic repository dismissal with deletion-failure restoration, and cover authorized, stale, active-race, `404`, other deletion-error, repeated, and independent-detail scenarios.
+- [x] 2.11 Place `Cancel review` immediately after `Call and start raid` in the same action row, update operator guidance, and add an exact layout and label regression assertion.
 
 ## 3. Performance, Documentation, and Release Verification
 
@@ -36,4 +37,4 @@
 - [x] 4.1 As the final task, create a Git branch for this change, commit all change-scoped files, push the branch, create a GitHub pull request with the verified behavior and benchmark evidence, manually deploy that exact branch commit to the user's DEV environment, and smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, multiple raid details, deleted details, and no-call behavior.
 - [x] 4.2 Commit and push the corrections to the existing pull-request branch, update the pull-request summary, manually deploy the exact corrected commit to DEV, and verify the direct selector plus deleted-detail recovery.
 - [ ] 4.3 Commit and push the clarification to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify the disabled selector plus planned-detail dismissal.
-- [ ] 4.4 Commit and push the Cancel control to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify review cancellation without raid or request changes.
+- [ ] 4.4 Commit and push the Cancel review control to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify review cancellation without raid or request changes.

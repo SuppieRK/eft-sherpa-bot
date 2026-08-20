@@ -1264,7 +1264,7 @@ describe("Discord progressive raid workflow", () => {
     });
   });
 
-  it("rejects stale and active Cancel controls without deleting details", async () => {
+  it("rejects stale and active Cancel review controls without deleting details", async () => {
     await worker.fetch(
       await signedRequest(requestModal("cancel-stale-active")),
       testEnvironment,
