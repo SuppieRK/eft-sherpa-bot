@@ -50,6 +50,7 @@ describe("local user-facing benchmark contract", () => {
       "board:open",
       "board:refresh",
       "raid:review",
+      "raid:cancel-review",
       "raid:call-start",
       "raid:result",
       "raid:postpone-requester",

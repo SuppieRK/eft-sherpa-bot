@@ -357,6 +357,7 @@ export function discordContext(
     data: Record<string, unknown>;
     userId: string;
     staff?: boolean;
+    messageId?: string;
   },
 ): Record<string, unknown> {
   return {
@@ -368,6 +369,7 @@ export function discordContext(
       user: { id: input.userId, username: "BenchmarkViewer" },
       roles: input.staff ? [config.discord.volunteerRoleId] : [],
     },
+    ...(input.messageId === undefined ? {} : { message: { id: input.messageId } }),
     type: input.type,
     data: input.data,
   };

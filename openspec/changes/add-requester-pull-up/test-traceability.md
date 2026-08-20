@@ -13,6 +13,10 @@
 | Staff review a raid after deleting its details | Discord test `dismisses a deleted planned detail when staff review the raid again` |
 | Board refresh finds a deleted reviewed detail | Discord test `dismisses a deleted planned review without assigning a leader or calling users` |
 | Board refresh finds a deleted active detail | Discord test `recreates a deleted active raid message without changing attempt state or pinging users` |
+| Staff cancel a planned review | Repository test `dismisses only the matching planned review and cannot clear active details`; Discord test `cancels one planned review without changing its raid or other details` |
+| Staff use a stale Cancel control | Repository and Discord stale-message assertions in the cancellation tests |
+| Raid starts before cancellation commits | Repository test `serializes review dismissal against raid start`; Discord active-control rejection assertion |
+| Discord cannot delete the review | Discord test `accepts a missing Cancel target and restores the link after another deletion error` covers both `404` and restoration after another error |
 | Postponed Priority raid pulls from Ordinary | Repository test `promotes only the selected Ordinary requester into a reviewed Priority raid`; local maximum pull benchmark |
 | Later Priority source exists | Repository test `uses a later Priority source before an Ordinary source` |
 | Ordinary destination requests candidates | Repository test `never offers a Priority source to an Ordinary destination` |
@@ -29,7 +33,7 @@
 |---|---|
 | Pull source can be full | Schema query-plan test `uses the ordered pull-source index for full planned raids` |
 | Previous Worker is restored | Migration checksum validation, the six-table schema regression test, and the complete pre-existing repository and Discord suites |
-| Pull-up benchmark is generated | Benchmark operations `discord.requester.pull.candidates` and `discord.requester.pull.with-push` at all contract scales |
+| Pull-up benchmark is generated | Benchmark operations `discord.requester.pull.candidates`, `discord.requester.pull.with-push`, and `discord.raid.review.cancel` at all contract scales |
 | Pull-up cost grows with queue size | Benchmark report guard for scale-independent statement and write counts and material row-read growth |
 
 ## Cross-cutting boundaries and invariants
@@ -44,3 +48,4 @@
 | Deleted active detail messages recover | Discord test `recreates a deleted active raid message without changing attempt state or pinging users` |
 | Unauthorized viewers cannot pull | Discord test `denies pull controls to a non-staff user` |
 | Multiple active and reviewed raids stay independent | Concurrent volunteer-led active-raid repository and Discord tests |
+| Cancel is planned-review only and preserves other details | Unit planned/active render assertions and Discord independent-detail cancellation test |

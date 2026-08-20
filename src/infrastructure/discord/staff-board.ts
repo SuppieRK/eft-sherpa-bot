@@ -56,7 +56,13 @@ export interface DiscordBotMessage {
 }
 
 export type StaffBoardAction = { action: "refresh" | "review" | "retired_start" };
-type SingleRaidMessageAction = "call" | "result" | "postpone" | "remove" | "pull_candidates";
+type SingleRaidMessageAction =
+  | "call"
+  | "result"
+  | "postpone"
+  | "remove"
+  | "pull_candidates"
+  | "cancel";
 export type RaidMessageAction =
   | {
       action: SingleRaidMessageAction;
@@ -84,7 +90,7 @@ export function parseRaidMessageAction(value: string): RaidMessageAction | undef
       ? { action: "pull", raidId, sourceRaidId }
       : undefined;
   }
-  const match = /^raid:v3:(call|result|postpone|remove|pull_candidates):(\d+)$/.exec(value);
+  const match = /^raid:v3:(call|result|postpone|remove|pull_candidates|cancel):(\d+)$/.exec(value);
   const previous = /^raid:v2:(call|result|postpone|remove):(\d+)$/.exec(value);
   const legacy = /^raid:v1:(result|postpone|remove):(\d+)$/.exec(value);
   const selected = match ?? previous ?? legacy;
@@ -351,6 +357,19 @@ export function renderRaidMessage(
             value: String(member.requestId),
             description: member.objective.slice(0, 100),
           })),
+        },
+      ],
+    });
+  }
+  if (raid.state === "planned" && !raid.automaticFill) {
+    components.push({
+      type: 1,
+      components: [
+        {
+          type: 2,
+          style: 2,
+          custom_id: `${RAID_PREFIX}:cancel:${raid.id}`,
+          label: "Cancel",
         },
       ],
     });

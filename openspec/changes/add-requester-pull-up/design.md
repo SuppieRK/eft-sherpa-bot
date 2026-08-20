@@ -38,6 +38,14 @@ Re-reviewing a frozen planned raid validates and refreshes its stored Discord de
 
 Active raids are different because their detail messages contain the only result and requester controls for an attempt in progress. Refresh continues to recreate a missing active-raid detail with compare-and-set and retains one canonical replacement during concurrent recovery.
 
+### Let staff close a planned review explicitly
+
+A frozen planned review exposes a secondary `Cancel` button. The action atomically clears the exact stored message reference before it deletes that Discord message. It leaves the raid planned and frozen with the same queue kind, order, leader reservation, attempts, calls, memberships, and requests. The canonical board then refreshes without a details link. A later Review action can open new details.
+
+The interaction carries the Discord source message ID. The repository clears the reference only when that ID is still canonical and the raid is still planned and reviewed. This prevents an old or duplicate message from dismissing a newer review and prevents a cancellation race from removing active controls. If Discord cannot delete the message, the handler attempts to restore the old link so staff can retry. A Discord `404` counts as successful dismissal because the message is already absent.
+
+Active raids do not show `Cancel`. They retain their result controls and missing-message recovery behavior.
+
 ### Promote only the selected cross-queue request
 
 When a Priority destination selects an Ordinary source member, the transaction changes only that help request and new membership to Priority. The other source requests remain Ordinary. Any push-down stays within the source's Ordinary queue. An Ordinary destination never pulls a Priority request because Priority is earlier in service order.
@@ -76,12 +84,14 @@ The stable benchmark adds the private source-selector read and a maximum bounded
 - [Candidate discovery adds one indexed read to planned review renders] → Query only the first eligible source and do not run it for active raids.
 - [A manually deleted planned detail leaves a stale database link] → Clear the confirmed stale link with compare-and-set and require a later explicit Review to create a fresh message.
 - [A deleted active detail removes in-progress controls] → Recreate active details only and retain one canonical replacement during concurrent recovery.
+- [A stale Cancel control closes a newer or active message] → Include the source message ID in the interaction and clear only the matching canonical planned-review link.
+- [Discord deletion fails after the link clears] → Restore the old link when it is still safe, return retry guidance, and make no raid-state change.
 
 ## Migration Plan
 
 1. Apply additive migration `0003` and verify its query plan and checksum locally.
 2. Deploy the Worker after the index exists; old Workers remain compatible during the interval.
-3. Refresh the canonical board and detail messages to expose the direct selector, dismiss missing planned reviews, and recover missing active details.
+3. Refresh the canonical board and detail messages to expose the direct selector and `Cancel` control, dismiss missing planned reviews, and recover missing active details.
 4. Smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, and no-call behavior in DEV.
 5. If deployment fails, restore the prior Worker without reverting `0003`; the unused index is safe.
 

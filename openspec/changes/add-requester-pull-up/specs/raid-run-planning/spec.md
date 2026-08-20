@@ -47,6 +47,27 @@ When Refresh finds that an active raid detail message does not exist, the system
 - **WHEN** an active raid points to a Discord detail message that was manually deleted
 - **THEN** Refresh creates one replacement and updates the board link without changing the attempt, leader, or call state
 
+### Requirement: Staff can cancel a planned raid review
+A frozen planned raid detail message SHALL expose a secondary `Cancel` button. When authorized staff select it from the canonical detail message, the system SHALL atomically clear that exact stored message reference, delete the Discord message, and refresh the canonical board without a details link. It SHALL retain the planned frozen raid, queue kind, stable order, leader reservation, attempt count, call state, memberships, and help requests. A later explicit Review action MAY create new details.
+
+The system SHALL reject a stale or duplicate message, an unreviewed raid, and an active or terminal raid without deleting its current details or changing raid state. A Discord `404` SHALL count as a successful deletion. If another Discord deletion error occurs after the reference clears, the system SHALL attempt to restore the same reference and SHALL tell staff to retry. Active raid details SHALL NOT expose `Cancel`.
+
+#### Scenario: Staff cancel a planned review
+- **WHEN** authorized staff select `Cancel` on the canonical details for a frozen planned raid
+- **THEN** the details message is deleted, its stored link is cleared, and the unchanged raid remains available on the board
+
+#### Scenario: Staff use a stale Cancel control
+- **WHEN** a Cancel interaction comes from a message that is no longer the raid's canonical planned detail
+- **THEN** the system rejects it without deleting a message or changing the stored link or raid
+
+#### Scenario: Raid starts before cancellation commits
+- **WHEN** the raid becomes active before the planned-review dismissal update commits
+- **THEN** cancellation is rejected and the active detail message and raid state remain unchanged
+
+#### Scenario: Discord cannot delete the review
+- **WHEN** the planned reference clears but Discord returns an error other than `404` for message deletion
+- **THEN** the system attempts to restore the same reference, makes no raid-state change, and tells staff to retry
+
 ### Requirement: Priority pull explicitly promotes one Ordinary request
 A reviewed Priority raid MAY pull a selected requester from the first eligible Ordinary source when no eligible later Priority source precedes it. The transaction SHALL promote only the selected help request to Priority before creating its compatible Priority membership. Every other source request SHALL remain Ordinary. Any push-down after that pull SHALL use only an Ordinary destination. An Ordinary raid SHALL NOT pull a Priority requester.
 

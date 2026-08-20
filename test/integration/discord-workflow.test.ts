@@ -1106,6 +1106,220 @@ describe("Discord progressive raid workflow", () => {
     expect(outbound.filter((request) => request.method === "DELETE")).toHaveLength(0);
   });
 
+  it("cancels one planned review without changing its raid or other details", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (const [index, mapId] of ["customs", "woods"].entries()) {
+      await repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: `cancel-review-${mapId}`,
+        twitchUserId: `cancel-twitch-${index}`,
+        twitchLogin: `cancel_viewer_${index}`,
+        gameMode: "pve",
+        inGameName: `Cancel PMC ${index}`,
+        mapId,
+        objective: `Cancel goal ${mapId}`,
+        observedAt: new Date(changedAt.getTime() + index),
+      });
+    }
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    const raids = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids;
+    const customs = raids.find((raid) => raid.mapId === "customs") as StaffBoardRaid;
+    const woods = raids.find((raid) => raid.mapId === "woods") as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: customs.id, changedAt });
+    await repo.reviewRaid({ groupId: woods.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: customs.id,
+      messageId: "cancel-customs-detail",
+      changedAt,
+    });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: woods.id,
+      messageId: "keep-woods-detail",
+      changedAt,
+    });
+    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    outbound = [];
+
+    const executionContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "cancel-planned-review",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          message: { id: "cancel-customs-detail" },
+          data: { custom_id: `raid:v3:cancel:${customs.id}`, values: [] },
+        }),
+      ),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Review closed. The raid is still on the board.", flags: 64 },
+    });
+    expect(await repo.getRaid(customs.id)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      members: customs.members,
+    });
+    expect((await repo.getRaid(customs.id))?.staffMessageId).toBeUndefined();
+    expect(await repo.getRaid(woods.id)).toMatchObject({
+      state: "planned",
+      staffMessageId: "keep-woods-detail",
+      members: woods.members,
+    });
+    expect(outbound).toContainEqual(
+      expect.objectContaining({
+        method: "DELETE",
+        url: expect.stringContaining("/messages/cancel-customs-detail"),
+      }),
+    );
+    const boardUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
+    expect(JSON.stringify(boardUpdate?.body)).not.toContain("/cancel-customs-detail");
+    expect(JSON.stringify(boardUpdate?.body)).toContain("/keep-woods-detail");
+
+    const repeated = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "cancel-planned-review-repeat",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          message: { id: "cancel-customs-detail" },
+          data: { custom_id: `raid:v3:cancel:${customs.id}`, values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(JSON.stringify(await repeated.json())).toContain("no longer available to cancel");
+  });
+
+  it("accepts a missing Cancel target and restores the link after another deletion error", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("cancel-delete-outcomes")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "missing-cancel-detail",
+      changedAt,
+    });
+    const cancel = async (id: string, messageId: string) =>
+      worker.fetch(
+        await signedRequest(
+          context({
+            id,
+            type: 3,
+            channel_id: config.discord.staffChannelId,
+            member: {
+              user: { id: "volunteer", username: "Volunteer" },
+              roles: [config.discord.volunteerRoleId],
+            },
+            message: { id: messageId },
+            data: { custom_id: `raid:v3:cancel:${planned.id}`, values: [] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+
+    deleteResponseStatus = 404;
+    const missing = await cancel("cancel-missing-detail", "missing-cancel-detail");
+    expect(JSON.stringify(await missing.json())).toContain("Review closed");
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
+
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "failed-cancel-detail",
+      changedAt,
+    });
+    deleteResponseStatus = 500;
+    const failed = await cancel("cancel-failed-detail", "failed-cancel-detail");
+    expect(JSON.stringify(await failed.json())).toContain("could not close");
+    expect(await repo.getRaid(planned.id)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      staffMessageId: "failed-cancel-detail",
+    });
+  });
+
+  it("rejects stale and active Cancel controls without deleting details", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("cancel-stale-active")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "current-cancel-detail",
+      changedAt,
+    });
+    const cancel = async (id: string, messageId: string) =>
+      worker.fetch(
+        await signedRequest(
+          context({
+            id,
+            type: 3,
+            channel_id: config.discord.staffChannelId,
+            member: {
+              user: { id: "volunteer", username: "Volunteer" },
+              roles: [config.discord.volunteerRoleId],
+            },
+            message: { id: messageId },
+            data: { custom_id: `raid:v3:cancel:${planned.id}`, values: [] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+
+    outbound = [];
+    const stale = await cancel("cancel-stale-control", "stale-cancel-detail");
+    expect(JSON.stringify(await stale.json())).toContain("no longer available to cancel");
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBe("current-cancel-detail");
+    expect(outbound.some((request) => request.method === "DELETE")).toBe(false);
+
+    await repo.startRaid({
+      groupId: planned.id,
+      leaderDiscordUserId: "volunteer",
+      leaderType: "volunteer",
+      requestTwitchCall: false,
+      changedAt,
+    });
+    outbound = [];
+    const active = await cancel("cancel-active-control", "current-cancel-detail");
+    expect(JSON.stringify(await active.json())).toContain("no longer available to cancel");
+    expect(await repo.getRaid(planned.id)).toMatchObject({
+      state: "active",
+      staffMessageId: "current-cancel-detail",
+    });
+    expect(outbound.some((request) => request.method === "DELETE")).toBe(false);
+  });
+
   it("tracks multiple raid detail messages through recovery and independent actions", async () => {
     const repo = new D1MvpRepository(env.DB);
     for (const [index, mapId] of ["customs", "woods", "shoreline"].entries()) {

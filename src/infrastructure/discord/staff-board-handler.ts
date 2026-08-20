@@ -496,6 +496,32 @@ class StaffBoardHandler {
       const raid = await this.repository.getRaid(raidAction?.raidId ?? 0);
       if (raid === undefined) throw new RepositoryInvariantError("That raid no longer exists.");
       const isStreamer = interaction.discordUserId === communityConfig.discord.streamerUserId;
+      if (raidAction?.action === "cancel") {
+        if (interaction.messageId === undefined) {
+          throw new RepositoryInvariantError("That review control is out of date.");
+        }
+        const dismissed = await this.repository.dismissRaidReview({
+          groupId: raid.id,
+          expectedMessageId: interaction.messageId,
+          changedAt,
+        });
+        if (!dismissed) {
+          throw new RepositoryInvariantError("That review is no longer available to cancel.");
+        }
+        const deleted = await this.deleteRaidMessage(interaction.messageId);
+        if (!deleted) {
+          await this.repository.compareAndSetRaidStaffMessage({
+            groupId: raid.id,
+            messageId: interaction.messageId,
+            changedAt,
+          });
+          throw new RepositoryInvariantError(
+            "Discord could not close that review. Try Cancel again.",
+          );
+        }
+        this.refreshBoardLater();
+        return ephemeral("Review closed. The raid is still on the board.");
+      }
       if (raidAction?.action === "pull_candidates") {
         const candidates = await this.repository.getPullRequesterCandidates(raid.id);
         if (candidates === undefined) {

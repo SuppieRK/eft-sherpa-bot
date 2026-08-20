@@ -410,6 +410,93 @@ describe("schedule-independent dual queues", () => {
     expect(laterRaid?.members.map((member) => member.requestId)).toEqual([later]);
   });
 
+  it("dismisses only the matching planned review and cannot clear active details", async () => {
+    const repo = repository();
+    const requestId = await createRequest(repo, 1);
+    await materialize(repo);
+    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const reviewed = await review(repo, planned, "dismiss-review");
+
+    await expect(
+      repo.dismissRaidReview({
+        groupId: reviewed.id,
+        expectedMessageId: "stale-review",
+        changedAt: now,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      repo.dismissRaidReview({
+        groupId: reviewed.id,
+        expectedMessageId: "dismiss-review",
+        changedAt: now,
+      }),
+    ).resolves.toBe(true);
+    expect(await repo.getRaid(reviewed.id)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      members: [expect.objectContaining({ requestId })],
+    });
+    expect((await repo.getRaid(reviewed.id))?.staffMessageId).toBeUndefined();
+
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: reviewed.id,
+      messageId: "active-review",
+      changedAt: now,
+    });
+    await repo.startRaid({
+      groupId: reviewed.id,
+      leaderDiscordUserId: "leader",
+      leaderType: "volunteer",
+      requestTwitchCall: false,
+      changedAt: now,
+    });
+    await expect(
+      repo.dismissRaidReview({
+        groupId: reviewed.id,
+        expectedMessageId: "active-review",
+        changedAt: now,
+      }),
+    ).resolves.toBe(false);
+    expect(await repo.getRaid(reviewed.id)).toMatchObject({
+      state: "active",
+      staffMessageId: "active-review",
+      members: [expect.objectContaining({ requestId })],
+    });
+  });
+
+  it("serializes review dismissal against raid start", async () => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    await materialize(repo);
+    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const reviewed = await review(repo, planned, "dismiss-or-start");
+
+    const [dismissed, started] = await Promise.allSettled([
+      repo.dismissRaidReview({
+        groupId: reviewed.id,
+        expectedMessageId: "dismiss-or-start",
+        changedAt: now,
+      }),
+      repo.startRaid({
+        groupId: reviewed.id,
+        leaderDiscordUserId: "leader",
+        leaderType: "volunteer",
+        requestTwitchCall: false,
+        changedAt: now,
+      }),
+    ]);
+    const current = (await repo.getRaid(reviewed.id)) as StaffBoardRaid;
+    if (started.status === "fulfilled") {
+      expect(dismissed).toEqual({ status: "fulfilled", value: false });
+      expect(current).toMatchObject({ state: "active", staffMessageId: "dismiss-or-start" });
+    } else {
+      expect(dismissed).toEqual({ status: "fulfilled", value: true });
+      expect(current).toMatchObject({ state: "planned", automaticFill: false });
+      expect(current.staffMessageId).toBeUndefined();
+    }
+  });
+
   it("allows exactly one concurrent caller to activate a reviewed raid", async () => {
     const repo = repository();
     await createRequest(repo, 1);

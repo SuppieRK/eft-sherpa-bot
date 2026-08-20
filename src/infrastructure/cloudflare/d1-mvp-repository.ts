@@ -1156,6 +1156,21 @@ export class D1MvpRepository implements QueueQueryRepository {
     return Number(result.meta.changes) === 1;
   }
 
+  async dismissRaidReview(input: {
+    groupId: number;
+    expectedMessageId: string;
+    changedAt: Date;
+  }): Promise<boolean> {
+    const result = await this.database
+      .prepare(
+        `UPDATE raid_groups SET staff_message_id = NULL, updated_at = ?
+         WHERE id = ? AND state = 0 AND automatic_fill = 0 AND staff_message_id = ?`,
+      )
+      .bind(epoch(input.changedAt), input.groupId, input.expectedMessageId)
+      .run();
+    return Number(result.meta.changes) === 1;
+  }
+
   async recordRaidResult(input: {
     groupId: number;
     outcome: "helped" | "unsuccessful";

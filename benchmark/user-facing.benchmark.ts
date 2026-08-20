@@ -118,7 +118,12 @@ function operationDefinitions(input: {
         },
       }),
     );
-  const component = async (details: { id: string; customId: string; values?: string[] }) =>
+  const component = async (details: {
+    id: string;
+    customId: string;
+    values?: string[];
+    messageId?: string;
+  }) =>
     signedDiscordRequest(
       privateKey,
       discordContext(config, {
@@ -126,6 +131,7 @@ function operationDefinitions(input: {
         type: 3,
         userId: streamerId,
         staff: true,
+        ...(details.messageId === undefined ? {} : { messageId: details.messageId }),
         data: { custom_id: details.customId, values: details.values ?? [] },
       }),
     );
@@ -480,6 +486,53 @@ function operationDefinitions(input: {
               twitchCallStatus: 3,
               staffMessageId: `${OPERATION_PREFIX}message-1`,
             });
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.raid.review.cancel",
+      label: "Discord planned raid review Cancel",
+      async prepare(seed, sample) {
+        const messageId = `${OPERATION_PREFIX}detail-cancel-review`;
+        const raid = await seedOperationRaid({
+          seed,
+          suffix: "cancel_review",
+          memberCount: 3,
+          state: "planned",
+          streamerDiscordUserId: streamerId,
+          isPriority: true,
+          visibleFirst: true,
+          staffMessageId: messageId,
+        });
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}raid-cancel-review-${sample}`,
+            customId: `raid:v3:cancel:${raid.groupId}`,
+            messageId,
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("Review closed");
+            const row = await env.DB.prepare(
+              `SELECT state, automatic_fill AS automaticFill,
+                      attempt_count AS attemptCount, staff_message_id AS staffMessageId
+               FROM raid_groups WHERE id = ?`,
+            )
+              .bind(raid.groupId)
+              .first<Record<string, number | string | null>>();
+            expect(row).toEqual({
+              state: 0,
+              automaticFill: 0,
+              attemptCount: 0,
+              staffMessageId: null,
+            });
+            expect(
+              discordMock.calls.some(
+                (call) => call.method === "DELETE" && call.url.endsWith(`/${messageId}`),
+              ),
+            ).toBe(true);
             expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
           },
         };

@@ -29,3 +29,4 @@ None.
 - No public Twitch or Discord command changes and no requester notification during rearrangement.
 - Keep the pull selector visible but disabled when no compatible later requester exists, so staff can see why no pull is available.
 - Treat deletion of a planned review message as dismissal: clear its stale board link without recreating the message. Continue to recover missing active-raid details because their result controls remain required.
+- Add a planned-review **Cancel** control that closes the details message without canceling or changing the raid or its requests.

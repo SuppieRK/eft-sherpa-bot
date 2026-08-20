@@ -18,6 +18,7 @@
 - [x] 2.7 Validate an existing detail message during repeat Review and add initial integration coverage for direct re-review, Refresh recovery, and concurrent handling.
 - [x] 2.8 Keep the pull selector visible and disabled when no compatible requester exists, with unit and Discord coverage for the unavailable state.
 - [x] 2.9 Change missing planned-review handling to clear the stale link without recreation while retaining active-detail recovery, and update repeat Review, Refresh, concurrent, pull-time, and multi-detail tests.
+- [x] 2.10 Add a planned-review `Cancel` button and exact-message interaction identity, implement atomic repository dismissal with deletion-failure restoration, and cover authorized, stale, active-race, `404`, other deletion-error, repeated, and independent-detail scenarios.
 
 ## 3. Performance, Documentation, and Release Verification
 
@@ -28,9 +29,11 @@
 - [x] 3.5 Verify the completed implementation against every proposal, design, and delta-spec requirement and confirm that the automated traceability matrix has no uncovered scenario.
 - [x] 3.6 Update operator documentation and traceability, then rerun formatting, static analysis, tests, build, secret scan, strict OpenSpec validation, and diff validation for the corrected Discord UX and recovery path.
 - [x] 3.7 Update operator documentation, traceability, and the local D1 benchmark contract, then run the complete verification suite for the clarified unavailable-selector and deletion behavior.
+- [x] 3.8 Update ASD-STE100 operator documentation and traceability for review cancellation, add the cancellation path to every local benchmark scale, regenerate D1 evidence, and run the complete verification suite.
 
 ## 4. Publish and Deploy
 
 - [x] 4.1 As the final task, create a Git branch for this change, commit all change-scoped files, push the branch, create a GitHub pull request with the verified behavior and benchmark evidence, manually deploy that exact branch commit to the user's DEV environment, and smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, multiple raid details, deleted details, and no-call behavior.
 - [x] 4.2 Commit and push the corrections to the existing pull-request branch, update the pull-request summary, manually deploy the exact corrected commit to DEV, and verify the direct selector plus deleted-detail recovery.
 - [ ] 4.3 Commit and push the clarification to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify the disabled selector plus planned-detail dismissal.
+- [ ] 4.4 Commit and push the Cancel control to the existing pull-request branch, update the pull-request summary, manually deploy the exact commit to DEV, and verify review cancellation without raid or request changes.

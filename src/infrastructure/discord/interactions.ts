@@ -38,6 +38,7 @@ interface DiscordModalSubmitInteraction extends DiscordInteractionContext {
 export interface DiscordMessageComponentInteraction extends DiscordInteractionContext {
   type: "message_component";
   customId: string;
+  messageId?: string;
   values: readonly string[];
   resolvedRoleIdsByUser: Readonly<Record<string, readonly string[]>>;
 }
@@ -238,6 +239,7 @@ export function parseDiscordInteraction(payload: unknown): ParsedDiscordInteract
   }
   if (payload.type === DISCORD_INTERACTION_MESSAGE_COMPONENT) {
     const customId = requiredString(payload.data, "custom_id");
+    const messageId = isRecord(payload.message) ? requiredString(payload.message, "id") : undefined;
     const values = Array.isArray(payload.data.values)
       ? payload.data.values.filter((value): value is string => typeof value === "string")
       : [];
@@ -247,6 +249,7 @@ export function parseDiscordInteraction(payload: unknown): ParsedDiscordInteract
           type: "message_component",
           ...context,
           customId,
+          ...(messageId === undefined ? {} : { messageId }),
           values,
           resolvedRoleIdsByUser: parseResolvedRoleIds(payload.data),
         };
