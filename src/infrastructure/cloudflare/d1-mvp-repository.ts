@@ -840,8 +840,7 @@ export class D1MvpRepository
       this.getPullRequesterCandidates(input.destinationGroupId),
     ]);
     if (
-      destination === undefined ||
-      destination.state !== "planned" ||
+      destination?.state !== "planned" ||
       destination.automaticFill ||
       destination.staffMessageId === undefined ||
       destination.members.length >= destination.requesterCapacity ||
@@ -1204,7 +1203,7 @@ export class D1MvpRepository
     changedAt: Date;
   }): Promise<StaffBoardRaid> {
     const raid = await this.getRaid(input.groupId);
-    if (raid === undefined || raid.state !== "active")
+    if (raid?.state !== "active")
       throw new RepositoryInvariantError("That raid is no longer active.");
     const timestamp = epoch(input.changedAt);
     if (input.outcome === "unsuccessful") {
@@ -1462,7 +1461,7 @@ export class D1MvpRepository
     changedAt: Date;
   }): Promise<StaffBoardRaid> {
     const source = await this.getRaid(input.groupId);
-    if (source === undefined || source.state !== "active")
+    if (source?.state !== "active")
       throw new RepositoryInvariantError("That raid is no longer active.");
     if (source.members.length === 0)
       throw new RepositoryInvariantError("That raid has no requesters to postpone.");

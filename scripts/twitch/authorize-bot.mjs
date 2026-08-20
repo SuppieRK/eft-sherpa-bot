@@ -74,7 +74,7 @@ async function startDeviceAuthorization(clientId) {
     typeof payload.user_code !== "string" ||
     typeof payload.verification_uri !== "string"
   ) {
-    throw new Error("Twitch returned an invalid device authorization response");
+    throw new TypeError("Twitch returned an invalid device authorization response");
   }
   return payload;
 }
@@ -93,7 +93,7 @@ async function waitForDeviceAuthorization(clientId, device) {
     });
     if (response.ok) {
       if (typeof payload.access_token !== "string" || typeof payload.refresh_token !== "string") {
-        throw new Error("Twitch returned an invalid token response");
+        throw new TypeError("Twitch returned an invalid token response");
       }
       return payload;
     }
@@ -129,7 +129,7 @@ async function validateUserToken(accessToken, expectedLogin, expectedClientId) {
     throw new Error(`The Twitch token is missing scopes: ${missingScopes.join(", ")}`);
   }
   if (typeof payload.user_id !== "string") {
-    throw new Error("Twitch token validation did not return a bot user ID");
+    throw new TypeError("Twitch token validation did not return a bot user ID");
   }
   return payload;
 }
@@ -161,7 +161,7 @@ async function getTwitchUser(clientId, accessToken, login) {
   }
   const user = Array.isArray(payload.data) ? payload.data[0] : undefined;
   if (typeof user?.id !== "string") {
-    throw new Error(`Twitch user was not found: ${login}`);
+    throw new TypeError(`Twitch user was not found: ${login}`);
   }
   return user;
 }

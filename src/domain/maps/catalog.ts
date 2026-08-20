@@ -168,9 +168,9 @@ export function resolveTarkovMapPrefix(
   for (const candidate of aliasPrefixes) {
     const pattern = candidate.alias
       .split(" ")
-      .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-      .join("[\\s_-]+");
-    const match = new RegExp(`^${pattern}(?=\\s|$)`, "i").exec(trimmed);
+      .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`))
+      .join(String.raw`[\s_-]+`);
+    const match = new RegExp(String.raw`^${pattern}(?=\s|$)`, "i").exec(trimmed);
     if (match !== null) {
       return {
         map: candidate.map,

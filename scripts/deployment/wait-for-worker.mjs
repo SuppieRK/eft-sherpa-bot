@@ -18,7 +18,7 @@ function assertReady(health, status) {
     throw new Error("Twitch authorization is not healthy");
   }
   if (typeof status.database?.tableCount !== "number") {
-    throw new Error("D1 diagnostics are not ready");
+    throw new TypeError("D1 diagnostics are not ready");
   }
 }
 

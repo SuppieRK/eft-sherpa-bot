@@ -110,7 +110,7 @@ function raidName(raid: StaffBoardRaid): string {
 }
 
 function escapeMarkdown(value: string): string {
-  return value.replaceAll(/([\\`*_~|>])/g, "\\$1");
+  return value.replaceAll(/([\\`*_~|>])/g, String.raw`\$1`);
 }
 
 function occupancy(raid: StaffBoardRaid): string {
@@ -335,41 +335,43 @@ export function renderRaidMessage(
     });
   }
   if (!terminal && raid.members.length > 0) {
-    components.push({
-      type: 1,
-      components: [
-        {
-          type: 3,
-          custom_id: `${RAID_PREFIX}:postpone:${raid.id}`,
-          placeholder:
-            raid.state === "planned" ? "Move requester to next raid" : "Postpone requester",
-          min_values: 1,
-          max_values: 1,
-          options: raid.members.map((member) => ({
-            label: `@${member.twitchLogin}`.slice(0, 100),
-            value: String(member.requestId),
-            description: member.objective.slice(0, 100),
-          })),
-        },
-      ],
-    });
-    components.push({
-      type: 1,
-      components: [
-        {
-          type: 3,
-          custom_id: `${RAID_PREFIX}:remove:${raid.id}`,
-          placeholder: "Remove requester",
-          min_values: 1,
-          max_values: 1,
-          options: raid.members.map((member) => ({
-            label: `@${member.twitchLogin}`.slice(0, 100),
-            value: String(member.requestId),
-            description: member.objective.slice(0, 100),
-          })),
-        },
-      ],
-    });
+    components.push(
+      {
+        type: 1,
+        components: [
+          {
+            type: 3,
+            custom_id: `${RAID_PREFIX}:postpone:${raid.id}`,
+            placeholder:
+              raid.state === "planned" ? "Move requester to next raid" : "Postpone requester",
+            min_values: 1,
+            max_values: 1,
+            options: raid.members.map((member) => ({
+              label: `@${member.twitchLogin}`.slice(0, 100),
+              value: String(member.requestId),
+              description: member.objective.slice(0, 100),
+            })),
+          },
+        ],
+      },
+      {
+        type: 1,
+        components: [
+          {
+            type: 3,
+            custom_id: `${RAID_PREFIX}:remove:${raid.id}`,
+            placeholder: "Remove requester",
+            min_values: 1,
+            max_values: 1,
+            options: raid.members.map((member) => ({
+              label: `@${member.twitchLogin}`.slice(0, 100),
+              value: String(member.requestId),
+              description: member.objective.slice(0, 100),
+            })),
+          },
+        ],
+      },
+    );
   }
   return {
     content:

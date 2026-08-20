@@ -57,7 +57,10 @@ export type TwitchGameModePrefix = {
 export function resolveTwitchGameModePrefix(value: string): TwitchGameModePrefix | undefined {
   const trimmed = value.trim();
   for (const { alias, mode } of TWITCH_MODE_ALIASES) {
-    const pattern = new RegExp(`^${alias.replaceAll(" ", "\\s+")}(?:\\s+|$)`, "i");
+    const pattern = new RegExp(
+      String.raw`^${alias.replaceAll(" ", String.raw`\s+`)}(?:\s+|$)`,
+      "i",
+    );
     const match = pattern.exec(trimmed);
     if (match !== null) {
       return { mode, remainingText: trimmed.slice(match[0].length).trim() };

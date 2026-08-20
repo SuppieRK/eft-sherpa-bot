@@ -650,7 +650,7 @@ function hasDiagnosticsAccess(request: Request, environment: CloudflareEnvironme
   }
   let mismatch = 0;
   for (let index = 0; index < expected.length; index += 1) {
-    mismatch |= expected.charCodeAt(index) ^ actual.charCodeAt(index);
+    mismatch |= (expected.codePointAt(index) ?? 0) ^ (actual.codePointAt(index) ?? 0);
   }
   return mismatch === 0;
 }
