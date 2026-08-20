@@ -466,18 +466,7 @@ async function buildTwitchPublicReply(
   if (command.name === "request") {
     const parsed = parseTwitchRequestInput(command.input);
     if (!parsed.valid) {
-      if (parsed.reason === "missing_mode" || parsed.reason === "unknown_mode") {
-        return "Use !request [mode] [map] [goal]. Modes: seasonal, pvp, pve.";
-      }
-      if (parsed.reason === "missing_map") {
-        return "Use !request [mode] [map] [goal].";
-      }
-      if (parsed.reason === "goal_too_long") {
-        return "Keep the goal to 150 characters or fewer.";
-      }
-      return parsed.suggestion === undefined
-        ? "I do not know that map. Use !request [mode] [map] [goal]."
-        : `Did you mean ${parsed.suggestion.name}? Try !request ${parsed.gameMode ?? "pve"} ${parsed.suggestion.id} [goal].`;
+      return invalidTwitchRequestReply(parsed);
     }
     const result = await repository.createRequest({
       sourcePlatform: "twitch",
@@ -501,6 +490,76 @@ async function buildTwitchPublicReply(
     await queryService.queue({ platform: "twitch", userId: twitchUserId }),
     "twitch",
   );
+}
+
+type InvalidTwitchRequest = Extract<ReturnType<typeof parseTwitchRequestInput>, { valid: false }>;
+
+function invalidTwitchRequestReply(parsed: InvalidTwitchRequest): string {
+  if (parsed.reason === "missing_mode" || parsed.reason === "unknown_mode") {
+    return "Use !request [mode] [map] [goal]. Modes: seasonal, pvp, pve.";
+  }
+  if (parsed.reason === "missing_map") {
+    return "Use !request [mode] [map] [goal].";
+  }
+  if (parsed.reason === "goal_too_long") {
+    return "Keep the goal to 150 characters or fewer.";
+  }
+  if (parsed.suggestion === undefined) {
+    return "I do not know that map. Use !request [mode] [map] [goal].";
+  }
+  return `Did you mean ${parsed.suggestion.name}? Try !request ${parsed.gameMode ?? "pve"} ${parsed.suggestion.id} [goal].`;
+}
+
+type VerifiedEventSubHeaders = Extract<
+  Awaited<ReturnType<typeof verifyTwitchEventSubRequest>>,
+  { ok: true }
+>["headers"];
+type TwitchChatEvent = NonNullable<ReturnType<typeof parseTwitchChatMessageEvent>>;
+
+function parseJsonBody(rawBody: string): { ok: true; payload: unknown } | { ok: false } {
+  try {
+    return { ok: true, payload: JSON.parse(rawBody) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function eventSubControlResponse(
+  headers: VerifiedEventSubHeaders,
+  payload: unknown,
+): Response | undefined {
+  if (headers.messageType === "webhook_callback_verification") {
+    const challenge = parseEventSubChallenge(payload);
+    if (challenge === undefined) return new Response("Missing challenge", { status: 400 });
+    return new Response(challenge, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  }
+  if (headers.messageType === "revocation") {
+    logDiagnostic("warn", "twitch_eventsub_revoked", {
+      subscriptionType: headers.subscriptionType ?? "unknown",
+    });
+    return new Response(null, { status: 204 });
+  }
+  if (
+    headers.messageType !== "notification" ||
+    headers.subscriptionType !== "channel.chat.message"
+  ) {
+    return new Response(null, { status: 204 });
+  }
+  return undefined;
+}
+
+function acceptedTwitchChatEvent(
+  payload: unknown,
+  broadcasterUserId: string,
+): TwitchChatEvent | Response {
+  const event = parseTwitchChatMessageEvent(payload);
+  if (event === undefined) {
+    return new Response("Invalid channel.chat.message payload", { status: 400 });
+  }
+  if (event.broadcasterUserId !== broadcasterUserId) {
+    return new Response("Unexpected broadcaster", { status: 403 });
+  }
+  return event;
 }
 
 async function deliverTwitchReply(input: {
@@ -553,38 +612,18 @@ async function handleTwitchEventSub(
       status: verification.reason === "missing_headers" ? 400 : 403,
     });
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
+  const parsedBody = parseJsonBody(rawBody);
+  if (!parsedBody.ok) {
     return new Response("Invalid JSON", { status: 400 });
   }
-  if (verification.headers.messageType === "webhook_callback_verification") {
-    const challenge = parseEventSubChallenge(payload);
-    if (challenge === undefined) {
-      return new Response("Missing challenge", { status: 400 });
-    }
-    return new Response(challenge, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-  }
-  if (verification.headers.messageType === "revocation") {
-    logDiagnostic("warn", "twitch_eventsub_revoked", {
-      subscriptionType: verification.headers.subscriptionType ?? "unknown",
-    });
-    return new Response(null, { status: 204 });
-  }
-  if (
-    verification.headers.messageType !== "notification" ||
-    verification.headers.subscriptionType !== "channel.chat.message"
-  ) {
-    return new Response(null, { status: 204 });
-  }
-  const event = parseTwitchChatMessageEvent(payload);
-  if (event === undefined) {
-    return new Response("Invalid channel.chat.message payload", { status: 400 });
-  }
-  if (event.broadcasterUserId !== communityConfig.twitch.broadcasterUserId) {
-    return new Response("Unexpected broadcaster", { status: 403 });
-  }
+  const controlResponse = eventSubControlResponse(verification.headers, parsedBody.payload);
+  if (controlResponse !== undefined) return controlResponse;
+  const acceptedEvent = acceptedTwitchChatEvent(
+    parsedBody.payload,
+    communityConfig.twitch.broadcasterUserId,
+  );
+  if (acceptedEvent instanceof Response) return acceptedEvent;
+  const event = acceptedEvent;
   const command = parseTwitchPublicCommand(event.text);
   if (command === undefined) {
     return new Response(null, { status: 204 });
