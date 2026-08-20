@@ -38,7 +38,11 @@ describe("local user-facing benchmark contract", () => {
     );
     expect(surface.public.map((command) => command.name)).toEqual(["request", "queue"]);
     expect(surface.discordViewer.map((command) => command.name)).toEqual(["link-twitch"]);
-    expect(surface.discordStaff.map((command) => command.name)).toEqual(["board"]);
+    expect(surface.discordStaff.map((command) => command.name)).toEqual([
+      "board",
+      "stats",
+      "users",
+    ]);
     const families = new Set(Object.values(OPERATION_FAMILY_BY_ID));
     for (const family of [
       "discord:request",
@@ -56,6 +60,9 @@ describe("local user-facing benchmark contract", () => {
       "raid:postpone-requester",
       "raid:remove-requester",
       "raid:pull-requester",
+      "discord:stats",
+      "discord:users-page",
+      "discord:users-complete",
     ]) {
       expect(families.has(family as (typeof BENCHMARK_OPERATION_FAMILIES)[number])).toBe(true);
     }

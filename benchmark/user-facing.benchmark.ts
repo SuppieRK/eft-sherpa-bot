@@ -18,6 +18,8 @@ import {
   encodeHex,
   OPERATION_PREFIX,
   queueRequestId,
+  prepareStatisticsSeed,
+  prepareUserDirectorySeed,
   resetOperationFixture,
   runWorkerRequest,
   seedDatabase,
@@ -732,6 +734,103 @@ function operationDefinitions(input: {
         };
       },
     })),
+    {
+      id: "discord.stats.all-time",
+      label: "Discord /stats all-time snapshot",
+      async prepare(seed, sample) {
+        await prepareStatisticsSeed(seed);
+        return {
+          request: await command({
+            id: `${OPERATION_PREFIX}stats-${sample}`,
+            name: "stats",
+            userId: streamerId,
+            staff: true,
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const body = await responseText(response);
+            expect(body).toContain("All-time sherpa statistics");
+            expect(body).toContain("bench-leader");
+            expect(body).toContain("more leaders");
+          },
+        };
+      },
+    },
+    ...(["first", "middle", "last"] as const).map<OperationDefinition>((position) => ({
+      id: `discord.users.${position}`,
+      label: `Discord /users ${position} keyset page`,
+      async prepare(seed, sample) {
+        await prepareUserDirectorySeed();
+        const cursor =
+          position === "middle"
+            ? `bench_${String(Math.max(1, Math.floor(seed.scale / 2) - 5)).padStart(6, "0")}`
+            : position === "last"
+              ? `bench_${String(Math.max(1, seed.scale - 10)).padStart(6, "0")}`
+              : undefined;
+        return {
+          request:
+            position === "first"
+              ? await command({
+                  id: `${OPERATION_PREFIX}users-first-${sample}`,
+                  name: "users",
+                  userId: streamerId,
+                  staff: true,
+                })
+              : await component({
+                  id: `${OPERATION_PREFIX}users-${position}-${sample}`,
+                  customId: `users:v1:next:${cursor as string}`,
+                }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const body = await responseText(response);
+            expect(body).toContain("Sherpa users");
+            expect(body).toContain("allowed_mentions");
+          },
+        };
+      },
+    })),
+    {
+      id: "discord.users.complete-discord",
+      label: "Discord /users complete missing Discord member",
+      async prepare(_seed, sample) {
+        await prepareUserDirectorySeed();
+        await env.DB.prepare(
+          "UPDATE user_mappings SET discord_user_id = NULL WHERE twitch_login = 'bench_000001'",
+        ).run();
+        return {
+          request: await signedDiscordRequest(
+            privateKey,
+            discordContext(config, {
+              id: `${OPERATION_PREFIX}users-complete-${sample}`,
+              type: 3,
+              userId: streamerId,
+              staff: true,
+              data: {
+                custom_id: "users:v1:add_discord:bench_000001:bench_000001",
+                values: [`${OPERATION_PREFIX}completed-discord`],
+                resolved: {
+                  users: {
+                    [`${OPERATION_PREFIX}completed-discord`]: {
+                      id: `${OPERATION_PREFIX}completed-discord`,
+                      username: "Completed viewer",
+                    },
+                  },
+                  members: { [`${OPERATION_PREFIX}completed-discord`]: { roles: [] } },
+                },
+              },
+            }),
+          ),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("bench_000001");
+            const row = await env.DB.prepare(
+              "SELECT discord_user_id AS discordUserId FROM user_mappings WHERE twitch_login = 'bench_000001'",
+            ).first<{ discordUserId: string }>();
+            expect(row?.discordUserId).toBe(`${OPERATION_PREFIX}completed-discord`);
+          },
+        };
+      },
+    },
   ];
 }
 

@@ -61,3 +61,11 @@ The default attempt limit is three. Before the last attempt, staff can record **
 **Postpone raid** moves the same raid to the end of the priority queue. **Postpone requester** moves one requester to a dedicated raid after the current raid. **Move requester to next raid** does the same operation before the raid starts. **Remove requester** cancels the help request.
 
 Staff can use the board at any time. The Twitch schedule does not hide the board or stop requests.
+
+## Staff statistics and users
+
+The streamer and volunteer sherpas can use `/stats` in Discord. The bot shows a caller-only all-time list. The list shows submitted, helped, open, and canceled requests. It also shows successful raids and up to ten raid leaders. A leader receives credit only for completed requesters in a helped raid. The command does not have a Twitch version. It does not create a stored message.
+
+The streamer and volunteer sherpas can use `/users` in Discord. The bot shows ten users at a time in Twitch-name order. Use **Previous** and **Next** to move through the list. The list shows if the bot observed the Twitch ID, if Discord is linked, and if the Escape from Tarkov name is present.
+
+Use **Complete user details** to add a missing Discord member or a missing Escape from Tarkov name. This action does not replace a value that is present. Use `/link-twitch` to correct an association. The bot observes the stable Twitch ID when that viewer uses the bot in Twitch chat. The `/users` response is visible only to the caller. It does not create a stored page record or a Twitch command.

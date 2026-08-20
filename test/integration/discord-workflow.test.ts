@@ -2054,3 +2054,226 @@ describe("Discord requester pull-up workflow", () => {
     });
   });
 });
+
+describe("Discord staff insights workflow", () => {
+  function staffCommand(name: "stats" | "users", staff = true) {
+    return context({
+      id: `${name}-${staff ? "staff" : "viewer"}`,
+      type: 2,
+      member: staff
+        ? {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          }
+        : { user: { id: "viewer", username: "Viewer" }, roles: [] },
+      data: { type: 1, name },
+    });
+  }
+
+  it.each(["stats", "users"] as const)("denies /%s without revealing data", async (name) => {
+    const response = await worker.fetch(
+      await signedRequest(staffCommand(name, false)),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("streamer or a volunteer"), flags: 64 },
+    });
+    expect(JSON.stringify(body)).not.toContain("embeds");
+  });
+
+  it("returns independent caller-only statistics snapshots with no controls or pings", async () => {
+    const first = await worker.fetch(
+      await signedRequest(staffCommand("stats")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const second = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staffCommand("stats"),
+          id: "stats-streamer",
+          member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    for (const response of [first, second]) {
+      expect(await response.json()).toMatchObject({
+        type: 4,
+        data: {
+          flags: 64,
+          allowed_mentions: { parse: [] },
+          components: [],
+          embeds: [{ title: "All-time sherpa statistics" }],
+        },
+      });
+    }
+  });
+
+  it("pages users and fills missing Discord and EFT details without notifications", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (let index = 0; index < 12; index += 1) {
+      await repo.observeTwitchIdentity({
+        twitchLogin: `staff_viewer_${String(index).padStart(2, "0")}`,
+        twitchUserId: `staff-twitch-${index}`,
+        observedAt: changedAt,
+      });
+    }
+    const command = await worker.fetch(
+      await signedRequest(staffCommand("users")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const commandBody = (await command.json()) as {
+      data: { components: Array<{ components: Array<{ custom_id?: string }> }> };
+    };
+    expect(commandBody).toMatchObject({
+      data: { flags: 64, allowed_mentions: { parse: [] }, embeds: [{ title: "Sherpa users" }] },
+    });
+    const nextId = commandBody.data.components
+      .flatMap((row) => row.components)
+      .find((component) => component.custom_id?.includes(":next:"))?.custom_id;
+    expect(nextId).toBeDefined();
+    const next = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "users-next",
+          type: 3,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: { custom_id: nextId, values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await next.json()).toMatchObject({ type: 7, data: { allowed_mentions: { parse: [] } } });
+
+    const detail = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "users-detail",
+          type: 3,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: {
+            custom_id: "users:v1:detail:staff_viewer_00",
+            values: ["staff_viewer_00"],
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await detail.json()).toMatchObject({ type: 7 });
+
+    const addDiscord = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "users-add-discord",
+          type: 3,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: {
+            custom_id: "users:v1:add_discord:staff_viewer_00:staff_viewer_00",
+            values: ["selected-member"],
+            resolved: {
+              users: { "selected-member": { id: "selected-member", username: "Selected" } },
+              members: { "selected-member": { roles: [] } },
+            },
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await addDiscord.json()).toMatchObject({
+      type: 7,
+      data: { allowed_mentions: { parse: [] } },
+    });
+
+    const eftModal = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "users-eft-button",
+          type: 3,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: {
+            custom_id: "users:v1:add_eft:staff_viewer_00:staff_viewer_00",
+            values: [],
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await eftModal.json()).toMatchObject({ type: 9 });
+    const eftResult = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "users-eft-submit",
+          type: 5,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: {
+            custom_id: "users:v1:add_eft:staff_viewer_00:staff_viewer_00",
+            components: [
+              {
+                type: 18,
+                component: { type: 4, custom_id: "users:eft-name", value: "Helpful PMC" },
+              },
+            ],
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await eftResult.json()).toMatchObject({
+      type: 7,
+      data: { allowed_mentions: { parse: [] } },
+    });
+    expect(await repo.findUserMappingByTwitchLogin("staff_viewer_00")).toMatchObject({
+      discordUserId: "selected-member",
+      inGameName: "Helpful PMC",
+    });
+    expect(outbound).toEqual([]);
+  });
+
+  it("returns restart guidance for a malformed user-page boundary", async () => {
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "users-malformed",
+          type: 3,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: { custom_id: "users:v1:next:BAD-NAME", values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Open `/users` again and use a current control.", flags: 64 },
+    });
+  });
+});

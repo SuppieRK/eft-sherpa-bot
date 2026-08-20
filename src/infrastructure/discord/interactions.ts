@@ -41,6 +41,7 @@ export interface DiscordMessageComponentInteraction extends DiscordInteractionCo
   messageId?: string;
   values: readonly string[];
   resolvedRoleIdsByUser: Readonly<Record<string, readonly string[]>>;
+  resolvedUserDisplayNames: Readonly<Record<string, string>>;
 }
 
 export type ParsedDiscordInteraction =
@@ -252,6 +253,7 @@ export function parseDiscordInteraction(payload: unknown): ParsedDiscordInteract
           ...(messageId === undefined ? {} : { messageId }),
           values,
           resolvedRoleIdsByUser: parseResolvedRoleIds(payload.data),
+          resolvedUserDisplayNames: parseResolvedUserDisplayNames(payload.data),
         };
   }
   if (payload.type !== DISCORD_INTERACTION_MODAL_SUBMIT) {

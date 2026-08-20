@@ -9,9 +9,15 @@ describe("command surface", () => {
     expect(JSON.stringify(surface)).not.toMatch(/position|spike/);
   });
 
-  it("keeps identity linking and the board Discord-only", () => {
+  it("keeps identity linking and staff operations Discord-only", () => {
     expect(surface.discordViewer.map((command) => command.name)).toEqual(["link-twitch"]);
-    expect(surface.discordStaff.map((command) => command.name)).toEqual(["board"]);
+    expect(surface.discordStaff.map((command) => command.name)).toEqual([
+      "board",
+      "stats",
+      "users",
+    ]);
+    expect(PUBLIC_COMMAND_NAMES).not.toContain("stats");
+    expect(PUBLIC_COMMAND_NAMES).not.toContain("users");
   });
 
   it("requires the Discord request mode selector", () => {

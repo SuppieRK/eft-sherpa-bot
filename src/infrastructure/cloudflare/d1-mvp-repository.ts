@@ -22,6 +22,18 @@ import type {
   StaffBoardRaid,
   StaffBoardSnapshot,
 } from "../../domain/staff-board";
+import type {
+  StaffLeaderStatistic,
+  StaffStatistics,
+  StaffStatisticsRepository,
+} from "../../domain/staff-statistics";
+import {
+  USER_DIRECTORY_PAGE_SIZE,
+  type StaffUserDirectoryEntry,
+  type StaffUserDirectoryPage,
+  type StaffUserDirectoryRepository,
+  type UserDirectoryDirection,
+} from "../../domain/staff-user-directory";
 
 const PLATFORM = { discord: 0, twitch: 1 } as const;
 const LEADER_TYPE = { streamer: 0, volunteer: 1 } as const;
@@ -74,6 +86,18 @@ interface UserMappingRow {
   discordUserId: string | null;
   discordDisplayName: string | null;
   inGameName: string | null;
+}
+
+interface StatisticsSummaryRow {
+  submittedRequests: number;
+  helpedRequests: number;
+  openRequests: number;
+  canceledRequests: number;
+  successfulRaids: number;
+}
+
+interface LeaderStatisticRow extends StaffLeaderStatistic {
+  creditedLeaderCount: number;
 }
 
 interface TwitchReceiptRow {
@@ -318,7 +342,9 @@ export interface TwitchReplyReceipt {
   replyStatus: "pending" | "sent" | "failed";
 }
 
-export class D1MvpRepository implements QueueQueryRepository {
+export class D1MvpRepository
+  implements QueueQueryRepository, StaffStatisticsRepository, StaffUserDirectoryRepository
+{
   constructor(private readonly database: D1Database) {}
 
   private async modeFairRaidPrefix(
@@ -1571,6 +1597,190 @@ export class D1MvpRepository implements QueueQueryRepository {
             : { discordDisplayName: row.discordDisplayName }),
           ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
         };
+  }
+
+  async getStaffStatistics(): Promise<StaffStatistics> {
+    const results = await this.database.batch([
+      this.database.prepare(
+        `SELECT count(*) AS submittedRequests,
+                coalesce(sum(state = 2), 0) AS helpedRequests,
+                coalesce(sum(state IN (0, 1)), 0) AS openRequests,
+                coalesce(sum(state = 3), 0) AS canceledRequests,
+                (SELECT count(*) FROM raid_groups WHERE state = 2 AND outcome = 0)
+                  AS successfulRaids
+         FROM help_requests`,
+      ),
+      this.database.prepare(
+        `WITH credits AS (
+           SELECT raid.leader_discord_user_id AS discordUserId,
+                  count(member.id) AS helpedRequests,
+                  count(DISTINCT raid.id) AS successfulRaids
+           FROM raid_groups AS raid
+           JOIN raid_group_members AS member
+             ON member.group_id = raid.id AND member.state = 1
+           WHERE raid.state = 2 AND raid.outcome = 0
+             AND raid.leader_discord_user_id IS NOT NULL
+           GROUP BY raid.leader_discord_user_id
+         )
+         SELECT discordUserId, helpedRequests, successfulRaids,
+                count(*) OVER () AS creditedLeaderCount
+         FROM credits
+         ORDER BY helpedRequests DESC, successfulRaids DESC, discordUserId ASC
+         LIMIT 10`,
+      ),
+    ]);
+    const summary = results[0]?.results[0] as StatisticsSummaryRow | undefined;
+    const leaders = (results[1]?.results ?? []) as unknown as LeaderStatisticRow[];
+    const creditedLeaderCount = Number(leaders[0]?.creditedLeaderCount ?? 0);
+    return {
+      submittedRequests: Number(summary?.submittedRequests ?? 0),
+      helpedRequests: Number(summary?.helpedRequests ?? 0),
+      openRequests: Number(summary?.openRequests ?? 0),
+      canceledRequests: Number(summary?.canceledRequests ?? 0),
+      successfulRaids: Number(summary?.successfulRaids ?? 0),
+      leaders: leaders.map((leader) => ({
+        discordUserId: leader.discordUserId,
+        helpedRequests: Number(leader.helpedRequests),
+        successfulRaids: Number(leader.successfulRaids),
+      })),
+      omittedLeaderCount: Math.max(0, creditedLeaderCount - leaders.length),
+    };
+  }
+
+  async getUserDirectoryPage(input: {
+    direction: UserDirectoryDirection;
+    cursor?: string;
+  }): Promise<StaffUserDirectoryPage> {
+    const reverse = input.direction === "previous";
+    const comparator = reverse ? "<" : ">";
+    const order = reverse ? "DESC" : "ASC";
+    const boundary =
+      input.direction === "first"
+        ? ""
+        : input.direction === "at"
+          ? "WHERE twitch_login >= ?"
+          : `WHERE twitch_login ${comparator} ?`;
+    let statement = this.database.prepare(
+      `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+              discord_user_id AS discordUserId, discord_display_name AS discordDisplayName,
+              in_game_name AS inGameName
+       FROM user_mappings ${boundary}
+       ORDER BY twitch_login ${order} LIMIT ?`,
+    );
+    statement =
+      input.direction === "first"
+        ? statement.bind(USER_DIRECTORY_PAGE_SIZE + 1)
+        : statement.bind(input.cursor, USER_DIRECTORY_PAGE_SIZE + 1);
+    const result = await statement.all<UserMappingRow>();
+    const hasRowsBeforeCursor =
+      input.direction === "at" && input.cursor !== undefined
+        ? Number(
+            (
+              await this.database
+                .prepare(
+                  `SELECT EXISTS(
+                     SELECT 1 FROM user_mappings WHERE twitch_login < ?
+                   ) AS present`,
+                )
+                .bind(input.cursor)
+                .first<{ present: number }>()
+            )?.present ?? 0,
+          ) === 1
+        : undefined;
+    const lookahead = result.results.length > USER_DIRECTORY_PAGE_SIZE;
+    const selected = result.results.slice(0, USER_DIRECTORY_PAGE_SIZE);
+    if (reverse) selected.reverse();
+    const entries = selected.map(
+      (row): StaffUserDirectoryEntry => ({
+        twitchLogin: row.twitchLogin,
+        twitchIdentityObserved: row.twitchUserId !== null,
+        ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
+        ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+        ...(row.discordDisplayName === null ? {} : { discordDisplayName: row.discordDisplayName }),
+        ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
+      }),
+    );
+    return {
+      entries,
+      hasPrevious:
+        input.direction === "first"
+          ? false
+          : input.direction === "at"
+            ? (hasRowsBeforeCursor ?? false)
+            : reverse
+              ? lookahead
+              : true,
+      hasNext: input.direction === "first" ? lookahead : reverse ? true : lookahead,
+    };
+  }
+
+  async findUserMappingByTwitchLogin(
+    twitchLogin: string,
+  ): Promise<StaffUserDirectoryEntry | undefined> {
+    const normalized = normalizeTwitchLogin(twitchLogin);
+    if (normalized === undefined) return undefined;
+    const row = await this.database
+      .prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+                discord_user_id AS discordUserId, discord_display_name AS discordDisplayName,
+                in_game_name AS inGameName FROM user_mappings WHERE twitch_login = ?`,
+      )
+      .bind(normalized)
+      .first<UserMappingRow>();
+    return row === null
+      ? undefined
+      : {
+          twitchLogin: row.twitchLogin,
+          twitchIdentityObserved: row.twitchUserId !== null,
+          ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
+          ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+          ...(row.discordDisplayName === null
+            ? {}
+            : { discordDisplayName: row.discordDisplayName }),
+          ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
+        };
+  }
+
+  async completeMissingDiscord(input: {
+    twitchLogin: string;
+    discordUserId: string;
+    discordDisplayName?: string;
+    changedAt: Date;
+  }): Promise<"updated" | "stale"> {
+    const normalized = normalizeTwitchLogin(input.twitchLogin);
+    if (normalized === undefined) return "stale";
+    const result = await this.database
+      .prepare(
+        `UPDATE user_mappings
+         SET discord_user_id = ?, discord_display_name = ?, updated_at = ?
+         WHERE twitch_login = ? AND discord_user_id IS NULL`,
+      )
+      .bind(
+        input.discordUserId,
+        input.discordDisplayName ?? null,
+        epoch(input.changedAt),
+        normalized,
+      )
+      .run();
+    return result.meta.changes === 1 ? "updated" : "stale";
+  }
+
+  async completeMissingInGameName(input: {
+    twitchLogin: string;
+    inGameName: string;
+    changedAt: Date;
+  }): Promise<"updated" | "stale"> {
+    const normalized = normalizeTwitchLogin(input.twitchLogin);
+    const inGameName = input.inGameName.trim();
+    if (normalized === undefined || inGameName.length < 1 || inGameName.length > 64) return "stale";
+    const result = await this.database
+      .prepare(
+        `UPDATE user_mappings SET in_game_name = ?, updated_at = ?
+         WHERE twitch_login = ? AND in_game_name IS NULL`,
+      )
+      .bind(inGameName, epoch(input.changedAt), normalized)
+      .run();
+    return result.meta.changes === 1 ? "updated" : "stale";
   }
 
   observeTwitchIdentity(input: {

@@ -59,6 +59,16 @@
       "name": "board",
       "description": "Open the sherpa staff board.",
       "type": 1
+    },
+    {
+      "name": "stats",
+      "description": "View all-time sherpa statistics.",
+      "type": 1
+    },
+    {
+      "name": "users",
+      "description": "Review Twitch, Discord, and EFT user details.",
+      "type": 1
     }
   ]
 }

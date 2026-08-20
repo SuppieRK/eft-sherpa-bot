@@ -213,6 +213,50 @@ export async function resetOperationFixture(seed: SeedState): Promise<void> {
   ]);
 }
 
+export async function prepareStatisticsSeed(seed: SeedState): Promise<void> {
+  const terminalThreshold = Math.max(0, seed.groupCount - 15);
+  const helpedThreshold = Math.max(0, seed.groupCount - 12);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE help_requests
+       SET state = CASE id % 4 WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END`,
+    ),
+    env.DB.prepare(`UPDATE raid_group_members SET state = 1 WHERE group_id > ? AND state = 0`).bind(
+      terminalThreshold,
+    ),
+    env.DB.prepare(
+      `UPDATE raid_group_members SET state = 2
+       WHERE group_id = ? AND position = 1`,
+    ).bind(seed.groupCount),
+    env.DB.prepare(
+      `UPDATE help_requests SET state = 2 WHERE id IN (
+         SELECT request_id FROM raid_group_members WHERE group_id > ?
+       )`,
+    ).bind(terminalThreshold),
+    env.DB.prepare(
+      `UPDATE raid_groups
+       SET state = 2,
+           outcome = CASE WHEN id > ? THEN 0 ELSE 1 END,
+           leader_discord_user_id = printf('bench-leader-%02d', ((id - 1) % 12) + 1),
+           leader_type = 1, completed_at = ?, updated_at = ?
+       WHERE id > ?`,
+    ).bind(helpedThreshold, Date.now(), Date.now(), terminalThreshold),
+  ]);
+}
+
+export async function prepareUserDirectorySeed(): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE user_mappings
+     SET twitch_user_id = CASE
+           WHEN CAST(substr(twitch_login, 7) AS INTEGER) % 5 = 0 THEN NULL ELSE twitch_user_id END,
+         discord_user_id = CASE
+           WHEN CAST(substr(twitch_login, 7) AS INTEGER) % 3 = 1 THEN NULL ELSE discord_user_id END,
+         in_game_name = CASE
+           WHEN CAST(substr(twitch_login, 7) AS INTEGER) % 4 = 1 THEN NULL ELSE in_game_name END
+     WHERE twitch_login GLOB 'bench_[0-9]*'`,
+  ).run();
+}
+
 export async function seedOperationMapping(input: {
   suffix: string;
   discordUserId?: string;

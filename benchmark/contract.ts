@@ -29,6 +29,11 @@ export const USER_OPERATION_IDS = [
   "discord.requester.remove.last",
   "discord.requester.pull.candidates",
   "discord.requester.pull.with-push",
+  "discord.stats.all-time",
+  "discord.users.first",
+  "discord.users.middle",
+  "discord.users.last",
+  "discord.users.complete-discord",
 ] as const;
 
 export type UserOperationId = (typeof USER_OPERATION_IDS)[number];
@@ -49,6 +54,9 @@ export const BENCHMARK_OPERATION_FAMILIES = [
   "raid:postpone-requester",
   "raid:remove-requester",
   "raid:pull-requester",
+  "discord:stats",
+  "discord:users-page",
+  "discord:users-complete",
 ] as const;
 
 export type BenchmarkOperationFamily = (typeof BENCHMARK_OPERATION_FAMILIES)[number];
@@ -79,4 +87,9 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "discord.requester.remove.last": "raid:remove-requester",
   "discord.requester.pull.candidates": "raid:pull-requester",
   "discord.requester.pull.with-push": "raid:pull-requester",
+  "discord.stats.all-time": "discord:stats",
+  "discord.users.first": "discord:users-page",
+  "discord.users.middle": "discord:users-page",
+  "discord.users.last": "discord:users-page",
+  "discord.users.complete-discord": "discord:users-complete",
 };

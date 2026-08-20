@@ -43,11 +43,15 @@ Use only maintainer-owned test accounts and the disposable test D1 database.
 11. Confirm that each non-empty mode has a visible raid.
 12. Select **Review a raid** for one streamer-led raid.
 13. Confirm that the raid stays planned at attempt zero, no leader is assigned, and no requester receives a call.
-14. Select **Call and start raid**.
-15. Confirm that the caller becomes the leader.
-16. Confirm that the Discord call shows the mode and map.
-17. Confirm that the Twitch call shows the mode and map.
-18. Record one raid result.
-19. Confirm that the raid state changes correctly.
+14. Run `/stats` as the streamer and as a volunteer sherpa. Confirm that each response is visible only to its caller.
+15. Run `/users` as the streamer and as a volunteer sherpa. Test the first, middle, and last pages.
+16. Add one missing Discord member and one missing Escape from Tarkov name. Use `/link-twitch` for a correction.
+17. Run `/stats` and `/users` as a user without a staff role. Confirm that the bot does not show statistics or user details.
+18. Select **Call and start raid**.
+19. Confirm that the caller becomes the leader.
+20. Confirm that the Discord call shows the mode and map.
+21. Confirm that the Twitch call shows the mode and map.
+22. Record one raid result.
+23. Confirm that the raid state changes correctly.
 
 Do not publish the release if one step fails.
