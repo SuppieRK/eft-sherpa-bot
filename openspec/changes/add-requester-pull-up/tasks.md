@@ -29,4 +29,4 @@
 ## 4. Publish and Deploy
 
 - [x] 4.1 As the final task, create a Git branch for this change, commit all change-scoped files, push the branch, create a GitHub pull request with the verified behavior and benchmark evidence, manually deploy that exact branch commit to the user's DEV environment, and smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, multiple raid details, deleted details, and no-call behavior.
-- [ ] 4.2 Commit and push the corrections to the existing pull-request branch, update the pull-request summary, manually deploy the exact corrected commit to DEV, and verify the direct selector plus deleted-detail recovery.
+- [x] 4.2 Commit and push the corrections to the existing pull-request branch, update the pull-request summary, manually deploy the exact corrected commit to DEV, and verify the direct selector plus deleted-detail recovery.
