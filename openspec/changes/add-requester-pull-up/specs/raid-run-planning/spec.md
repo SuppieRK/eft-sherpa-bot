@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Staff can pull one requester into a reviewed raid
-A reviewed planned raid with requester capacity SHALL expose a `Pull requester up` select menu directly in its raid detail message when the first eligible later source exists. The menu SHALL list every current requester in that source with Twitch identity and goal. The source SHALL have the same game mode and map and SHALL be planned, unreviewed, automatically fillable, unreserved, and later in service order. An Ordinary destination SHALL search only later Ordinary raids. A Priority destination SHALL search later Priority raids before Ordinary raids. The system SHALL NOT list an active, reviewed, or leader-reserved source.
+A reviewed planned raid with requester capacity SHALL expose a `Pull requester up` select menu directly in its raid detail message. When the first eligible later source exists, the menu SHALL list every current requester in that source with Twitch identity and goal. When no eligible source exists, the menu SHALL remain visible but disabled and SHALL state that no compatible requester is available. The source SHALL have the same game mode and map and SHALL be planned, unreviewed, automatically fillable, unreserved, and later in service order. An Ordinary destination SHALL search only later Ordinary raids. A Priority destination SHALL search later Priority raids before Ordinary raids. The system SHALL NOT list an active, reviewed, or leader-reserved source.
 
 Selecting one listed requester SHALL atomically append that requester to the reviewed destination without exceeding requester capacity. It SHALL retain the destination's planned state, attempt count, leader reservation, automatic-fill state, and call statuses. It SHALL send no Discord or Twitch requester call. The reviewed detail message and canonical board SHALL refresh from the committed state.
 
@@ -11,7 +11,7 @@ Selecting one listed requester SHALL atomically append that requester to the rev
 
 #### Scenario: No eligible source exists
 - **WHEN** a reviewed raid has requester capacity but no eligible later source
-- **THEN** its raid review message does not contain a `Pull requester up` selector
+- **THEN** its raid review message contains a disabled `Pull requester up` selector that states `No compatible requester available`
 
 #### Scenario: Earlier later raid is incompatible
 - **WHEN** a later raid has another game mode or map before an eligible source
@@ -29,16 +29,23 @@ Selecting one listed requester SHALL atomically append that requester to the rev
 - **WHEN** the destination fills, the source changes state, or the selected requester moves before the selection commits
 - **THEN** the entire transition is rejected without changing a request, membership, raid, call, or attempt
 
-### Requirement: Deleted raid review details recover
-A board Refresh or repeat Review action for a frozen planned raid SHALL update its stored Discord detail message with current controls. When Discord reports that the stored message does not exist, the system SHALL create one replacement and atomically replace the stale reference. If replacement creation fails, the stale reference SHALL remain available for a later retry. The system SHALL refresh the canonical board link and SHALL NOT assign a leader, start an attempt, or send a call. Concurrent recovery SHALL retain only one canonical replacement.
+### Requirement: Deleted planned raid review details are dismissed
+A board Refresh or repeat Review action for a frozen planned raid SHALL update its stored Discord detail message with current controls. When Discord reports that the planned detail message does not exist, the system SHALL atomically clear the stale reference, SHALL NOT create a replacement, and SHALL refresh the canonical board without a details link. It SHALL NOT assign a leader, start an attempt, or send a call. A later explicit Review action MAY create a fresh detail message.
 
 #### Scenario: Staff review a raid after deleting its details
 - **WHEN** the stored raid detail message returns Discord `404` and staff select that raid from `Review a raid` again
-- **THEN** the bot creates one replacement detail message and returns its new link
+- **THEN** the bot clears the stale link, does not create a message, and tells staff that the deleted review returned to the board
 
 #### Scenario: Board refresh finds a deleted reviewed detail
 - **WHEN** a visible reviewed raid points to a Discord detail message that was manually deleted
-- **THEN** Refresh replaces the message and updates the board link without changing raid state
+- **THEN** Refresh clears the stale link without creating a message or changing request, attempt, leader, or call state
+
+### Requirement: Deleted active raid details recover
+When Refresh finds that an active raid detail message does not exist, the system SHALL create one replacement with current result and requester controls and atomically replace the stale reference. Concurrent recovery SHALL retain only one canonical replacement.
+
+#### Scenario: Board refresh finds a deleted active detail
+- **WHEN** an active raid points to a Discord detail message that was manually deleted
+- **THEN** Refresh creates one replacement and updates the board link without changing the attempt, leader, or call state
 
 ### Requirement: Priority pull explicitly promotes one Ordinary request
 A reviewed Priority raid MAY pull a selected requester from the first eligible Ordinary source when no eligible later Priority source precedes it. The transaction SHALL promote only the selected help request to Priority before creating its compatible Priority membership. Every other source request SHALL remain Ordinary. Any push-down after that pull SHALL use only an Ordinary destination. An Ordinary raid SHALL NOT pull a Priority requester.

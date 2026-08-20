@@ -26,15 +26,17 @@ The current D1 model materializes each party as a raid group and preserves histo
 
 ### Show one source in the review message
 
-The planned detail message exposes a `Pull requester up` select menu only while its requester capacity has an open seat and the first eligible source exists. The review, recovery, and post-action render paths perform the source query and put every member of that one source raid directly in the selector. This matches the existing `Move requester to next raid` interaction, limits the selector to one raid's map-bounded membership, and lets staff inspect Twitch identity and goal before choosing without an extra button step.
+The planned detail message exposes a `Pull requester up` select menu while requester capacity has an open seat. When the first eligible source exists, the review and post-action render paths put every member of that one source raid directly in the selector. When no source exists, the same control is disabled and states that no compatible requester is available. This matches the existing `Move requester to next raid` interaction, limits the usable selector to one raid's map-bounded membership, and distinguishes unavailable candidates from a missing feature.
 
 An eligible source is planned, unreviewed, automatically fillable, unreserved, later in service order, and has the same game mode and map. An Ordinary destination searches only later Ordinary raids. A Priority destination searches later Priority raids first and then Ordinary raids. Active, reviewed, and leader-reserved groups form boundaries and are not silently modified.
 
 Active raid renders do not perform source discovery. Selector data is advisory and can become stale, so selection still revalidates every boundary atomically. Alternative considered: retain a button that opens a private selector. Staff found the extra step inconsistent with the other requester controls. Alternative considered: select any matching requester in the tail. That weakens stable queue order and requires an unbounded candidate surface.
 
-### Recreate deleted review messages before returning their link
+### Treat deleted planned reviews as dismissed
 
-Re-reviewing a frozen planned raid validates and refreshes its stored Discord detail message before returning a link. A Discord `404` creates one replacement with current requester controls and atomically replaces the stale message ID with compare-and-set. If replacement creation fails, the stale ID stays available for a later retry. The existing board Refresh reconciliation uses the same recovery behavior. Concurrent recovery keeps one canonical replacement and deletes any duplicate that loses compare-and-set.
+Re-reviewing a frozen planned raid validates and refreshes its stored Discord detail message before returning a link. A Discord `404` clears the stale message ID with compare-and-set, returns the raid to the board without a details link, and does not create a replacement. A later explicit Review action can open a fresh detail message. Board Refresh uses the same dismissal behavior.
+
+Active raids are different because their detail messages contain the only result and requester controls for an attempt in progress. Refresh continues to recreate a missing active-raid detail with compare-and-set and retains one canonical replacement during concurrent recovery.
 
 ### Promote only the selected cross-queue request
 
@@ -72,13 +74,14 @@ The stable benchmark adds the private source-selector read and a maximum bounded
 - [A later reviewed or reserved raid would change silently] → Exclude it from automatic push-down and retain the source remainder.
 - [A candidate lookup regresses with a skewed queue] → Install the mode-and-map ordered partial index and gate release on local D1 row statistics through 100,000 requests.
 - [Candidate discovery adds one indexed read to planned review renders] → Query only the first eligible source and do not run it for active raids.
-- [A manually deleted detail leaves a stale database link] → Update stored detail messages during re-review and atomically replace a confirmed Discord `404` with compare-and-set.
+- [A manually deleted planned detail leaves a stale database link] → Clear the confirmed stale link with compare-and-set and require a later explicit Review to create a fresh message.
+- [A deleted active detail removes in-progress controls] → Recreate active details only and retain one canonical replacement during concurrent recovery.
 
 ## Migration Plan
 
 1. Apply additive migration `0003` and verify its query plan and checksum locally.
 2. Deploy the Worker after the index exists; old Workers remain compatible during the interval.
-3. Refresh the canonical board and reviewed detail messages to expose the direct selector and replace deleted details.
+3. Refresh the canonical board and detail messages to expose the direct selector, dismiss missing planned reviews, and recover missing active details.
 4. Smoke-test Ordinary-to-Ordinary pull, Ordinary-to-Priority pull, successful push-down, retained remainder, stale selection, and no-call behavior in DEV.
 5. If deployment fails, restore the prior Worker without reverting `0003`; the unused index is safe.
 

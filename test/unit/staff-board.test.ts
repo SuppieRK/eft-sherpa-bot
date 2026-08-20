@@ -189,7 +189,15 @@ describe("split staff board", () => {
       JSON.stringify(
         renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" }, 3),
       ),
-    ).not.toContain("Pull requester up");
+    ).toContain("Pull requester up");
+    expect(
+      renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" }, 3)
+        .components[1]?.components[0],
+    ).toMatchObject({
+      placeholder: "Pull requester up",
+      disabled: true,
+      options: [{ label: "No compatible requester available", value: "unavailable" }],
+    });
     expect(
       JSON.stringify(
         renderRaidMessage(

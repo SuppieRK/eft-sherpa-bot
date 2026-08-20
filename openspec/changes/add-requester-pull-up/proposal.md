@@ -27,4 +27,5 @@ None.
 - D1 repository transitions, membership history, queue counters, and compatibility enforcement.
 - Additive D1 migration `0003`, repository and Discord tests, benchmark contract, and generated performance report.
 - No public Twitch or Discord command changes and no requester notification during rearrangement.
-- Re-reviewing or refreshing a raid whose Discord detail message was deleted recreates that message and its current controls.
+- Keep the pull selector visible but disabled when no compatible later requester exists, so staff can see why no pull is available.
+- Treat deletion of a planned review message as dismissal: clear its stale board link without recreating the message. Continue to recover missing active-raid details because their result controls remain required.

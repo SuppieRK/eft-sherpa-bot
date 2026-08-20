@@ -970,7 +970,7 @@ describe("Discord progressive raid workflow", () => {
     expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/deleted-detail");
   });
 
-  it("recreates a deleted planned review without assigning a leader or calling users", async () => {
+  it("dismisses a deleted planned review without assigning a leader or calling users", async () => {
     await worker.fetch(
       await signedRequest(requestModal("repair-planned-review")),
       testEnvironment,
@@ -997,18 +997,20 @@ describe("Discord progressive raid workflow", () => {
       attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
-      staffMessageId: "message-1",
     });
+    expect(repaired?.staffMessageId).toBeUndefined();
     expect(repaired?.leaderDiscordUserId).toBeUndefined();
-    const replacement = outbound.find((request) => request.method === "POST");
-    expect(JSON.stringify(replacement?.body)).toContain("Calls: No requesters have been called.");
-    expect(replacement?.body).toMatchObject({ allowed_mentions: { parse: [] } });
+    expect(outbound.some((request) => request.method === "POST")).toBe(false);
+    const canonicalUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
+    expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/deleted-planned-detail");
     expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
       false,
     );
   });
 
-  it("recreates a deleted planned detail when staff review the raid again", async () => {
+  it("dismisses a deleted planned detail when staff review the raid again", async () => {
     await worker.fetch(
       await signedRequest(requestModal("repair-repeat-review")),
       testEnvironment,
@@ -1044,20 +1046,21 @@ describe("Discord progressive raid workflow", () => {
 
     expect(await response.json()).toMatchObject({
       type: 4,
-      data: { content: expect.stringContaining("/message-1"), flags: 64 },
+      data: { content: expect.stringContaining("raid is back on the board"), flags: 64 },
     });
     expect(await repo.getRaid(planned.id)).toMatchObject({
       state: "planned",
       automaticFill: false,
       attemptCount: 0,
-      staffMessageId: "message-1",
     });
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
+    expect(outbound.some((request) => request.method === "POST")).toBe(false);
     expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
       false,
     );
   });
 
-  it("keeps one replacement when deleted-detail review actions overlap", async () => {
+  it("clears one stale link when deleted-detail review actions overlap", async () => {
     await worker.fetch(
       await signedRequest(requestModal("repair-concurrent-repeat-review")),
       testEnvironment,
@@ -1072,7 +1075,6 @@ describe("Discord progressive raid workflow", () => {
       changedAt,
     });
     messagePatchStatuses.set("deleted-concurrent-review", 404);
-    createBarrierTarget = 2;
     outbound = [];
     const review = async (id: string) =>
       worker.fetch(
@@ -1096,13 +1098,12 @@ describe("Discord progressive raid workflow", () => {
       review("concurrent-deleted-review-one"),
       review("concurrent-deleted-review-two"),
     ]);
-    const retainedMessageId = (await repo.getRaid(planned.id))?.staffMessageId;
-    expect(retainedMessageId).toMatch(/^message-[12]$/);
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
     for (const response of responses) {
-      expect(JSON.stringify(await response.json())).toContain(`/${retainedMessageId}`);
+      expect(JSON.stringify(await response.json())).toContain("raid is back on the board");
     }
-    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(2);
-    expect(outbound.filter((request) => request.method === "DELETE")).toHaveLength(1);
+    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
+    expect(outbound.filter((request) => request.method === "DELETE")).toHaveLength(0);
   });
 
   it("tracks multiple raid detail messages through recovery and independent actions", async () => {
@@ -1189,16 +1190,19 @@ describe("Discord progressive raid workflow", () => {
     const recoveredShoreline = (await repo.getRaid(shoreline.id)) as StaffBoardRaid;
     expect(recoveredCustoms.staffMessageId).toBe(customs.staffMessageId);
     expect(recoveredShoreline.staffMessageId).toBe(shoreline.staffMessageId);
-    expect(recoveredWoods.staffMessageId).not.toBe(woods.staffMessageId);
-    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(1);
+    expect(recoveredWoods.staffMessageId).toBeUndefined();
+    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
     const refreshedBoard = outbound.find(
       (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
     );
     const refreshedBody = JSON.stringify(refreshedBoard?.body);
     expect(refreshedBody).toContain(`/${recoveredCustoms.staffMessageId}`);
-    expect(refreshedBody).toContain(`/${recoveredWoods.staffMessageId}`);
     expect(refreshedBody).toContain(`/${recoveredShoreline.staffMessageId}`);
     expect(refreshedBody).not.toContain(`/${woods.staffMessageId}`);
+
+    await component("multi-rereview-woods", "board:v6:review", [String(woods.id)]);
+    const reviewedWoodsAgain = (await repo.getRaid(woods.id)) as StaffBoardRaid;
+    expect(reviewedWoodsAgain.staffMessageId).toMatch(/^message-/);
 
     outbound = [];
     await component("multi-start-customs", `raid:v2:call:${customs.id}`);
@@ -1236,7 +1240,9 @@ describe("Discord progressive raid workflow", () => {
     expect(deletedUrls.some((url) => url.endsWith(`/${recoveredCustoms.staffMessageId}`))).toBe(
       true,
     );
-    expect(deletedUrls.some((url) => url.endsWith(`/${recoveredWoods.staffMessageId}`))).toBe(true);
+    expect(deletedUrls.some((url) => url.endsWith(`/${reviewedWoodsAgain.staffMessageId}`))).toBe(
+      true,
+    );
     expect(deletedUrls.some((url) => url.endsWith(`/${recoveredShoreline.staffMessageId}`))).toBe(
       true,
     );
@@ -1748,6 +1754,31 @@ describe("Discord requester pull-up workflow", () => {
       messageId: "no-source-pull-detail",
     });
     await repo.reviewRaid({ groupId: source.id, changedAt });
+    outbound = [];
+    await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "render-no-pull-source",
+          customId: "board:v6:review",
+          values: [String(destination.id)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const detailUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/no-source-pull-detail"),
+    );
+    const rows = (detailUpdate?.body.components ?? []) as Array<{
+      components: Array<Record<string, unknown>>;
+    }>;
+    const unavailable = rows
+      .flatMap((row) => row.components)
+      .find((component) => component.placeholder === "Pull requester up");
+    expect(unavailable).toMatchObject({
+      disabled: true,
+      options: [{ label: "No compatible requester available", value: "unavailable" }],
+    });
     const response = await worker.fetch(
       await signedRequest(
         pullInteraction({
@@ -1764,7 +1795,7 @@ describe("Discord requester pull-up workflow", () => {
     });
   });
 
-  it("repairs a manually deleted destination detail after a pull", async () => {
+  it("dismisses a manually deleted destination detail after a pull", async () => {
     const { repo, destination, source } = await reviewedDestinationWithSource({
       messageId: "deleted-pull-detail",
     });
@@ -1784,9 +1815,8 @@ describe("Discord requester pull-up workflow", () => {
       type: 4,
       data: { content: expect.stringContaining("Requester pulled up"), flags: 64 },
     });
-    const repaired = await repo.getRaid(destination.id);
-    expect(repaired?.staffMessageId).toMatch(/^message-/);
-    expect(repaired?.staffMessageId).not.toBe("deleted-pull-detail");
+    expect((await repo.getRaid(destination.id))?.staffMessageId).toBeUndefined();
+    expect(outbound.some((request) => request.method === "POST")).toBe(false);
   });
 
   it("denies pull controls to a non-staff user", async () => {

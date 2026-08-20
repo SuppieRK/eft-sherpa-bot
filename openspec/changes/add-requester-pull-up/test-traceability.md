@@ -5,13 +5,14 @@
 | Specification scenario | Automated evidence |
 |---|---|
 | Ordinary reviewed raid has an open seat | Repository test `pulls one requester and pushes the complete source remainder into one successor`; unit and Discord tests `shows Twitch nicknames with goals and pulls without starting or calling` verify the direct review selector |
-| No eligible source exists | Unit test `shows Pull requester up only during a planned frozen review with capacity`; Discord legacy no-source response test |
+| No eligible source exists | Unit test `shows Pull requester up only during a planned frozen review with capacity`; Discord test `returns a short response when no safe pull source remains` verifies the disabled selector and its unavailable label |
 | Earlier later raid is incompatible | Repository test `skips different modes and maps before selecting the first compatible source` |
 | Source is not safe to modify | Repository tests `does not offer a reviewed or leader-reserved source` and `never pulls a requester from a concurrent volunteer-led active raid`; equivalent Discord active-raid test |
 | Selected requester is pulled | Repository pull-and-push test and Discord happy-path test |
 | Selection becomes stale | Repository tests `rejects a stale source selection without moving any requester` and `allows only one concurrent pull of the same requester` |
-| Staff review a raid after deleting its details | Discord test `recreates a deleted planned detail when staff review the raid again` |
-| Board refresh finds a deleted reviewed detail | Discord test `recreates a deleted planned review without assigning a leader or calling users` |
+| Staff review a raid after deleting its details | Discord test `dismisses a deleted planned detail when staff review the raid again` |
+| Board refresh finds a deleted reviewed detail | Discord test `dismisses a deleted planned review without assigning a leader or calling users` |
+| Board refresh finds a deleted active detail | Discord test `recreates a deleted active raid message without changing attempt state or pinging users` |
 | Postponed Priority raid pulls from Ordinary | Repository test `promotes only the selected Ordinary requester into a reviewed Priority raid`; local maximum pull benchmark |
 | Later Priority source exists | Repository test `uses a later Priority source before an Ordinary source` |
 | Ordinary destination requests candidates | Repository test `never offers a Priority source to an Ordinary destination` |
@@ -38,7 +39,8 @@
 | Every configured map keeps one place for the sherpa | Parameterized repository test `enforces $name requester capacity during a pull` |
 | Pull does not start attempts or calls | Discord happy-path state and outbound-call assertions |
 | Twitch nickname and goal identify each option | Unit test `labels pull candidates with Twitch nicknames and describes them with goals` and Discord selector assertion |
-| Deleted detail messages recover | Discord test `repairs a manually deleted destination detail after a pull` |
-| Concurrent deleted-detail recovery retains one message | Discord test `keeps one replacement when deleted-detail review actions overlap` |
+| Deleted planned detail messages are dismissed | Discord tests `dismisses a manually deleted destination detail after a pull` and `tracks multiple raid detail messages through recovery and independent actions` |
+| Concurrent planned-detail dismissal clears one stale link | Discord test `clears one stale link when deleted-detail review actions overlap` |
+| Deleted active detail messages recover | Discord test `recreates a deleted active raid message without changing attempt state or pinging users` |
 | Unauthorized viewers cannot pull | Discord test `denies pull controls to a non-staff user` |
 | Multiple active and reviewed raids stay independent | Concurrent volunteer-led active-raid repository and Discord tests |

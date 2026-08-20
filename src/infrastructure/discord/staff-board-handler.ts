@@ -184,6 +184,14 @@ async function reconcileRaidMessage(input: {
     } catch (error) {
       if (!(error instanceof DiscordApiError) || error.status !== 404) return;
     }
+    if (current.state === "planned") {
+      await input.repository.compareAndSetRaidStaffMessage({
+        groupId: current.id,
+        expectedMessageId: current.staffMessageId,
+        changedAt: input.changedAt,
+      });
+      return;
+    }
   }
   const created = await createDiscordMessage(input.environment, channelId, message);
   try {
@@ -312,7 +320,7 @@ class StaffBoardHandler {
   private async ensureReviewMessage(
     raid: StaffBoardRaid,
     reviewerDiscordUserId: string,
-  ): Promise<string> {
+  ): Promise<string | undefined> {
     const { communityConfig, changedAt, environment } = this.dependencies;
     const message = await raidDetailMessage({
       raid,
@@ -332,6 +340,13 @@ class StaffBoardHandler {
       } catch (error) {
         if (!(error instanceof DiscordApiError) || error.status !== 404) throw error;
       }
+      await this.repository.compareAndSetRaidStaffMessage({
+        groupId: raid.id,
+        expectedMessageId: raid.staffMessageId,
+        changedAt,
+      });
+      const retained = await this.repository.getRaid(raid.id);
+      return retained?.staffMessageId;
     }
     const created = await createDiscordMessage(
       environment,
@@ -465,6 +480,11 @@ class StaffBoardHandler {
         const reviewed = await this.repository.reviewRaid({ groupId: raidId, changedAt });
         const messageId = await this.ensureReviewMessage(reviewed, interaction.discordUserId);
         this.refreshBoardLater();
+        if (messageId === undefined) {
+          return ephemeral(
+            "That review message was deleted. The raid is back on the board. Review it again to open new details.",
+          );
+        }
         return ephemeral(
           `[Open raid details](${discordMessageUrl(
             communityConfig.discord.guildId,
