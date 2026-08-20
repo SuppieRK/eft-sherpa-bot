@@ -53,8 +53,12 @@ export async function observeWorkerRequest(
   const classification = requestClass(request);
   try {
     const response = await handler(measuredEnvironment(environment, metrics));
-    const outcome: InvocationOutcome =
-      response.status >= 500 ? "server_error" : response.status >= 400 ? "client_error" : "ok";
+    let outcome: InvocationOutcome = "ok";
+    if (response.status >= 500) {
+      outcome = "server_error";
+    } else if (response.status >= 400) {
+      outcome = "client_error";
+    }
     logDiagnostic(outcome === "server_error" ? "error" : "info", "worker_invocation", {
       ...classification,
       outcome,

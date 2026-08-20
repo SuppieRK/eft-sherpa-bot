@@ -74,6 +74,7 @@ await writeFile(".artifacts/deployment-evidence.json", `${JSON.stringify(evidenc
 
 const summary = process.env.GITHUB_STEP_SUMMARY;
 if (summary !== undefined) {
+  const migrations = evidence.migrations.map((item) => `\`${item}\``).join(", ");
   await writeFile(
     summary,
     [
@@ -83,7 +84,7 @@ if (summary !== undefined) {
       `- Commit: \`${evidence.commitSha}\``,
       `- Worker: ${evidence.workerUrl}`,
       `- Database: \`${evidence.databaseName}\``,
-      `- Migrations: ${evidence.migrations.map((item) => `\`${item}\``).join(", ")}`,
+      `- Migrations: ${migrations}`,
       "- Discord: ready",
       "- Twitch: ready",
       "- Worker health: ready",

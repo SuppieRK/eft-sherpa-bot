@@ -46,7 +46,8 @@ async function readEnvironmentFile(path) {
 }
 
 async function writeEnvironmentFile(path, values) {
-  const contents = `${[...values.entries()].map(([name, value]) => `${name}=${value}`).join("\n")}\n`;
+  const lines = [...values.entries()].map(([name, value]) => `${name}=${value}`);
+  const contents = `${lines.join("\n")}\n`;
   await writeFile(path, contents, { encoding: "utf8", mode: 0o600 });
   await chmod(path, 0o600);
 }

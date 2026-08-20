@@ -3,12 +3,12 @@ import { loadEnvironmentValues, requireValue } from "../environment-values.mjs";
 
 function parseEndpoint(argv, values) {
   const baseUrl = values.get("WORKER_BASE_URL");
-  const raw =
-    argv.length === 2 && argv[0] === "--endpoint" && argv[1] !== undefined
-      ? argv[1]
-      : baseUrl === undefined
-        ? undefined
-        : `${baseUrl.replace(/\/$/, "")}/webhooks/discord/interactions`;
+  let raw;
+  if (argv.length === 2 && argv[0] === "--endpoint" && argv[1] !== undefined) {
+    raw = argv[1];
+  } else if (baseUrl !== undefined) {
+    raw = `${baseUrl.replace(/\/$/, "")}/webhooks/discord/interactions`;
+  }
   if (raw === undefined) {
     throw new Error(
       "Set WORKER_BASE_URL or use --endpoint https://HOST/webhooks/discord/interactions",

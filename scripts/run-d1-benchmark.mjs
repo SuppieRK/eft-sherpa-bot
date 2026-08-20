@@ -142,11 +142,12 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
   const writes = new Set(operationResults.map((result) => result.aggregate.rowsWritten.median));
   if (statements.size !== 1) fail(`${operationId} statement count changed with scale`);
   if (writes.size !== 1) fail(`${operationId} row writes changed with scale`);
-  const queueRowLimit = operationId.startsWith("discord.queue.")
-    ? 200
-    : operationId.startsWith("twitch.queue.")
-      ? 220
-      : undefined;
+  let queueRowLimit;
+  if (operationId.startsWith("discord.queue.")) {
+    queueRowLimit = 200;
+  } else if (operationId.startsWith("twitch.queue.")) {
+    queueRowLimit = 220;
+  }
   if (
     queueRowLimit !== undefined &&
     operationResults.some((result) => result.aggregate.rowsRead.max >= queueRowLimit)
