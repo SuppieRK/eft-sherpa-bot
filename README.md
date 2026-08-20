@@ -6,7 +6,7 @@ EFT Sherpa Bot plans Escape from Tarkov help raids for the butcoffee community. 
 
 - Twitch viewers use `!request [mode] [map] [goal]` and `!queue`.
 - Discord viewers use `/request`, `/queue`, and `/link-twitch`.
-- The streamer and volunteer sherpas use `/board`.
+- The streamer and volunteer sherpas use `/board`, `/stats`, and `/users` in the Discord staff channel.
 - The bot groups requests only when the game mode and map are the same.
 - The board shows at least one raid for each non-empty game mode.
 - Staff review the complete goals and notes before they call the raid.
@@ -14,6 +14,7 @@ EFT Sherpa Bot plans Escape from Tarkov help raids for the butcoffee community. 
 - The bot limits each raid to the map party size and keeps one place for the sherpa.
 - The bot records raid attempts and moves postponed raids to the priority queue.
 - The bot stores queue data in Cloudflare D1.
+- `/stats` shows a caller-only all-time summary. `/users` shows caller-only identity pages.
 
 See [Bot operation](docs/BOT_OPERATION.md) for the complete command behavior.
 

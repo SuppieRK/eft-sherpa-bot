@@ -5,7 +5,7 @@ import { discordMessageUrl } from "./messages";
 
 export const DISCORD_STAFF_BOARD_COMMAND = "board";
 const BOARD_PREFIX = "board:v6";
-const RAID_PREFIX = "raid:v2";
+const RAID_PREFIX = "raid:v3";
 
 interface Button {
   type: 2;
@@ -28,6 +28,7 @@ interface Select {
   min_values: 1;
   max_values: 1;
   options: SelectOption[];
+  disabled?: boolean;
 }
 
 interface ActionRow {
@@ -55,10 +56,19 @@ export interface DiscordBotMessage {
 }
 
 export type StaffBoardAction = { action: "refresh" | "review" | "retired_start" };
-export type RaidMessageAction = {
-  action: "call" | "result" | "postpone" | "remove";
-  raidId: number;
-};
+type SingleRaidMessageAction =
+  | "call"
+  | "result"
+  | "postpone"
+  | "remove"
+  | "pull_candidates"
+  | "cancel";
+export type RaidMessageAction =
+  | {
+      action: SingleRaidMessageAction;
+      raidId: number;
+    }
+  | { action: "pull"; raidId: number; sourceRaidId: number };
 
 export function parseStaffBoardAction(value: string): StaffBoardAction | undefined {
   const current = /^board:v6:(refresh|review)$/.exec(value);
@@ -69,13 +79,25 @@ export function parseStaffBoardAction(value: string): StaffBoardAction | undefin
 }
 
 export function parseRaidMessageAction(value: string): RaidMessageAction | undefined {
-  const match = /^raid:v2:(call|result|postpone|remove):(\d+)$/.exec(value);
+  const pull = /^raid:v3:pull:(\d+):(\d+)$/.exec(value);
+  if (pull !== null) {
+    const raidId = Number(pull[1]);
+    const sourceRaidId = Number(pull[2]);
+    return Number.isSafeInteger(raidId) &&
+      raidId > 0 &&
+      Number.isSafeInteger(sourceRaidId) &&
+      sourceRaidId > 0
+      ? { action: "pull", raidId, sourceRaidId }
+      : undefined;
+  }
+  const match = /^raid:v3:(call|result|postpone|remove|pull_candidates|cancel):(\d+)$/.exec(value);
+  const previous = /^raid:v2:(call|result|postpone|remove):(\d+)$/.exec(value);
   const legacy = /^raid:v1:(result|postpone|remove):(\d+)$/.exec(value);
-  const selected = match ?? legacy;
+  const selected = match ?? previous ?? legacy;
   if (selected === null) return undefined;
   const raidId = Number(selected[2]);
   return Number.isSafeInteger(raidId) && raidId > 0
-    ? { action: selected[1] as RaidMessageAction["action"], raidId }
+    ? { action: selected[1] as SingleRaidMessageAction, raidId }
     : undefined;
 }
 
@@ -206,6 +228,7 @@ export function renderRaidMessage(
   raid: StaffBoardRaid,
   attemptLimit: number,
   notificationUserId?: string,
+  pullSource?: StaffBoardRaid,
 ): DiscordBotMessage {
   const terminal = raid.state === "completed" || raid.state === "canceled";
   const status = terminal
@@ -237,8 +260,43 @@ export function renderRaidMessage(
           custom_id: `${RAID_PREFIX}:call:${raid.id}`,
           label: "Call and start raid",
         },
+        ...(!raid.automaticFill
+          ? [
+              {
+                type: 2 as const,
+                style: 2 as const,
+                custom_id: `${RAID_PREFIX}:cancel:${raid.id}`,
+                label: "Cancel review",
+              },
+            ]
+          : []),
       ],
     });
+    if (!raid.automaticFill && raid.members.length < raid.requesterCapacity) {
+      const hasCandidates = pullSource !== undefined && pullSource.members.length > 0;
+      components.push({
+        type: 1,
+        components: [
+          {
+            type: 3,
+            custom_id: hasCandidates
+              ? `${RAID_PREFIX}:pull:${raid.id}:${pullSource.id}`
+              : `${RAID_PREFIX}:pull_candidates:${raid.id}`,
+            placeholder: "Pull requester up",
+            min_values: 1,
+            max_values: 1,
+            options: hasCandidates
+              ? pullSource.members.map((member) => ({
+                  label: `@${member.twitchLogin}`.slice(0, 100),
+                  value: String(member.requestId),
+                  description: member.objective.slice(0, 100),
+                }))
+              : [{ label: "No compatible requester available", value: "unavailable" }],
+            ...(!hasCandidates ? { disabled: true } : {}),
+          },
+        ],
+      });
+    }
   } else if (!terminal) {
     const finalAttempt = raid.attemptCount >= attemptLimit;
     const outcomes: SelectOption[] = [
@@ -332,5 +390,34 @@ export function renderRaidMessage(
       ...(notificationUserId === undefined ? {} : { users: [notificationUserId] }),
     },
     components,
+  };
+}
+
+export function renderPullRequesterSelector(
+  destination: StaffBoardRaid,
+  source: StaffBoardRaid,
+): DiscordBotMessage {
+  return {
+    content: `Choose one requester to pull into the ${raidName(destination)} raid.`,
+    allowed_mentions: { parse: [] },
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 3,
+            custom_id: `${RAID_PREFIX}:pull:${destination.id}:${source.id}`,
+            placeholder: "Pull requester up",
+            min_values: 1,
+            max_values: 1,
+            options: source.members.map((member) => ({
+              label: `@${member.twitchLogin}`.slice(0, 100),
+              value: String(member.requestId),
+              description: member.objective.slice(0, 100),
+            })),
+          },
+        ],
+      },
+    ],
   };
 }

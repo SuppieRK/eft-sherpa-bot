@@ -18,6 +18,8 @@ import {
   encodeHex,
   OPERATION_PREFIX,
   queueRequestId,
+  prepareStatisticsSeed,
+  prepareUserDirectorySeed,
   resetOperationFixture,
   runWorkerRequest,
   seedDatabase,
@@ -118,7 +120,12 @@ function operationDefinitions(input: {
         },
       }),
     );
-  const component = async (details: { id: string; customId: string; values?: string[] }) =>
+  const component = async (details: {
+    id: string;
+    customId: string;
+    values?: string[];
+    messageId?: string;
+  }) =>
     signedDiscordRequest(
       privateKey,
       discordContext(config, {
@@ -126,6 +133,7 @@ function operationDefinitions(input: {
         type: 3,
         userId: streamerId,
         staff: true,
+        ...(details.messageId === undefined ? {} : { messageId: details.messageId }),
         data: { custom_id: details.customId, values: details.values ?? [] },
       }),
     );
@@ -140,6 +148,39 @@ function operationDefinitions(input: {
       eventSubSecret: "benchmark-eventsub-secret-is-long-enough",
       broadcasterUserId: config.twitch.broadcasterUserId,
     });
+  const seedPullFixture = async (seed: SeedState) => {
+    const destination = await seedOperationRaid({
+      seed,
+      suffix: "pull_destination",
+      fixtureOrdinal: 1,
+      memberCount: 2,
+      state: "planned",
+      streamerDiscordUserId: streamerId,
+      isPriority: true,
+      staffMessageId: `${OPERATION_PREFIX}detail-pull`,
+    });
+    const source = await seedOperationRaid({
+      seed,
+      suffix: "pull_source",
+      fixtureOrdinal: 2,
+      memberCount: 3,
+      state: "planned",
+      streamerDiscordUserId: streamerId,
+      automaticFill: true,
+      visibleFirst: true,
+    });
+    const pushTarget = await seedOperationRaid({
+      seed,
+      suffix: "pull_target",
+      fixtureOrdinal: 3,
+      memberCount: 1,
+      state: "planned",
+      streamerDiscordUserId: streamerId,
+      automaticFill: true,
+      visibleFirst: true,
+    });
+    return { destination, source, pushTarget };
+  };
   const queueDefinitions = (platform: "discord" | "twitch") =>
     ([10, 50, 90] as const).map<OperationDefinition>((percentile) => ({
       id: `${platform}.queue.p${percentile}`,
@@ -402,7 +443,7 @@ function operationDefinitions(input: {
           }),
           async verify(response) {
             expect(response.status).toBe(200);
-            expect(discordMock.calls.some((call) => call.method === "GET")).toBe(true);
+            expect(discordMock.calls.some((call) => call.method === "GET")).toBe(false);
             expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(true);
           },
         };
@@ -453,6 +494,53 @@ function operationDefinitions(input: {
       },
     },
     {
+      id: "discord.raid.review.cancel",
+      label: "Discord planned raid review Cancel",
+      async prepare(seed, sample) {
+        const messageId = `${OPERATION_PREFIX}detail-cancel-review`;
+        const raid = await seedOperationRaid({
+          seed,
+          suffix: "cancel_review",
+          memberCount: 3,
+          state: "planned",
+          streamerDiscordUserId: streamerId,
+          isPriority: true,
+          visibleFirst: true,
+          staffMessageId: messageId,
+        });
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}raid-cancel-review-${sample}`,
+            customId: `raid:v3:cancel:${raid.groupId}`,
+            messageId,
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("Review closed");
+            const row = await env.DB.prepare(
+              `SELECT state, automatic_fill AS automaticFill,
+                      attempt_count AS attemptCount, staff_message_id AS staffMessageId
+               FROM raid_groups WHERE id = ?`,
+            )
+              .bind(raid.groupId)
+              .first<Record<string, number | string | null>>();
+            expect(row).toEqual({
+              state: 0,
+              automaticFill: 0,
+              attemptCount: 0,
+              staffMessageId: null,
+            });
+            expect(
+              discordMock.calls.some(
+                (call) => call.method === "DELETE" && call.url.endsWith(`/${messageId}`),
+              ),
+            ).toBe(true);
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
       id: "discord.raid.call-start.streamer",
       label: "Discord streamer-led Call and start raid",
       async prepare(seed, sample) {
@@ -480,6 +568,69 @@ function operationDefinitions(input: {
               .first<{ state: number; leaderId: string }>();
             expect(row).toEqual({ state: 1, leaderId: streamerId });
             expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(true);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.requester.pull.candidates",
+      label: "Discord direct pull requester selector",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}pull-candidates-${sample}`,
+            customId: "board:v6:review",
+            values: [String(fixture.destination.groupId)],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const detailUpdate = discordMock.calls.find(
+              (call) =>
+                call.method === "PATCH" && call.url.endsWith(`/${OPERATION_PREFIX}detail-pull`),
+            );
+            expect(detailUpdate?.body).toContain(
+              `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            );
+            expect(detailUpdate?.body).toContain("@op_pull_source_1");
+            expect(detailUpdate?.body).toContain("Benchmark goal 1");
+          },
+        };
+      },
+    },
+    {
+      id: "discord.requester.pull.with-push",
+      label: "Discord pull requester with bounded push-down",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        const selectedRequestId = fixture.source.requestIds[0] as number;
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}pull-with-push-${sample}`,
+            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            values: [String(selectedRequestId)],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("remaining source requesters moved");
+            const groups = await env.DB.prepare(
+              `SELECT id, state, current_member_count AS memberCount
+               FROM raid_groups WHERE id IN (?, ?, ?) ORDER BY id`,
+            )
+              .bind(fixture.destination.groupId, fixture.source.groupId, fixture.pushTarget.groupId)
+              .all<{ id: number; state: number; memberCount: number }>();
+            expect(groups.results).toEqual([
+              { id: fixture.destination.groupId, state: 0, memberCount: 3 },
+              { id: fixture.source.groupId, state: 3, memberCount: 0 },
+              { id: fixture.pushTarget.groupId, state: 0, memberCount: 3 },
+            ]);
+            const selected = await env.DB.prepare(
+              "SELECT is_priority AS isPriority FROM help_requests WHERE id = ?",
+            )
+              .bind(selectedRequestId)
+              .first<{ isPriority: number }>();
+            expect(selected?.isPriority).toBe(1);
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
           },
         };
       },
@@ -583,6 +734,103 @@ function operationDefinitions(input: {
         };
       },
     })),
+    {
+      id: "discord.stats.all-time",
+      label: "Discord /stats all-time snapshot",
+      async prepare(seed, sample) {
+        await prepareStatisticsSeed(seed);
+        return {
+          request: await command({
+            id: `${OPERATION_PREFIX}stats-${sample}`,
+            name: "stats",
+            userId: streamerId,
+            staff: true,
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const body = await responseText(response);
+            expect(body).toContain("All-time sherpa statistics");
+            expect(body).toContain("bench-leader");
+            expect(body).toContain("more leaders");
+          },
+        };
+      },
+    },
+    ...(["first", "middle", "last"] as const).map<OperationDefinition>((position) => ({
+      id: `discord.users.${position}`,
+      label: `Discord /users ${position} keyset page`,
+      async prepare(seed, sample) {
+        await prepareUserDirectorySeed();
+        const cursor =
+          position === "middle"
+            ? `bench_${String(Math.max(1, Math.floor(seed.scale / 2) - 5)).padStart(6, "0")}`
+            : position === "last"
+              ? `bench_${String(Math.max(1, seed.scale - 10)).padStart(6, "0")}`
+              : undefined;
+        return {
+          request:
+            position === "first"
+              ? await command({
+                  id: `${OPERATION_PREFIX}users-first-${sample}`,
+                  name: "users",
+                  userId: streamerId,
+                  staff: true,
+                })
+              : await component({
+                  id: `${OPERATION_PREFIX}users-${position}-${sample}`,
+                  customId: `users:v1:next:${cursor as string}`,
+                }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const body = await responseText(response);
+            expect(body).toContain("Sherpa users");
+            expect(body).toContain("allowed_mentions");
+          },
+        };
+      },
+    })),
+    {
+      id: "discord.users.complete-discord",
+      label: "Discord /users complete missing Discord member",
+      async prepare(_seed, sample) {
+        await prepareUserDirectorySeed();
+        await env.DB.prepare(
+          "UPDATE user_mappings SET discord_user_id = NULL WHERE twitch_login = 'bench_000001'",
+        ).run();
+        return {
+          request: await signedDiscordRequest(
+            privateKey,
+            discordContext(config, {
+              id: `${OPERATION_PREFIX}users-complete-${sample}`,
+              type: 3,
+              userId: streamerId,
+              staff: true,
+              data: {
+                custom_id: "users:v1:add_discord:bench_000001:bench_000001",
+                values: [`${OPERATION_PREFIX}completed-discord`],
+                resolved: {
+                  users: {
+                    [`${OPERATION_PREFIX}completed-discord`]: {
+                      id: `${OPERATION_PREFIX}completed-discord`,
+                      username: "Completed viewer",
+                    },
+                  },
+                  members: { [`${OPERATION_PREFIX}completed-discord`]: { roles: [] } },
+                },
+              },
+            }),
+          ),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("bench_000001");
+            const row = await env.DB.prepare(
+              "SELECT discord_user_id AS discordUserId FROM user_mappings WHERE twitch_login = 'bench_000001'",
+            ).first<{ discordUserId: string }>();
+            expect(row?.discordUserId).toBe(`${OPERATION_PREFIX}completed-discord`);
+          },
+        };
+      },
+    },
   ];
 }
 

@@ -15,8 +15,8 @@ async function insertMapping(login: string, id: string): Promise<void> {
     .run();
 }
 
-describe("six-table dual-queue schema", () => {
-  it("contains exactly six application tables", async () => {
+describe("eight-table dual-queue schema", () => {
+  it("contains the six operational tables and two statistics rollup tables", async () => {
     const result = await env.DB.prepare(
       `SELECT name FROM sqlite_schema
        WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'
@@ -29,10 +29,53 @@ describe("six-table dual-queue schema", () => {
         "help_requests",
         "raid_group_members",
         "raid_groups",
+        "staff_leader_statistics",
+        "staff_statistics_summary",
         "community_state",
         "user_mappings",
       ].sort(),
     );
+  });
+
+  it("installs the statistics rollup index and transactional maintenance triggers", async () => {
+    const index = await env.DB.prepare(
+      `SELECT name FROM sqlite_schema
+       WHERE type = 'index' AND name = 'staff_leader_statistics_rank_idx'`,
+    ).first<{ name: string }>();
+    const triggers = await env.DB.prepare(
+      `SELECT name FROM sqlite_schema
+       WHERE type = 'trigger' AND name LIKE 'staff_statistics_%'
+       ORDER BY name`,
+    ).all<{ name: string }>();
+    expect(index?.name).toBe("staff_leader_statistics_rank_idx");
+    expect(triggers.results.map((trigger) => trigger.name)).toEqual([
+      "staff_statistics_leader_delete",
+      "staff_statistics_leader_insert",
+      "staff_statistics_member_completed_delete",
+      "staff_statistics_member_completed_insert",
+      "staff_statistics_member_completed_update",
+      "staff_statistics_raid_success_delete",
+      "staff_statistics_raid_success_enter",
+      "staff_statistics_raid_success_insert",
+      "staff_statistics_raid_success_leave",
+      "staff_statistics_raid_success_reassign",
+      "staff_statistics_request_delete",
+      "staff_statistics_request_insert",
+      "staff_statistics_request_state_update",
+    ]);
+  });
+
+  it("uses the ranking index for bounded staff leader reads", async () => {
+    const plan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT discord_user_id, helped_requests, successful_raids
+       FROM staff_leader_statistics
+       ORDER BY helped_requests DESC, successful_raids DESC, discord_user_id ASC
+       LIMIT 10`,
+    ).all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail).join(" ");
+    expect(details).toContain("staff_leader_statistics_rank_idx");
+    expect(details).not.toContain("USE TEMP B-TREE");
   });
 
   it("stores compact queue, attempt, message, and call state without retry machinery", async () => {
@@ -82,6 +125,7 @@ describe("six-table dual-queue schema", () => {
          'raid_groups_open_sort_key_idx',
          'raid_groups_compatible_idx',
          'raid_groups_compatible_mode_idx',
+         'raid_groups_pull_source_idx',
          'raid_groups_outstanding_mode_idx',
          'raid_group_members_group_idx',
          'raid_group_members_one_open_request_idx'
@@ -97,6 +141,7 @@ describe("six-table dual-queue schema", () => {
         "raid_groups_outstanding_mode_idx",
         "raid_groups_open_sort_key_idx",
         "raid_groups_compatible_mode_idx",
+        "raid_groups_pull_source_idx",
         "raid_group_members_group_idx",
         "raid_group_members_one_open_request_idx",
       ]),
@@ -133,6 +178,22 @@ describe("six-table dual-queue schema", () => {
     expect(membershipPlan.results.map((row) => row.detail).join(" ")).toContain(
       "raid_group_members_group_idx",
     );
+  });
+
+  it("uses the ordered pull-source index for full planned raids", async () => {
+    const plan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM raid_groups
+       WHERE is_priority = 0 AND game_mode = 2 AND map_id = 'customs'
+         AND state = 0 AND automatic_fill = 1
+         AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+         AND current_member_count > 0 AND sort_key > 1000000
+       ORDER BY sort_key LIMIT 1`,
+    ).all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail).join(" ");
+    expect(details).toContain("raid_groups_pull_source_idx");
+    expect(details).not.toContain("SCAN raid_groups");
+    expect(details).not.toContain("USE TEMP B-TREE");
   });
 
   it("uses ordered indexes for queue ranges and open-queue maxima", async () => {

@@ -17,7 +17,7 @@ let worker: ReturnType<typeof createWorker>;
 let messageSequence = 0;
 let deleteResponseStatus = 204;
 let createResponseStatus = 200;
-let messageReadStatuses = new Map<string, number>();
+let messagePatchStatuses = new Map<string, number>();
 let createBarrierTarget = 0;
 let createBarrierResolvers: Array<() => void> = [];
 let outbound: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
@@ -34,9 +34,9 @@ const discordFetcher = {
       return new Response(null, { status: deleteResponseStatus });
     }
     const existingId = /\/messages\/([^/]+)$/.exec(new URL(request.url).pathname)?.[1];
-    if (request.method === "GET" && existingId !== undefined) {
-      const status = messageReadStatuses.get(existingId) ?? 200;
-      return status === 200 ? Response.json({ id: existingId }) : new Response(null, { status });
+    if (request.method === "PATCH" && existingId !== undefined) {
+      const status = messagePatchStatuses.get(existingId) ?? 200;
+      if (status !== 200) return new Response(null, { status });
     }
     if (request.method === "POST" && createResponseStatus !== 200) {
       return new Response(null, { status: createResponseStatus });
@@ -198,6 +198,25 @@ async function activateRaid(input: {
   });
 }
 
+async function createRepositoryRequest(
+  repo: D1MvpRepository,
+  index: number,
+  mapId = "customs",
+): Promise<number> {
+  const created = await repo.createRequest({
+    sourcePlatform: "twitch",
+    sourceDeliveryId: `pull-delivery-${index}`,
+    twitchUserId: `pull-twitch-${index}`,
+    twitchLogin: `pull_viewer_${index}`,
+    gameMode: "pve",
+    inGameName: `Pull PMC ${index}`,
+    mapId,
+    objective: `Pull goal ${index}`,
+    observedAt: new Date(changedAt.getTime() + index),
+  });
+  return created.request.id;
+}
+
 async function refreshBoard(interactionId: string): Promise<Response> {
   const executionContext = createExecutionContext();
   const response = await worker.fetch(
@@ -271,7 +290,7 @@ beforeEach(async () => {
   messageSequence = 0;
   deleteResponseStatus = 204;
   createResponseStatus = 200;
-  messageReadStatuses = new Map();
+  messagePatchStatuses = new Map();
   createBarrierTarget = 0;
   createBarrierResolvers = [];
 });
@@ -640,7 +659,8 @@ describe("Discord progressive raid workflow", () => {
       testEnvironment,
       createExecutionContext(),
     );
-    expect(await moved.json()).toMatchObject({
+    const movedBody = await moved.json();
+    expect(movedBody).toMatchObject({
       type: 7,
       data: {
         embeds: [
@@ -648,6 +668,7 @@ describe("Discord progressive raid workflow", () => {
         ],
       },
     });
+    expect(JSON.stringify(movedBody)).toContain("Pull requester up");
     const source = await repo.getRaid(planned.id);
     expect(source).toMatchObject({
       state: "planned",
@@ -920,7 +941,7 @@ describe("Discord progressive raid workflow", () => {
       staffMessageId: "deleted-detail",
       attemptTwo: true,
     });
-    messageReadStatuses.set("deleted-detail", 404);
+    messagePatchStatuses.set("deleted-detail", 404);
 
     const response = await refreshBoard("refresh-deleted");
     expect(await response.json()).toMatchObject({ type: 7 });
@@ -949,7 +970,7 @@ describe("Discord progressive raid workflow", () => {
     expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/deleted-detail");
   });
 
-  it("recreates a deleted planned review without assigning a leader or calling users", async () => {
+  it("dismisses a deleted planned review without assigning a leader or calling users", async () => {
     await worker.fetch(
       await signedRequest(requestModal("repair-planned-review")),
       testEnvironment,
@@ -964,7 +985,7 @@ describe("Discord progressive raid workflow", () => {
       changedAt,
     });
     await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
-    messageReadStatuses.set("deleted-planned-detail", 404);
+    messagePatchStatuses.set("deleted-planned-detail", 404);
     outbound = [];
 
     await refreshBoard("refresh-deleted-planned");
@@ -976,15 +997,327 @@ describe("Discord progressive raid workflow", () => {
       attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
-      staffMessageId: "message-1",
     });
+    expect(repaired?.staffMessageId).toBeUndefined();
     expect(repaired?.leaderDiscordUserId).toBeUndefined();
-    const replacement = outbound.find((request) => request.method === "POST");
-    expect(JSON.stringify(replacement?.body)).toContain("Calls: No requesters have been called.");
-    expect(replacement?.body).toMatchObject({ allowed_mentions: { parse: [] } });
+    expect(outbound.some((request) => request.method === "POST")).toBe(false);
+    const canonicalUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
+    expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/deleted-planned-detail");
     expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
       false,
     );
+  });
+
+  it("dismisses a deleted planned detail when staff review the raid again", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("repair-repeat-review")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "deleted-repeat-review",
+      changedAt,
+    });
+    messagePatchStatuses.set("deleted-repeat-review", 404);
+    outbound = [];
+
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "repeat-deleted-review",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("raid is back on the board"), flags: 64 },
+    });
+    expect(await repo.getRaid(planned.id)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+    });
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
+    expect(outbound.some((request) => request.method === "POST")).toBe(false);
+    expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
+      false,
+    );
+  });
+
+  it("clears one stale link when deleted-detail review actions overlap", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("repair-concurrent-repeat-review")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "deleted-concurrent-review",
+      changedAt,
+    });
+    messagePatchStatuses.set("deleted-concurrent-review", 404);
+    outbound = [];
+    const review = async (id: string) =>
+      worker.fetch(
+        await signedRequest(
+          context({
+            id,
+            type: 3,
+            channel_id: config.discord.staffChannelId,
+            member: {
+              user: { id: "volunteer", username: "Volunteer" },
+              roles: [config.discord.volunteerRoleId],
+            },
+            data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+
+    const responses = await Promise.all([
+      review("concurrent-deleted-review-one"),
+      review("concurrent-deleted-review-two"),
+    ]);
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
+    for (const response of responses) {
+      expect(JSON.stringify(await response.json())).toContain("raid is back on the board");
+    }
+    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
+    expect(outbound.filter((request) => request.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("cancels one planned review without changing its raid or other details", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (const [index, mapId] of ["customs", "woods"].entries()) {
+      await repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: `cancel-review-${mapId}`,
+        twitchUserId: `cancel-twitch-${index}`,
+        twitchLogin: `cancel_viewer_${index}`,
+        gameMode: "pve",
+        inGameName: `Cancel PMC ${index}`,
+        mapId,
+        objective: `Cancel goal ${mapId}`,
+        observedAt: new Date(changedAt.getTime() + index),
+      });
+    }
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    const raids = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids;
+    const customs = raids.find((raid) => raid.mapId === "customs") as StaffBoardRaid;
+    const woods = raids.find((raid) => raid.mapId === "woods") as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: customs.id, changedAt });
+    await repo.reviewRaid({ groupId: woods.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: customs.id,
+      messageId: "cancel-customs-detail",
+      changedAt,
+    });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: woods.id,
+      messageId: "keep-woods-detail",
+      changedAt,
+    });
+    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    outbound = [];
+
+    const executionContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "cancel-planned-review",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          message: { id: "cancel-customs-detail" },
+          data: { custom_id: `raid:v3:cancel:${customs.id}`, values: [] },
+        }),
+      ),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Review closed. The raid is still on the board.", flags: 64 },
+    });
+    expect(await repo.getRaid(customs.id)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      attemptCount: 0,
+      members: customs.members,
+    });
+    expect((await repo.getRaid(customs.id))?.staffMessageId).toBeUndefined();
+    expect(await repo.getRaid(woods.id)).toMatchObject({
+      state: "planned",
+      staffMessageId: "keep-woods-detail",
+      members: woods.members,
+    });
+    expect(outbound).toContainEqual(
+      expect.objectContaining({
+        method: "DELETE",
+        url: expect.stringContaining("/messages/cancel-customs-detail"),
+      }),
+    );
+    const boardUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
+    expect(JSON.stringify(boardUpdate?.body)).not.toContain("/cancel-customs-detail");
+    expect(JSON.stringify(boardUpdate?.body)).toContain("/keep-woods-detail");
+
+    const repeated = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "cancel-planned-review-repeat",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          member: {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          },
+          message: { id: "cancel-customs-detail" },
+          data: { custom_id: `raid:v3:cancel:${customs.id}`, values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(JSON.stringify(await repeated.json())).toContain("no longer available to cancel");
+  });
+
+  it("accepts a missing Cancel target and restores the link after another deletion error", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("cancel-delete-outcomes")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "missing-cancel-detail",
+      changedAt,
+    });
+    const cancel = async (id: string, messageId: string) =>
+      worker.fetch(
+        await signedRequest(
+          context({
+            id,
+            type: 3,
+            channel_id: config.discord.staffChannelId,
+            member: {
+              user: { id: "volunteer", username: "Volunteer" },
+              roles: [config.discord.volunteerRoleId],
+            },
+            message: { id: messageId },
+            data: { custom_id: `raid:v3:cancel:${planned.id}`, values: [] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+
+    deleteResponseStatus = 404;
+    const missing = await cancel("cancel-missing-detail", "missing-cancel-detail");
+    expect(JSON.stringify(await missing.json())).toContain("Review closed");
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
+
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "failed-cancel-detail",
+      changedAt,
+    });
+    deleteResponseStatus = 500;
+    const failed = await cancel("cancel-failed-detail", "failed-cancel-detail");
+    expect(JSON.stringify(await failed.json())).toContain("could not close");
+    expect(await repo.getRaid(planned.id)).toMatchObject({
+      state: "planned",
+      automaticFill: false,
+      staffMessageId: "failed-cancel-detail",
+    });
+  });
+
+  it("rejects stale and active Cancel review controls without deleting details", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("cancel-stale-active")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    await repo.reviewRaid({ groupId: planned.id, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: planned.id,
+      messageId: "current-cancel-detail",
+      changedAt,
+    });
+    const cancel = async (id: string, messageId: string) =>
+      worker.fetch(
+        await signedRequest(
+          context({
+            id,
+            type: 3,
+            channel_id: config.discord.staffChannelId,
+            member: {
+              user: { id: "volunteer", username: "Volunteer" },
+              roles: [config.discord.volunteerRoleId],
+            },
+            message: { id: messageId },
+            data: { custom_id: `raid:v3:cancel:${planned.id}`, values: [] },
+          }),
+        ),
+        testEnvironment,
+        createExecutionContext(),
+      );
+
+    outbound = [];
+    const stale = await cancel("cancel-stale-control", "stale-cancel-detail");
+    expect(JSON.stringify(await stale.json())).toContain("no longer available to cancel");
+    expect((await repo.getRaid(planned.id))?.staffMessageId).toBe("current-cancel-detail");
+    expect(outbound.some((request) => request.method === "DELETE")).toBe(false);
+
+    await repo.startRaid({
+      groupId: planned.id,
+      leaderDiscordUserId: "volunteer",
+      leaderType: "volunteer",
+      requestTwitchCall: false,
+      changedAt,
+    });
+    outbound = [];
+    const active = await cancel("cancel-active-control", "current-cancel-detail");
+    expect(JSON.stringify(await active.json())).toContain("no longer available to cancel");
+    expect(await repo.getRaid(planned.id)).toMatchObject({
+      state: "active",
+      staffMessageId: "current-cancel-detail",
+    });
+    expect(outbound.some((request) => request.method === "DELETE")).toBe(false);
   });
 
   it("tracks multiple raid detail messages through recovery and independent actions", async () => {
@@ -1062,7 +1395,7 @@ describe("Discord progressive raid workflow", () => {
     const customs = reviewedByMap.get("customs") as StaffBoardRaid;
     const woods = reviewedByMap.get("woods") as StaffBoardRaid;
     const shoreline = reviewedByMap.get("shoreline") as StaffBoardRaid;
-    messageReadStatuses.set(woods.staffMessageId as string, 404);
+    messagePatchStatuses.set(woods.staffMessageId as string, 404);
     outbound = [];
     await refreshBoard("multi-detail-refresh");
 
@@ -1071,16 +1404,19 @@ describe("Discord progressive raid workflow", () => {
     const recoveredShoreline = (await repo.getRaid(shoreline.id)) as StaffBoardRaid;
     expect(recoveredCustoms.staffMessageId).toBe(customs.staffMessageId);
     expect(recoveredShoreline.staffMessageId).toBe(shoreline.staffMessageId);
-    expect(recoveredWoods.staffMessageId).not.toBe(woods.staffMessageId);
-    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(1);
+    expect(recoveredWoods.staffMessageId).toBeUndefined();
+    expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
     const refreshedBoard = outbound.find(
       (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
     );
     const refreshedBody = JSON.stringify(refreshedBoard?.body);
     expect(refreshedBody).toContain(`/${recoveredCustoms.staffMessageId}`);
-    expect(refreshedBody).toContain(`/${recoveredWoods.staffMessageId}`);
     expect(refreshedBody).toContain(`/${recoveredShoreline.staffMessageId}`);
     expect(refreshedBody).not.toContain(`/${woods.staffMessageId}`);
+
+    await component("multi-rereview-woods", "board:v6:review", [String(woods.id)]);
+    const reviewedWoodsAgain = (await repo.getRaid(woods.id)) as StaffBoardRaid;
+    expect(reviewedWoodsAgain.staffMessageId).toMatch(/^message-/);
 
     outbound = [];
     await component("multi-start-customs", `raid:v2:call:${customs.id}`);
@@ -1118,40 +1454,42 @@ describe("Discord progressive raid workflow", () => {
     expect(deletedUrls.some((url) => url.endsWith(`/${recoveredCustoms.staffMessageId}`))).toBe(
       true,
     );
-    expect(deletedUrls.some((url) => url.endsWith(`/${recoveredWoods.staffMessageId}`))).toBe(true);
+    expect(deletedUrls.some((url) => url.endsWith(`/${reviewedWoodsAgain.staffMessageId}`))).toBe(
+      true,
+    );
     expect(deletedUrls.some((url) => url.endsWith(`/${recoveredShoreline.staffMessageId}`))).toBe(
       true,
     );
   });
 
-  it("retains an active message identity on a temporary Discord read failure", async () => {
+  it("retains an active message identity on a temporary Discord update failure", async () => {
     const { repo, raid } = await seedActiveRaid({
       interactionId: "retain-temporary",
       staffMessageId: "temporary-detail",
     });
-    messageReadStatuses.set("temporary-detail", 500);
+    messagePatchStatuses.set("temporary-detail", 500);
 
     await refreshBoard("refresh-temporary");
 
     expect((await repo.getRaid(raid.id))?.staffMessageId).toBe("temporary-detail");
     expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
-    const canonicalUpdate = outbound.find((request) => request.method === "PATCH");
+    const canonicalUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
     expect(JSON.stringify(canonicalUpdate?.body)).toContain("/temporary-detail");
   });
 
-  it("clears a confirmed dead link when replacement creation fails", async () => {
+  it("retains a confirmed dead link so replacement creation can retry", async () => {
     const { repo, raid } = await seedActiveRaid({
       interactionId: "failed-replacement",
       staffMessageId: "dead-detail",
     });
-    messageReadStatuses.set("dead-detail", 404);
+    messagePatchStatuses.set("dead-detail", 404);
     createResponseStatus = 500;
 
     await refreshBoard("refresh-failed-replacement");
 
-    expect((await repo.getRaid(raid.id))?.staffMessageId).toBeUndefined();
-    const canonicalUpdate = outbound.find((request) => request.method === "PATCH");
-    expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/dead-detail");
+    expect((await repo.getRaid(raid.id))?.staffMessageId).toBe("dead-detail");
   });
 
   it("keeps one replacement and deletes the duplicate when refreshes overlap", async () => {
@@ -1365,5 +1703,601 @@ describe("Discord progressive raid workflow", () => {
       data: { content: expect.stringContaining("Only this raid's leader") },
     });
     expect((await repo.getRaid(raidId))?.state).toBe("active");
+  });
+});
+
+describe("Discord requester pull-up workflow", () => {
+  function pullInteraction(input: {
+    id: string;
+    customId: string;
+    values?: string[];
+    discordUserId?: string;
+    roleIds?: string[];
+  }) {
+    return context({
+      channel_id: config.discord.staffChannelId,
+      member: {
+        user: { id: input.discordUserId ?? config.discord.streamerUserId, username: "Staff" },
+        roles: input.roleIds ?? [],
+      },
+      id: input.id,
+      type: 3,
+      data: { custom_id: input.customId, values: input.values ?? [] },
+    });
+  }
+
+  async function reviewedDestinationWithSource(input: {
+    requestCount?: number;
+    messageId: string;
+  }): Promise<{
+    repo: D1MvpRepository;
+    destination: StaffBoardRaid;
+    source: StaffBoardRaid;
+  }> {
+    const repo = new D1MvpRepository(env.DB);
+    for (let index = 1; index <= (input.requestCount ?? 5); index += 1) {
+      await createRepositoryRequest(repo, index);
+    }
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    await repo.reviewRaid({ groupId: first?.id as number, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: first?.id as number,
+      messageId: input.messageId,
+      changedAt,
+    });
+    const reviewed = (await repo.getRaid(first?.id as number)) as StaffBoardRaid;
+    await repo.removeRequester({
+      groupId: reviewed.id,
+      requestId: reviewed.members[0]?.requestId as number,
+      actionKey: `${input.messageId}-open-seat`,
+      changedAt,
+    });
+    await repo.setCanonicalBoardMessage({ messageId: "canonical-pull-board", changedAt });
+    return {
+      repo,
+      destination: (await repo.getRaid(reviewed.id)) as StaffBoardRaid,
+      source: source as StaffBoardRaid,
+    };
+  }
+
+  it("shows Twitch nicknames with goals and pulls without starting or calling", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "pull-detail",
+    });
+    outbound = [];
+    const reviewResponse = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "refresh-pull-selector",
+          customId: "board:v6:review",
+          values: [String(destination.id)],
+          discordUserId: "volunteer",
+          roleIds: [config.discord.volunteerRoleId],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await reviewResponse.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("/pull-detail"), flags: 64 },
+    });
+    const detailUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/pull-detail"),
+    );
+    expect(detailUpdate).toBeDefined();
+    const rows = (detailUpdate?.body.components ?? []) as Array<{
+      components: Array<Record<string, unknown>>;
+    }>;
+    const selector = rows
+      .flatMap((row) => row.components)
+      .find((component) => component.custom_id === `raid:v3:pull:${destination.id}:${source.id}`);
+    expect(selector).toMatchObject({
+      placeholder: "Pull requester up",
+      options: [
+        {
+          label: `@${source.members[0]?.twitchLogin}`,
+          description: source.members[0]?.objective,
+          value: String(source.members[0]?.requestId),
+        },
+      ],
+    });
+
+    outbound = [];
+    const executionContext = createExecutionContext();
+    const pullResponse = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-selected",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+    expect(await pullResponse.json()).toMatchObject({
+      type: 4,
+      data: {
+        content: "Requester pulled up. The empty source raid was closed.",
+        flags: 64,
+      },
+    });
+    expect(outbound).toContainEqual(
+      expect.objectContaining({
+        method: "PATCH",
+        url: expect.stringContaining("/messages/pull-detail"),
+      }),
+    );
+    expect(outbound).toContainEqual(
+      expect.objectContaining({
+        method: "PATCH",
+        url: expect.stringContaining("/messages/canonical-pull-board"),
+      }),
+    );
+    expect(
+      outbound.some(
+        (request) =>
+          request.method === "POST" &&
+          request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+      ),
+    ).toBe(false);
+    expect(await repo.getRaid(destination.id)).toMatchObject({
+      state: "planned",
+      attemptCount: 0,
+      discordCallStatus: "not_requested",
+      twitchCallStatus: "not_requested",
+    });
+
+    const duplicate = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-selected",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await duplicate.json()).toMatchObject({
+      type: 4,
+      data: { content: "That action was already received." },
+    });
+  });
+
+  it("does not offer or move members of a concurrent volunteer-led active raid", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (let index = 1; index <= 9; index += 1) await createRepositoryRequest(repo, index);
+    await repo.materializeWaitingRequests({
+      changedAt,
+      recipientLimit: config.policies.recipientLimit,
+    });
+    const [first, volunteerPlanned, later] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const active = await activateRaid({
+      repo,
+      raid: volunteerPlanned as StaffBoardRaid,
+      leaderDiscordUserId: "volunteer",
+      staffMessageId: "volunteer-active-detail",
+    });
+    const activeRequestIds = active.members.map((member) => member.requestId);
+    await repo.reviewRaid({ groupId: first?.id as number, changedAt });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: first?.id as number,
+      messageId: "streamer-review-detail",
+      changedAt,
+    });
+    const destination = (await repo.getRaid(first?.id as number)) as StaffBoardRaid;
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "streamer-review-open-seat",
+      changedAt,
+    });
+
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "active-source-excluded",
+          customId: `raid:v3:pull_candidates:${destination.id}`,
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const body = JSON.stringify(await response.json());
+    expect(body).toContain(`raid:v3:pull:${destination.id}:${later?.id}`);
+    for (const requestId of activeRequestIds) expect(body).not.toContain(`"value":"${requestId}"`);
+
+    await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-past-active-source",
+          customId: `raid:v3:pull:${destination.id}:${later?.id}`,
+          values: [String(later?.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect((await repo.getRaid(active.id))?.members.map((member) => member.requestId)).toEqual(
+      activeRequestIds,
+    );
+    expect((await repo.getRaid(active.id))?.state).toBe("active");
+    expect(
+      outbound.some((request) => request.url.includes("/messages/volunteer-active-detail")),
+    ).toBe(false);
+  });
+
+  it("reports when a non-fitting source remainder stays in place", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      requestCount: 10,
+      messageId: "retained-pull-detail",
+    });
+    const sourceRemainder = source.members.slice(1).map((member) => member.requestId);
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "retained-pull",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: {
+        content: "Requester pulled up. The remaining source raid stayed in place.",
+        flags: 64,
+      },
+    });
+    expect((await repo.getRaid(source.id))?.members.map((member) => member.requestId)).toEqual(
+      sourceRemainder,
+    );
+  });
+
+  it("returns a short response when no safe source is available", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "no-source-pull-detail",
+    });
+    await repo.reviewRaid({ groupId: source.id, changedAt });
+    outbound = [];
+    await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "render-no-pull-source",
+          customId: "board:v6:review",
+          values: [String(destination.id)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const detailUpdate = outbound.find(
+      (request) => request.method === "PATCH" && request.url.endsWith("/no-source-pull-detail"),
+    );
+    const rows = (detailUpdate?.body.components ?? []) as Array<{
+      components: Array<Record<string, unknown>>;
+    }>;
+    const unavailable = rows
+      .flatMap((row) => row.components)
+      .find((component) => component.placeholder === "Pull requester up");
+    expect(unavailable).toMatchObject({
+      disabled: true,
+      options: [{ label: "No compatible requester available", value: "unavailable" }],
+    });
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "no-pull-source",
+          customId: `raid:v3:pull_candidates:${destination.id}`,
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "No later requester is available for this raid." },
+    });
+  });
+
+  it("dismisses a manually deleted destination detail after a pull", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "deleted-pull-detail",
+    });
+    messagePatchStatuses.set("deleted-pull-detail", 404);
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "pull-deleted-detail",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("Requester pulled up"), flags: 64 },
+    });
+    expect((await repo.getRaid(destination.id))?.staffMessageId).toBeUndefined();
+    expect(outbound.some((request) => request.method === "POST")).toBe(false);
+  });
+
+  it("denies pull controls to a non-staff user", async () => {
+    const { destination } = await reviewedDestinationWithSource({
+      messageId: "denied-pull-detail",
+    });
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "denied-pull",
+          customId: `raid:v3:pull_candidates:${destination.id}`,
+          discordUserId: "viewer",
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Only the streamer or a volunteer sherpa can use these controls." },
+    });
+  });
+});
+
+describe("Discord staff insights workflow", () => {
+  function staffCommand(name: "stats" | "users", staff = true) {
+    return context({
+      channel_id: config.discord.staffChannelId,
+      id: `${name}-${staff ? "staff" : "viewer"}`,
+      type: 2,
+      member: staff
+        ? {
+            user: { id: "volunteer", username: "Volunteer" },
+            roles: [config.discord.volunteerRoleId],
+          }
+        : { user: { id: "viewer", username: "Viewer" }, roles: [] },
+      data: { type: 1, name },
+    });
+  }
+
+  function staffInsightsInteraction(overrides: Record<string, unknown>) {
+    return context({
+      channel_id: config.discord.staffChannelId,
+      member: {
+        user: { id: "volunteer", username: "Volunteer" },
+        roles: [config.discord.volunteerRoleId],
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["stats", "users"] as const)("denies /%s without revealing data", async (name) => {
+    const response = await worker.fetch(
+      await signedRequest(staffCommand(name, false)),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("streamer or a volunteer"), flags: 64 },
+    });
+    expect(JSON.stringify(body)).not.toContain("embeds");
+  });
+
+  it.each(["stats", "users"] as const)("denies /%s outside the staff channel", async (name) => {
+    const response = await worker.fetch(
+      await signedRequest(
+        context({ ...staffCommand(name), channel_id: config.discord.requestChannelId }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: {
+        content: "Use this command in the staff channel as the streamer or a volunteer sherpa.",
+        flags: 64,
+      },
+    });
+  });
+
+  it("returns independent caller-only statistics snapshots with no controls or pings", async () => {
+    const first = await worker.fetch(
+      await signedRequest(staffCommand("stats")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const second = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staffCommand("stats"),
+          id: "stats-streamer",
+          member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    for (const response of [first, second]) {
+      expect(await response.json()).toMatchObject({
+        type: 4,
+        data: {
+          flags: 64,
+          allowed_mentions: { parse: [] },
+          components: [],
+          embeds: [{ title: "All-time sherpa statistics" }],
+        },
+      });
+    }
+  });
+
+  it("pages users and fills missing Discord and EFT details without notifications", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (let index = 0; index < 12; index += 1) {
+      await repo.observeTwitchIdentity({
+        twitchLogin: `staff_viewer_${String(index).padStart(2, "0")}`,
+        twitchUserId: `staff-twitch-${index}`,
+        observedAt: changedAt,
+      });
+    }
+    const command = await worker.fetch(
+      await signedRequest(staffCommand("users")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const commandBody = (await command.json()) as {
+      data: { components: Array<{ components: Array<{ custom_id?: string }> }> };
+    };
+    expect(commandBody).toMatchObject({
+      data: { flags: 64, allowed_mentions: { parse: [] }, embeds: [{ title: "Sherpa users" }] },
+    });
+    const nextId = commandBody.data.components
+      .flatMap((row) => row.components)
+      .find((component) => component.custom_id?.includes(":next:"))?.custom_id;
+    expect(nextId).toBeDefined();
+    const next = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          id: "users-next",
+          type: 3,
+          data: { custom_id: nextId, values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await next.json()).toMatchObject({ type: 7, data: { allowed_mentions: { parse: [] } } });
+
+    const detail = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          id: "users-detail",
+          type: 3,
+          data: {
+            custom_id: "users:v1:detail:staff_viewer_00",
+            values: ["staff_viewer_00"],
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await detail.json()).toMatchObject({ type: 7 });
+
+    const addDiscord = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          id: "users-add-discord",
+          type: 3,
+          data: {
+            custom_id: "users:v1:add_discord:staff_viewer_00:staff_viewer_00",
+            values: ["selected-member"],
+            resolved: {
+              users: { "selected-member": { id: "selected-member", username: "Selected" } },
+              members: { "selected-member": { roles: [] } },
+            },
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await addDiscord.json()).toMatchObject({
+      type: 7,
+      data: { allowed_mentions: { parse: [] } },
+    });
+
+    const eftModal = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          id: "users-eft-button",
+          type: 3,
+          data: {
+            custom_id: "users:v1:add_eft:staff_viewer_00:staff_viewer_00",
+            values: [],
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await eftModal.json()).toMatchObject({ type: 9 });
+    const eftResult = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          id: "users-eft-submit",
+          type: 5,
+          data: {
+            custom_id: "users:v1:add_eft:staff_viewer_00:staff_viewer_00",
+            components: [
+              {
+                type: 18,
+                component: { type: 4, custom_id: "users:eft-name", value: "Helpful PMC" },
+              },
+            ],
+          },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await eftResult.json()).toMatchObject({
+      type: 7,
+      data: { allowed_mentions: { parse: [] } },
+    });
+    expect(await repo.findUserMappingByTwitchLogin("staff_viewer_00")).toMatchObject({
+      discordUserId: "selected-member",
+      inGameName: "Helpful PMC",
+    });
+    expect(outbound).toEqual([]);
+  });
+
+  it("returns restart guidance for a malformed user-page boundary", async () => {
+    const response = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          id: "users-malformed",
+          type: 3,
+          data: { custom_id: "users:v1:next:BAD-NAME", values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Open `/users` again and use a current control.", flags: 64 },
+    });
+  });
+
+  it("denies a user-directory control outside the staff channel", async () => {
+    const response = await worker.fetch(
+      await signedRequest(
+        staffInsightsInteraction({
+          channel_id: config.discord.requestChannelId,
+          id: "users-control-wrong-channel",
+          type: 3,
+          data: { custom_id: "users:v1:next:viewer_001", values: [] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: expect.stringContaining("in the staff channel"), flags: 64 },
+    });
   });
 });

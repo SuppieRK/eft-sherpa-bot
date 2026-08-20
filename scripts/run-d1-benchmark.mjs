@@ -88,6 +88,10 @@ function markdown(report) {
     "- Row reads must remain within the configured approximately-linear growth allowance.",
     "- Discord Queue must read fewer than 200 D1 rows at every scale and percentile.",
     "- Twitch Queue must read fewer than 220 D1 rows at every scale and percentile.",
+    "- Discord Stats must use a constant statement count and write zero rows.",
+    "- Rollup-maintaining request and raid-result mutations must keep constant writes and no more than 32 rows of cross-scale read growth.",
+    "- Discord Users page reads must be scale-independent and write zero rows.",
+    "- Discord Users missing-detail completion must use bounded reads and writes.",
     "",
   );
   return lines.join("\n");
@@ -148,6 +152,43 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     operationResults.some((result) => result.aggregate.rowsRead.max >= queueRowLimit)
   ) {
     fail(`${operationId} must read fewer than ${queueRowLimit} rows`);
+  }
+  if (
+    operationId === "discord.stats.all-time" &&
+    operationResults.some((result) => result.aggregate.rowsWritten.max !== 0)
+  ) {
+    fail(`${operationId} must not write D1 rows`);
+  }
+  if (operationId === "discord.stats.all-time") {
+    const statsReads = new Set(operationResults.map((result) => result.aggregate.rowsRead.median));
+    if (statsReads.size !== 1) fail(`${operationId} row reads changed with scale`);
+  }
+  if (
+    operationId === "discord.request.submit.created" ||
+    operationId === "discord.raid.result.helped"
+  ) {
+    const mutationReads = operationResults.map((result) => result.aggregate.rowsRead.median);
+    if (Math.max(...mutationReads) - Math.min(...mutationReads) > 32) {
+      fail(`${operationId} row reads grew by more than the bounded index-depth allowance`);
+    }
+  }
+  if (
+    operationId.startsWith("discord.users.") &&
+    operationId !== "discord.users.complete-discord"
+  ) {
+    if (operationResults.some((result) => result.aggregate.rowsWritten.max !== 0)) {
+      fail(`${operationId} must not write D1 rows`);
+    }
+    const pageReads = new Set(operationResults.map((result) => result.aggregate.rowsRead.median));
+    if (pageReads.size !== 1) fail(`${operationId} row reads changed with scale`);
+  }
+  if (
+    operationId === "discord.users.complete-discord" &&
+    operationResults.some(
+      (result) => result.aggregate.rowsRead.max > 20 || result.aggregate.rowsWritten.max > 4,
+    )
+  ) {
+    fail(`${operationId} must keep D1 reads and writes bounded`);
   }
   for (let index = 1; index < operationResults.length; index += 1) {
     const previous = operationResults[index - 1];

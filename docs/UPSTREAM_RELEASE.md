@@ -26,6 +26,8 @@ The release workflow rejects a commit that does not have a successful upstream d
 
 Migration `0002` sets all existing requests and raids to PvE. It also keeps old Worker writes compatible during deployment. After the bot accepts PvP Seasonal or PvP data, use a forward repair instead of a version that has no game-mode support.
 
+Migration `0004` backfills compact staff statistics from retained request and raid history. It then maintains the rollups in the same D1 transactions as source changes. After this migration is applied, preserve the source history and use a forward migration to repair a rollup defect.
+
 ## Complete the smoke test
 
 Use only maintainer-owned test accounts and the disposable test D1 database.
@@ -43,11 +45,15 @@ Use only maintainer-owned test accounts and the disposable test D1 database.
 11. Confirm that each non-empty mode has a visible raid.
 12. Select **Review a raid** for one streamer-led raid.
 13. Confirm that the raid stays planned at attempt zero, no leader is assigned, and no requester receives a call.
-14. Select **Call and start raid**.
-15. Confirm that the caller becomes the leader.
-16. Confirm that the Discord call shows the mode and map.
-17. Confirm that the Twitch call shows the mode and map.
-18. Record one raid result.
-19. Confirm that the raid state changes correctly.
+14. Run `/stats` as the streamer and as a volunteer sherpa. Confirm that each response is visible only to its caller.
+15. Run `/users` as the streamer and as a volunteer sherpa. Test the first, middle, and last pages.
+16. Add one missing Discord member and one missing Escape from Tarkov name. Use `/link-twitch` for a correction.
+17. Run `/stats` and `/users` as a user without a staff role. Confirm that the bot does not show statistics or user details.
+18. Select **Call and start raid**.
+19. Confirm that the caller becomes the leader.
+20. Confirm that the Discord call shows the mode and map.
+21. Confirm that the Twitch call shows the mode and map.
+22. Record one raid result.
+23. Confirm that the raid state changes correctly.
 
 Do not publish the release if one step fails.

@@ -66,16 +66,6 @@ export async function deleteDiscordMessage(
   });
 }
 
-export function getDiscordMessage(
-  environment: CloudflareEnvironment,
-  channelId: string,
-  messageId: string,
-): Promise<{ id: string }> {
-  return discordRequest(environment, `/channels/${channelId}/messages/${messageId}`, {
-    method: "GET",
-  });
-}
-
 export function createDiscordMessage(
   environment: CloudflareEnvironment,
   channelId: string,

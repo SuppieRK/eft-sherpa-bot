@@ -29,10 +29,24 @@ Select **Review a raid**. The bot freezes the proposed group and opens one raid 
 The planned raid message has these controls:
 
 - **Call and start raid**;
+- **Pull requester up**;
 - **Move requester to next raid**;
-- **Remove requester**.
+- **Remove requester**;
+- **Cancel review**.
 
 Use **Move requester to next raid** or **Remove requester** before you call the raid when the proposed group must change. Automatic grouping and requester limits do not change. A reviewed raid does not accept a new automatic requester.
+
+Use the **Pull requester up** list to fill an open requester place from a later raid with the same mode and map. The list is in the raid review message. It shows each Twitch name and goal. Select one requester after you review the goals. The list is disabled and shows **No compatible requester available** when no suitable later request exists.
+
+The pull does not call a requester, assign a leader, or start an attempt. A priority raid can pull one selected ordinary requester. Only that selected request becomes priority.
+
+Select **Cancel review**, next to **Call and start raid**, to close the planned review message. This control does not cancel the raid or a help request. The raid stays frozen on the board. Select the raid from **Review a raid** when you want to open new details.
+
+If someone deletes a planned raid review message, select **Refresh** or select that raid from **Review a raid**. The bot removes the old board link. It does not create a replacement message. Select **Review a raid** later to open new details.
+
+If someone deletes the details for an active raid, select **Refresh**. The bot restores the active message because it contains the raid result controls.
+
+After the pull, the bot can move all requesters who remain in the source raid to the next compatible raid. The bot makes this move only when all remaining requesters fit. Otherwise, the source raid stays in its current place.
 
 Select **Call and start raid** when the group is correct. The staff member who selects this control becomes the leader. The bot starts attempt one and calls only the current requesters. The bot sends a Discord call with the mode and map. The bot also sends a Twitch call with the mode and map when the streamer is the leader.
 
@@ -47,3 +61,11 @@ The default attempt limit is three. Before the last attempt, staff can record **
 **Postpone raid** moves the same raid to the end of the priority queue. **Postpone requester** moves one requester to a dedicated raid after the current raid. **Move requester to next raid** does the same operation before the raid starts. **Remove requester** cancels the help request.
 
 Staff can use the board at any time. The Twitch schedule does not hide the board or stop requests.
+
+## Staff statistics and users
+
+The streamer and volunteer sherpas can use `/stats` only in the Discord staff channel. The bot shows a caller-only all-time list. The list shows submitted, helped, open, and canceled requests. It also shows successful raids and up to ten raid leaders. A leader receives credit only for completed requesters in a helped raid. The command does not have a Twitch version. It does not create a stored message.
+
+The streamer and volunteer sherpas can use `/users` only in the Discord staff channel. The bot shows ten users at a time in Twitch-name order. Use **Previous** and **Next** to move through the list. The list shows if the bot observed the Twitch ID, if Discord is linked, and if the Escape from Tarkov name is present.
+
+Use **Complete user details** to add a missing Discord member or a missing Escape from Tarkov name. This action does not replace a value that is present. Use `/link-twitch` to correct an association. The bot observes the stable Twitch ID when that viewer uses the bot in Twitch chat. The `/users` response is visible only to the caller. It does not create a stored page record or a Twitch command.

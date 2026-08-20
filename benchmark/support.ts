@@ -52,6 +52,13 @@ async function clearDatabase(): Promise<void> {
     env.DB.prepare("DELETE FROM user_mappings"),
     env.DB.prepare("DELETE FROM community_state"),
     env.DB.prepare("DELETE FROM event_receipts"),
+    env.DB.prepare("DELETE FROM staff_leader_statistics"),
+    env.DB.prepare(
+      `UPDATE staff_statistics_summary
+       SET submitted_requests = 0, helped_requests = 0, open_requests = 0,
+           canceled_requests = 0, successful_raids = 0, credited_leader_count = 0
+       WHERE singleton = 1`,
+    ),
     env.DB.prepare(
       "DELETE FROM sqlite_sequence WHERE name IN ('help_requests', 'raid_groups', 'raid_group_members')",
     ),
@@ -213,6 +220,50 @@ export async function resetOperationFixture(seed: SeedState): Promise<void> {
   ]);
 }
 
+export async function prepareStatisticsSeed(seed: SeedState): Promise<void> {
+  const terminalThreshold = Math.max(0, seed.groupCount - 15);
+  const helpedThreshold = Math.max(0, seed.groupCount - 12);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE help_requests
+       SET state = CASE id % 4 WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END`,
+    ),
+    env.DB.prepare(`UPDATE raid_group_members SET state = 1 WHERE group_id > ? AND state = 0`).bind(
+      terminalThreshold,
+    ),
+    env.DB.prepare(
+      `UPDATE raid_group_members SET state = 2
+       WHERE group_id = ? AND position = 1`,
+    ).bind(seed.groupCount),
+    env.DB.prepare(
+      `UPDATE help_requests SET state = 2 WHERE id IN (
+         SELECT request_id FROM raid_group_members WHERE group_id > ?
+       )`,
+    ).bind(terminalThreshold),
+    env.DB.prepare(
+      `UPDATE raid_groups
+       SET state = 2,
+           outcome = CASE WHEN id > ? THEN 0 ELSE 1 END,
+           leader_discord_user_id = printf('bench-leader-%02d', ((id - 1) % 12) + 1),
+           leader_type = 1, completed_at = ?, updated_at = ?
+       WHERE id > ?`,
+    ).bind(helpedThreshold, Date.now(), Date.now(), terminalThreshold),
+  ]);
+}
+
+export async function prepareUserDirectorySeed(): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE user_mappings
+     SET twitch_user_id = CASE
+           WHEN CAST(substr(twitch_login, 7) AS INTEGER) % 5 = 0 THEN NULL ELSE twitch_user_id END,
+         discord_user_id = CASE
+           WHEN CAST(substr(twitch_login, 7) AS INTEGER) % 3 = 1 THEN NULL ELSE discord_user_id END,
+         in_game_name = CASE
+           WHEN CAST(substr(twitch_login, 7) AS INTEGER) % 4 = 1 THEN NULL ELSE in_game_name END
+     WHERE twitch_login GLOB 'bench_[0-9]*'`,
+  ).run();
+}
+
 export async function seedOperationMapping(input: {
   suffix: string;
   discordUserId?: string;
@@ -245,19 +296,22 @@ export async function seedOperationRaid(input: {
   visibleFirst?: boolean;
   gameMode?: 0 | 1 | 2;
   staffMessageId?: string;
+  fixtureOrdinal?: number;
+  automaticFill?: boolean;
 }): Promise<{ groupId: number; requestIds: number[] }> {
   const timestamp = Date.now();
-  const groupId = input.seed.groupCount + 1;
+  const fixtureOrdinal = input.fixtureOrdinal ?? 1;
+  const groupId = input.seed.groupCount + fixtureOrdinal;
   const requestIds = Array.from(
     { length: input.memberCount },
-    (_, index) => input.seed.scale + index + 1,
+    (_, index) => input.seed.scale + (fixtureOrdinal - 1) * 4 + index + 1,
   );
   const isPriority = input.isPriority === true ? 1 : 0;
   const gameMode = input.gameMode ?? 2;
   const sortKey = input.visibleFirst
-    ? SORT_STEP
+    ? fixtureOrdinal * SORT_STEP
     : (isPriority === 1 ? input.seed.priorityMaxSortKey : input.seed.ordinaryMaxSortKey) +
-      SORT_STEP;
+      fixtureOrdinal * SORT_STEP;
   const requestRows = requestIds.map((id, index) => ({ id, position: index + 1 }));
   for (const row of requestRows) {
     await seedOperationMapping({
@@ -273,7 +327,7 @@ export async function seedOperationRaid(input: {
         leader_discord_user_id, leader_type, automatic_fill, attempt_count, state,
         discord_call_status, twitch_call_status, staff_message_id, started_at,
         created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'customs', 3, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'customs', 3, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       groupId,
       isPriority,
@@ -281,6 +335,7 @@ export async function seedOperationRaid(input: {
       sortKey,
       input.state === "active" ? input.streamerDiscordUserId : null,
       input.state === "active" ? 0 : null,
+      input.automaticFill === true ? 1 : 0,
       input.state === "active" ? 1 : 0,
       input.state === "active" ? 1 : 0,
       input.state === "active" ? 1 : 3,
@@ -353,6 +408,7 @@ export function discordContext(
     data: Record<string, unknown>;
     userId: string;
     staff?: boolean;
+    messageId?: string;
   },
 ): Record<string, unknown> {
   return {
@@ -364,6 +420,7 @@ export function discordContext(
       user: { id: input.userId, username: "BenchmarkViewer" },
       roles: input.staff ? [config.discord.volunteerRoleId] : [],
     },
+    ...(input.messageId === undefined ? {} : { message: { id: input.messageId } }),
     type: input.type,
     data: input.data,
   };
