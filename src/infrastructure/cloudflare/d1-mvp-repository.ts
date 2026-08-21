@@ -166,6 +166,13 @@ interface RequesterFollowUpWindow {
   reusableGroupId: number | null;
 }
 
+interface PostponeRequesterInput {
+  groupId: number;
+  requestId: number;
+  actionKey: string;
+  changedAt: Date;
+}
+
 interface PullBoundaryRow {
   automaticFill: number;
   currentMemberCount: number;
@@ -208,6 +215,15 @@ interface PullRequesterPlan {
 
 function epoch(date: Date): number {
   return date.getTime();
+}
+
+function requesterFollowUpSortKey(
+  sourceBecomesEmpty: boolean,
+  window: RequesterFollowUpWindow,
+): number {
+  if (sourceBecomesEmpty && window.followUpCount === 0) return window.sourceSortKey;
+  if (window.nextSortKey === null) return window.anchorSortKey + SORT_STEP;
+  return Math.floor((window.anchorSortKey + window.nextSortKey) / 2);
 }
 
 function requestProjection(): string {
@@ -1414,31 +1430,32 @@ export class D1MvpRepository
       .first<RequesterFollowUpWindow>();
   }
 
-  async postponeRequester(input: {
-    groupId: number;
-    requestId: number;
-    actionKey: string;
-    changedAt: Date;
-  }): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
+  private async requirePostponableRequester(input: PostponeRequesterInput): Promise<{
+    sourceBecomesEmpty: boolean;
+    window: RequesterFollowUpWindow;
+  }> {
     const source = await this.getRaid(input.groupId);
     const isReviewedPlanned =
       source?.state === "planned" && !source.automaticFill && source.staffMessageId !== undefined;
-    if (source === undefined || (source.state !== "active" && !isReviewedPlanned))
+    if (source === undefined || (source.state !== "active" && !isReviewedPlanned)) {
       throw new RepositoryInvariantError("That raid is no longer available.");
-    if (!source.members.some((member) => member.requestId === input.requestId))
-      throw new RepositoryInvariantError("That requester is no longer in this raid.");
-    const sourceBecomesEmpty = source.members.length === 1;
-    const window = await this.requesterFollowUpWindow(input.groupId);
-    if (window === null) throw new RepositoryInvariantError("That raid is no longer available.");
-    const reusableGroupId = window.reusableGroupId;
-    let followUpSortKey: number;
-    if (sourceBecomesEmpty && window.followUpCount === 0) {
-      followUpSortKey = window.sourceSortKey;
-    } else if (window.nextSortKey === null) {
-      followUpSortKey = window.anchorSortKey + SORT_STEP;
-    } else {
-      followUpSortKey = Math.floor((window.anchorSortKey + window.nextSortKey) / 2);
     }
+    if (!source.members.some((member) => member.requestId === input.requestId)) {
+      throw new RepositoryInvariantError("That requester is no longer in this raid.");
+    }
+    const window = await this.requesterFollowUpWindow(input.groupId);
+    if (window === null) {
+      throw new RepositoryInvariantError("That raid is no longer available.");
+    }
+    return { sourceBecomesEmpty: source.members.length === 1, window };
+  }
+
+  async postponeRequester(
+    input: PostponeRequesterInput,
+  ): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
+    const { sourceBecomesEmpty, window } = await this.requirePostponableRequester(input);
+    const reusableGroupId = window.reusableGroupId;
+    const followUpSortKey = requesterFollowUpSortKey(sourceBecomesEmpty, window);
     const timestamp = epoch(input.changedAt);
     const followUpAction = `${input.actionKey}:postponed`;
     const sourceUpdate = this.database
