@@ -38,10 +38,20 @@ for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith
     failures.push(`${path}: pull_request_target is forbidden`);
   }
   for (const job of Object.values(workflow.jobs ?? {})) {
+    const steps = job.steps ?? [];
+    const installsDependencies = steps.some(
+      (step) => typeof step.run === "string" && /(^|\s)npm\s+ci(\s|$)/.test(step.run),
+    );
+    const installsRuntimeBinaries = steps.some(
+      (step) => step.run === "npm run install:runtime-binaries",
+    );
+    if (installsDependencies && !installsRuntimeBinaries) {
+      failures.push(`${path}: dependency installation must install the pinned runtime binaries`);
+    }
     if (typeof job.uses === "string" && !/@[0-9a-f]{40}$/.test(job.uses)) {
       failures.push(`${path}: Action must use a full commit SHA: ${job.uses}`);
     }
-    for (const step of job.steps ?? []) {
+    for (const step of steps) {
       if (typeof step.uses === "string" && !/@[0-9a-f]{40}$/.test(step.uses)) {
         failures.push(`${path}: Action must use a full commit SHA: ${step.uses}`);
       }
@@ -57,6 +67,14 @@ for (const file of readdirSync(workflowDirectory).filter((name) => name.endsWith
         !shellTokens.includes("--ignore-scripts")
       ) {
         failures.push(`${path}: global npm installation must disable package lifecycle scripts`);
+      }
+      if (
+        typeof step.run === "string" &&
+        shellTokens.includes("ci") &&
+        shellTokens.includes("npm") &&
+        !shellTokens.includes("--ignore-scripts")
+      ) {
+        failures.push(`${path}: npm ci must disable package lifecycle scripts`);
       }
       if (
         typeof step.uses === "string" &&

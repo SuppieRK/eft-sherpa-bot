@@ -24,7 +24,9 @@ jobs:
       - name: Use pinned npm
         run: npm install --global --ignore-scripts npm@12.0.2
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+      - name: Install runtime binaries
+        run: npm run install:runtime-binaries
       - name: Verify source
         run: npm run verify
 
@@ -64,7 +66,9 @@ jobs:
       - name: Use pinned npm
         run: npm install --global --ignore-scripts npm@12.0.2
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+      - name: Install runtime binaries
+        run: npm run install:runtime-binaries
       - name: Record deployment start
         run: echo "DEPLOYMENT_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - name: Validate deployment configuration
