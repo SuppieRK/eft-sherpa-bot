@@ -1194,19 +1194,14 @@ export class D1MvpRepository
           input.sourceGroupId,
           input.destinationGroupId,
         ),
-    ];
-    statements.push(
       ...this.pullCrossQueueStatements(input, plan),
       ...this.pullPushStatements(input, plan),
       this.pullSourceStatement(input, plan),
-    );
-    statements.push(
       this.database
         .prepare(`UPDATE raid_groups SET updated_at = ? WHERE id = ?`)
         .bind(timestamp, input.destinationGroupId),
-    );
-
-    statements.push(this.pullDestinationMembershipStatement(input, plan));
+      this.pullDestinationMembershipStatement(input, plan),
+    ];
 
     try {
       await this.database.batch(statements);
