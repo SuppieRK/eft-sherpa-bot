@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import path from "node:path";
 import process from "node:process";
 
@@ -8,7 +9,8 @@ const PROFILE_DIRECTORY = path.join(ROOT, ".artifacts", "worker-profile");
 const CONFIG_PATH = path.join(PROFILE_DIRECTORY, "wrangler.jsonc");
 const FIXTURE_PATH = path.join(PROFILE_DIRECTORY, "fixture.json");
 const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
-const DEFAULT_REPLAY_COUNT = 500;
+const DEFAULT_REPLAY_COUNT = 100;
+const MOCK_API_PORT = 8788;
 
 function encodeHex(value) {
   return Buffer.from(value).toString("hex");
@@ -66,6 +68,11 @@ async function prepare() {
       RECIPIENT_LIMIT: "4",
       ATTEMPT_LIMIT: "3",
       SPIKE_DIAGNOSTICS_TOKEN: encodeHex(crypto.getRandomValues(new Uint8Array(32))),
+      DISCORD_API_BASE_URL: `http://127.0.0.1:${MOCK_API_PORT}/discord`,
+      DISCORD_BOT_TOKEN: "profile-discord-token",
+      TWITCH_API_BASE_URL: `http://127.0.0.1:${MOCK_API_PORT}/twitch`,
+      TWITCH_AUTH_BASE_URL: `http://127.0.0.1:${MOCK_API_PORT}/twitch-auth`,
+      TWITCH_APP_ACCESS_TOKEN: "profile-twitch-token",
     },
   };
   await Promise.all([
@@ -75,13 +82,9 @@ async function prepare() {
   return { configPath: CONFIG_PATH, fixturePath: FIXTURE_PATH };
 }
 
-async function twitchRequest(baseUrl, fixture, index) {
-  const messageId = `profile-twitch-${index}`;
+async function signedTwitchRequest(baseUrl, fixture, input) {
+  const { messageId, body, messageType, subscriptionType } = input;
   const timestamp = new Date().toISOString();
-  const body = JSON.stringify({
-    challenge: `profile-challenge-${index}`,
-    subscription: { type: "channel.chat.message" },
-  });
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(fixture.eventSubSecret),
@@ -101,22 +104,47 @@ async function twitchRequest(baseUrl, fixture, index) {
       "Twitch-Eventsub-Message-Id": messageId,
       "Twitch-Eventsub-Message-Timestamp": timestamp,
       "Twitch-Eventsub-Message-Signature": `sha256=${encodeHex(signature)}`,
-      "Twitch-Eventsub-Message-Type": "webhook_callback_verification",
-      "Twitch-Eventsub-Subscription-Type": "channel.chat.message",
+      "Twitch-Eventsub-Message-Type": messageType,
+      "Twitch-Eventsub-Subscription-Type": subscriptionType,
     },
     body,
   });
 }
 
-async function discordRequest(baseUrl, fixture, index) {
-  const timestamp = String(Math.floor(Date.now() / 1_000));
-  const body = JSON.stringify({
-    id: `profile-discord-${index}`,
-    application_id: fixture.applicationId,
-    type: 1,
-    token: "profile-token",
-    version: 1,
+function twitchChallengeRequest(baseUrl, fixture, index) {
+  return signedTwitchRequest(baseUrl, fixture, {
+    messageId: `profile-twitch-challenge-${index}`,
+    messageType: "webhook_callback_verification",
+    subscriptionType: "channel.chat.message",
+    body: JSON.stringify({
+      challenge: `profile-challenge-${index}`,
+      subscription: { type: "channel.chat.message" },
+    }),
   });
+}
+
+function twitchCommandRequest(baseUrl, fixture, index, text, suffix, userSuffix = String(index)) {
+  return signedTwitchRequest(baseUrl, fixture, {
+    messageId: `profile-twitch-${suffix}-${index}`,
+    messageType: "notification",
+    subscriptionType: "channel.chat.message",
+    body: JSON.stringify({
+      subscription: { type: "channel.chat.message" },
+      event: {
+        broadcaster_user_id: "100000000000001",
+        broadcaster_user_login: "butcoffee",
+        chatter_user_id: `profile-twitch-user-${userSuffix}`,
+        chatter_user_login: `profile_viewer_${userSuffix}`,
+        message_id: `profile-chat-${suffix}-${index}`,
+        message: { text },
+      },
+    }),
+  });
+}
+
+async function signedDiscordRequest(baseUrl, fixture, body) {
+  const timestamp = String(Math.floor(Date.now() / 1_000));
+  const rawBody = JSON.stringify(body);
   const privateKey = await crypto.subtle.importKey(
     "pkcs8",
     decodeBase64(fixture.privateKey),
@@ -127,7 +155,7 @@ async function discordRequest(baseUrl, fixture, index) {
   const signature = await crypto.subtle.sign(
     "Ed25519",
     privateKey,
-    new TextEncoder().encode(`${timestamp}${body}`),
+    new TextEncoder().encode(`${timestamp}${rawBody}`),
   );
   return fetch(new URL("/webhooks/discord/interactions", baseUrl), {
     method: "POST",
@@ -136,8 +164,56 @@ async function discordRequest(baseUrl, fixture, index) {
       "X-Signature-Ed25519": encodeHex(signature),
       "X-Signature-Timestamp": timestamp,
     },
-    body,
+    body: rawBody,
   });
+}
+
+function discordPingRequest(baseUrl, fixture, index) {
+  return signedDiscordRequest(baseUrl, fixture, {
+    id: `profile-discord-ping-${index}`,
+    application_id: fixture.applicationId,
+    type: 1,
+    token: "profile-token",
+    version: 1,
+  });
+}
+
+function discordBoardRequest(baseUrl, fixture, index) {
+  return signedDiscordRequest(baseUrl, fixture, {
+    id: `profile-discord-board-${index}`,
+    application_id: fixture.applicationId,
+    guild_id: "200000000000002",
+    channel_id: "200000000000004",
+    type: 2,
+    token: "profile-token",
+    version: 1,
+    member: {
+      user: { id: "200000000000006", username: "Profile Streamer" },
+      roles: [],
+    },
+    data: { type: 1, name: "board" },
+  });
+}
+
+async function startMockApi() {
+  let messageSequence = 0;
+  const server = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    if (request.url?.startsWith("/twitch/chat/messages") === true) {
+      response.end(
+        JSON.stringify({
+          data: [{ message_id: `profile-twitch-reply-${++messageSequence}`, is_sent: true }],
+        }),
+      );
+      return;
+    }
+    response.end(JSON.stringify({ id: `profile-discord-message-${++messageSequence}` }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(MOCK_API_PORT, "127.0.0.1", resolve);
+  });
+  return server;
 }
 
 async function replay() {
@@ -145,22 +221,70 @@ async function replay() {
   const count = Number(process.argv[3] ?? DEFAULT_REPLAY_COUNT);
   const baseUrl = process.env.WORKER_PROFILE_BASE_URL ?? DEFAULT_BASE_URL;
   if (!Number.isInteger(count) || count <= 0) throw new Error("Replay count must be positive");
-  for (let index = 0; index < count; index += 1) {
-    const [twitch, discord] = await Promise.all([
-      twitchRequest(baseUrl, fixture, index),
-      discordRequest(baseUrl, fixture, index),
-    ]);
-    if (!twitch.ok || !discord.ok) {
-      throw new Error(
-        `Profile request failed at ${index}: Twitch ${twitch.status}, Discord ${discord.status}`,
-      );
+  const mockApi = await startMockApi();
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const requests = [
+        () => twitchChallengeRequest(baseUrl, fixture, index),
+        () => discordPingRequest(baseUrl, fixture, index),
+        () =>
+          twitchCommandRequest(
+            baseUrl,
+            fixture,
+            index,
+            "!request pve customs Profile task",
+            "request",
+          ),
+        () =>
+          twitchCommandRequest(
+            baseUrl,
+            fixture,
+            index,
+            "!request pve",
+            "invalid",
+            `invalid-${index}`,
+          ),
+        () => twitchCommandRequest(baseUrl, fixture, index, "!queue", "queue"),
+        () => discordBoardRequest(baseUrl, fixture, index),
+      ];
+      for (const send of requests) {
+        // The replay preserves the user workflow and keeps D1 transitions deterministic.
+        const response = await send();
+        if (!response.ok) {
+          throw new Error(`Profile request failed at ${index} with status ${response.status}`);
+        }
+      }
     }
+  } finally {
+    await new Promise((resolve, reject) => {
+      mockApi.close((error) => (error === undefined ? resolve() : reject(error)));
+    });
   }
-  console.log(`Replayed ${count} signed Twitch requests and ${count} signed Discord requests.`);
+  console.log(`Replayed ${count} complete signed Worker request sets.`);
 }
 
 async function serve() {
   const paths = await prepare();
+  const wranglerPath = path.join(ROOT, "node_modules", "wrangler", "bin", "wrangler.js");
+  const migration = spawnSync(
+    process.execPath,
+    [
+      wranglerPath,
+      "d1",
+      "migrations",
+      "apply",
+      "coffee-bot-profile-local",
+      "--local",
+      "--config",
+      paths.configPath,
+    ],
+    { cwd: ROOT, encoding: "utf8", env: { ...process.env, CI: "true" } },
+  );
+  if (migration.status !== 0) {
+    process.stdout.write(migration.stdout ?? "");
+    process.stderr.write(migration.stderr ?? "");
+    throw new Error("Local profile migrations failed");
+  }
   console.log(`Generated local profile state in ${PROFILE_DIRECTORY}.`);
   console.log(
     "Press D after Wrangler starts, select Profiler, and then run npm run profile:replay.",
@@ -168,7 +292,7 @@ async function serve() {
   const child = spawn(
     process.execPath,
     [
-      path.join(ROOT, "node_modules", "wrangler", "bin", "wrangler.js"),
+      wranglerPath,
       "dev",
       "--config",
       paths.configPath,

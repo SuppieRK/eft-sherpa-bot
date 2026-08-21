@@ -220,6 +220,111 @@ export async function resetOperationFixture(seed: SeedState): Promise<void> {
   ]);
 }
 
+export async function seedWaitingBacklog(seed: SeedState, count: number): Promise<void> {
+  for (let start = 0; start < count; start += SEED_CHUNK_SIZE) {
+    const end = Math.min(count, start + SEED_CHUNK_SIZE);
+    const rows = Array.from({ length: end - start }, (_, offset) => {
+      const ordinal = start + offset;
+      const requestId = seed.scale + ordinal + 1;
+      const reservedOffset = ordinal - (count - 6);
+      return {
+        requestId,
+        ordinal,
+        isPriority:
+          reservedOffset >= 0 ? (reservedOffset < 3 ? 1 : 0) : ordinal < count / 2 ? 1 : 0,
+        gameMode: reservedOffset >= 0 ? reservedOffset % 3 : 2,
+      };
+    });
+    const json = JSON.stringify(rows);
+    // Benchmark setup is intentionally ordered and excluded from the measured request window.
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO user_mappings
+           (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
+         SELECT printf('op_waiting_%d', json_extract(value, '$.ordinal')),
+                printf('op-waiting-twitch-%d', json_extract(value, '$.ordinal')),
+                printf('Waiting PMC %d', json_extract(value, '$.ordinal')), ?, ?
+         FROM json_each(?)`,
+      ).bind(Date.now(), Date.now(), json),
+      env.DB.prepare(
+        `INSERT INTO help_requests
+           (id, source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+            game_mode, map_id, objective, is_priority, state, created_at, updated_at)
+         SELECT json_extract(value, '$.requestId'), 1,
+                printf('bench-op-waiting-%d', json_extract(value, '$.ordinal')),
+                printf('op-waiting-twitch-%d', json_extract(value, '$.ordinal')),
+                printf('op_waiting_%d', json_extract(value, '$.ordinal')),
+                printf('Waiting PMC %d', json_extract(value, '$.ordinal')),
+                json_extract(value, '$.gameMode'), 'customs', 'Waiting recovery goal',
+                json_extract(value, '$.isPriority'), 0, ?, ?
+         FROM json_each(?)`,
+      ).bind(Date.now(), Date.now(), json),
+    ]);
+  }
+}
+
+export async function seedExpiredReceiptBacklog(count: number): Promise<void> {
+  const expiredAt = Date.now() - 48 * 60 * 60 * 1_000;
+  for (let start = 0; start < count; start += SEED_CHUNK_SIZE) {
+    const end = Math.min(count, start + SEED_CHUNK_SIZE);
+    const rows = Array.from({ length: end - start }, (_, offset) => start + offset);
+    // Benchmark setup is intentionally ordered and excluded from the measured request window.
+    await env.DB.prepare(
+      `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
+       SELECT 1, printf('bench-op-expired-%d', value), 'command:request', ? + value
+       FROM json_each(?)`,
+    )
+      .bind(expiredAt, JSON.stringify(rows))
+      .run();
+  }
+}
+
+export async function seedRemovedMembershipHistory(seed: SeedState, count: number): Promise<void> {
+  for (let start = 0; start < count; start += SEED_CHUNK_SIZE) {
+    const end = Math.min(count, start + SEED_CHUNK_SIZE);
+    const rows = Array.from({ length: end - start }, (_, offset) => {
+      const ordinal = start + offset;
+      return {
+        ordinal,
+        requestId: seed.scale + ordinal + 1,
+        memberId: seed.membershipCount + ordinal + 1,
+        position: ordinal + 10,
+      };
+    });
+    const json = JSON.stringify(rows);
+    // Benchmark setup is intentionally ordered and excluded from the measured request window.
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO user_mappings
+           (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
+         SELECT printf('op_history_%d', json_extract(value, '$.ordinal')),
+                printf('op-history-twitch-%d', json_extract(value, '$.ordinal')),
+                printf('History PMC %d', json_extract(value, '$.ordinal')), ?, ?
+         FROM json_each(?)`,
+      ).bind(Date.now(), Date.now(), json),
+      env.DB.prepare(
+        `INSERT INTO help_requests
+           (id, source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+            game_mode, map_id, objective, state, created_at, updated_at)
+         SELECT json_extract(value, '$.requestId'), 1,
+                printf('bench-op-history-%d', json_extract(value, '$.ordinal')),
+                printf('op-history-twitch-%d', json_extract(value, '$.ordinal')),
+                printf('op_history_%d', json_extract(value, '$.ordinal')),
+                printf('History PMC %d', json_extract(value, '$.ordinal')),
+                2, 'customs', 'Removed history', 3, ?, ?
+         FROM json_each(?)`,
+      ).bind(Date.now(), Date.now(), json),
+      env.DB.prepare(
+        `INSERT INTO raid_group_members
+           (id, group_id, request_id, position, state, created_at, updated_at)
+         SELECT json_extract(value, '$.memberId'), 1,
+                json_extract(value, '$.requestId'), json_extract(value, '$.position'), 2, ?, ?
+         FROM json_each(?)`,
+      ).bind(Date.now(), Date.now(), json),
+    ]);
+  }
+}
+
 export async function prepareStatisticsSeed(seed: SeedState): Promise<void> {
   const terminalThreshold = Math.max(0, seed.groupCount - 15);
   const helpedThreshold = Math.max(0, seed.groupCount - 12);

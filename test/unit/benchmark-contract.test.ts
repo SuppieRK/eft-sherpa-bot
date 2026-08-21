@@ -9,6 +9,7 @@ import {
   BENCHMARK_OPERATION_FAMILIES,
   BENCHMARK_SAMPLES,
   BENCHMARK_SCALES,
+  BENCHMARK_SCALES_BY_OPERATION,
   BENCHMARK_WARMUPS,
   OPERATION_FAMILY_BY_ID,
   QUEUE_PERCENTILES,
@@ -94,15 +95,19 @@ describe("local user-facing benchmark contract", () => {
 
   it("commits one exact counter baseline entry for every scale and operation", () => {
     const baseline = committedBaseline as D1CostBaseline;
-    const expected = BENCHMARK_SCALES.flatMap((scale) =>
-      USER_OPERATION_IDS.map((operationId) => baselineKey(scale, operationId)),
+    const expected = USER_OPERATION_IDS.flatMap((operationId) =>
+      (BENCHMARK_SCALES_BY_OPERATION[operationId] ?? BENCHMARK_SCALES).map((scale) =>
+        baselineKey(scale, operationId),
+      ),
     ).sort();
 
     expect(Object.keys(baseline.operations).sort()).toEqual(expected);
+    expect(Object.keys(baseline.databaseBytes).sort()).toEqual(BENCHMARK_SCALES.map(String).sort());
   });
 
   it("reports exact D1 counter changes and missing entries", () => {
     const report = {
+      seeds: [{ scale: BENCHMARK_SCALES[0], databaseBytes: 123 }],
       results: [
         {
           id: USER_OPERATION_IDS[0],
@@ -114,7 +119,8 @@ describe("local user-facing benchmark contract", () => {
     const baseline = createD1CostBaseline(report);
     expect(() => assertExactD1Baseline(report, baseline)).not.toThrow();
     const changed: D1CostBaseline = {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      databaseBytes: baseline.databaseBytes,
       operations: {
         ...baseline.operations,
         [baselineKey(BENCHMARK_SCALES[0], USER_OPERATION_IDS[0])]: {
@@ -136,9 +142,11 @@ describe("local user-facing benchmark contract", () => {
       scale: BENCHMARK_SCALES[0],
     };
     const first = createD1CostBaseline({
+      seeds: [{ scale: BENCHMARK_SCALES[0], databaseBytes: 123 }],
       results: [{ ...base, aggregate: aggregateMeasurements([measurement(10)]) }],
     });
     const second = createD1CostBaseline({
+      seeds: [{ scale: BENCHMARK_SCALES[0], databaseBytes: 123 }],
       results: [{ ...base, aggregate: aggregateMeasurements([measurement(999)]) }],
     });
 

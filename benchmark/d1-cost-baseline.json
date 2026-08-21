@@ -1,5 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "databaseBytes": {
+    "100": 184320,
+    "1000": 774144,
+    "10000": 6242304,
+    "100000": 63926272
+  },
   "operations": {
     "100:discord.request.form.prefilled": {
       "statements": 1,
@@ -8,127 +14,127 @@
     },
     "100:discord.request.submit.created": {
       "statements": 15,
-      "rowsRead": 226,
-      "rowsWritten": 37
+      "rowsRead": 246,
+      "rowsWritten": 36
     },
     "100:discord.request.submit.already-active": {
       "statements": 12,
-      "rowsRead": 181,
+      "rowsRead": 196,
       "rowsWritten": 6
     },
     "100:discord.queue.p10": {
       "statements": 7,
-      "rowsRead": 26,
+      "rowsRead": 39,
       "rowsWritten": 0
     },
     "100:discord.queue.p50": {
       "statements": 9,
-      "rowsRead": 55,
+      "rowsRead": 68,
       "rowsWritten": 0
     },
     "100:discord.queue.p90": {
       "statements": 9,
-      "rowsRead": 112,
+      "rowsRead": 125,
       "rowsWritten": 0
     },
     "100:discord.link.self": {
       "statements": 5,
-      "rowsRead": 4,
+      "rowsRead": 6,
       "rowsWritten": 5
     },
     "100:twitch.request.created": {
-      "statements": 20,
-      "rowsRead": 229,
-      "rowsWritten": 41
+      "statements": 17,
+      "rowsRead": 247,
+      "rowsWritten": 37
     },
     "100:twitch.request.already-active": {
-      "statements": 17,
-      "rowsRead": 185,
-      "rowsWritten": 10
+      "statements": 13,
+      "rowsRead": 184,
+      "rowsWritten": 4
     },
     "100:twitch.request.invalid": {
-      "statements": 10,
-      "rowsRead": 174,
-      "rowsWritten": 6
+      "statements": 7,
+      "rowsRead": 175,
+      "rowsWritten": 3
     },
     "100:twitch.queue.p10": {
-      "statements": 14,
-      "rowsRead": 33,
-      "rowsWritten": 6
+      "statements": 13,
+      "rowsRead": 47,
+      "rowsWritten": 3
     },
     "100:twitch.queue.p50": {
-      "statements": 16,
-      "rowsRead": 62,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 76,
+      "rowsWritten": 3
     },
     "100:twitch.queue.p90": {
-      "statements": 16,
-      "rowsRead": 119,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 133,
+      "rowsWritten": 3
     },
     "100:discord.board.create": {
       "statements": 11,
-      "rowsRead": 505,
+      "rowsRead": 518,
       "rowsWritten": 1
     },
     "100:discord.board.open": {
       "statements": 10,
-      "rowsRead": 505,
+      "rowsRead": 518,
       "rowsWritten": 0
     },
     "100:discord.board.refresh": {
       "statements": 11,
-      "rowsRead": 497,
+      "rowsRead": 510,
       "rowsWritten": 0
     },
     "100:discord.raid.review": {
       "statements": 9,
-      "rowsRead": 183,
+      "rowsRead": 198,
       "rowsWritten": 5
     },
     "100:discord.raid.review.cancel": {
       "statements": 8,
-      "rowsRead": 182,
+      "rowsRead": 197,
       "rowsWritten": 4
     },
     "100:discord.raid.call-start.streamer": {
       "statements": 12,
-      "rowsRead": 209,
+      "rowsRead": 224,
       "rowsWritten": 8
     },
     "100:discord.requester.pull.candidates": {
       "statements": 10,
-      "rowsRead": 192,
+      "rowsRead": 207,
       "rowsWritten": 3
     },
     "100:discord.requester.pull.with-push": {
       "statements": 20,
-      "rowsRead": 326,
-      "rowsWritten": 38
+      "rowsRead": 341,
+      "rowsWritten": 37
     },
     "100:discord.raid.result.helped": {
       "statements": 12,
-      "rowsRead": 257,
+      "rowsRead": 272,
       "rowsWritten": 22
     },
     "100:discord.requester.postpone.remaining": {
       "statements": 16,
-      "rowsRead": 226,
+      "rowsRead": 237,
       "rowsWritten": 26
     },
     "100:discord.requester.postpone.last": {
       "statements": 16,
-      "rowsRead": 221,
+      "rowsRead": 236,
       "rowsWritten": 24
     },
     "100:discord.requester.remove.remaining": {
       "statements": 13,
-      "rowsRead": 199,
+      "rowsRead": 210,
       "rowsWritten": 8
     },
     "100:discord.requester.remove.last": {
       "statements": 13,
-      "rowsRead": 196,
+      "rowsRead": 211,
       "rowsWritten": 10
     },
     "100:discord.stats.all-time": {
@@ -153,7 +159,7 @@
     },
     "100:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 5,
+      "rowsRead": 7,
       "rowsWritten": 4
     },
     "1000:discord.request.form.prefilled": {
@@ -163,127 +169,142 @@
     },
     "1000:discord.request.submit.created": {
       "statements": 15,
-      "rowsRead": 235,
-      "rowsWritten": 37
+      "rowsRead": 255,
+      "rowsWritten": 36
     },
     "1000:discord.request.submit.already-active": {
       "statements": 12,
-      "rowsRead": 190,
+      "rowsRead": 205,
       "rowsWritten": 6
     },
     "1000:discord.queue.p10": {
       "statements": 7,
-      "rowsRead": 138,
+      "rowsRead": 151,
       "rowsWritten": 0
     },
     "1000:discord.queue.p50": {
       "statements": 9,
-      "rowsRead": 174,
+      "rowsRead": 187,
       "rowsWritten": 0
     },
     "1000:discord.queue.p90": {
       "statements": 9,
-      "rowsRead": 174,
+      "rowsRead": 187,
       "rowsWritten": 0
     },
     "1000:discord.link.self": {
       "statements": 5,
-      "rowsRead": 4,
+      "rowsRead": 6,
       "rowsWritten": 5
     },
     "1000:twitch.request.created": {
-      "statements": 20,
-      "rowsRead": 238,
-      "rowsWritten": 41
+      "statements": 17,
+      "rowsRead": 256,
+      "rowsWritten": 37
     },
     "1000:twitch.request.already-active": {
-      "statements": 17,
-      "rowsRead": 194,
-      "rowsWritten": 10
+      "statements": 13,
+      "rowsRead": 193,
+      "rowsWritten": 4
     },
     "1000:twitch.request.invalid": {
-      "statements": 10,
-      "rowsRead": 183,
-      "rowsWritten": 6
+      "statements": 7,
+      "rowsRead": 184,
+      "rowsWritten": 3
+    },
+    "1000:twitch.request.invalid.expired-receipts": {
+      "statements": 7,
+      "rowsRead": 1181,
+      "rowsWritten": 253
     },
     "1000:twitch.queue.p10": {
-      "statements": 14,
-      "rowsRead": 145,
-      "rowsWritten": 6
+      "statements": 13,
+      "rowsRead": 159,
+      "rowsWritten": 3
     },
     "1000:twitch.queue.p50": {
-      "statements": 16,
-      "rowsRead": 181,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 195,
+      "rowsWritten": 3
     },
     "1000:twitch.queue.p90": {
-      "statements": 16,
-      "rowsRead": 181,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 195,
+      "rowsWritten": 3
     },
     "1000:discord.board.create": {
       "statements": 11,
-      "rowsRead": 532,
+      "rowsRead": 545,
       "rowsWritten": 1
     },
     "1000:discord.board.open": {
       "statements": 10,
-      "rowsRead": 532,
+      "rowsRead": 545,
       "rowsWritten": 0
     },
     "1000:discord.board.refresh": {
       "statements": 11,
-      "rowsRead": 524,
+      "rowsRead": 537,
+      "rowsWritten": 0
+    },
+    "1000:discord.board.refresh.waiting-backlog": {
+      "statements": 15,
+      "rowsRead": 9624,
+      "rowsWritten": 3294
+    },
+    "1000:discord.board.refresh.removed-history": {
+      "statements": 10,
+      "rowsRead": 545,
       "rowsWritten": 0
     },
     "1000:discord.raid.review": {
       "statements": 9,
-      "rowsRead": 192,
+      "rowsRead": 207,
       "rowsWritten": 5
     },
     "1000:discord.raid.review.cancel": {
       "statements": 8,
-      "rowsRead": 191,
+      "rowsRead": 206,
       "rowsWritten": 4
     },
     "1000:discord.raid.call-start.streamer": {
       "statements": 12,
-      "rowsRead": 218,
+      "rowsRead": 233,
       "rowsWritten": 8
     },
     "1000:discord.requester.pull.candidates": {
       "statements": 10,
-      "rowsRead": 197,
+      "rowsRead": 212,
       "rowsWritten": 3
     },
     "1000:discord.requester.pull.with-push": {
       "statements": 20,
-      "rowsRead": 335,
-      "rowsWritten": 38
+      "rowsRead": 350,
+      "rowsWritten": 37
     },
     "1000:discord.raid.result.helped": {
       "statements": 12,
-      "rowsRead": 266,
+      "rowsRead": 281,
       "rowsWritten": 22
     },
     "1000:discord.requester.postpone.remaining": {
       "statements": 16,
-      "rowsRead": 244,
+      "rowsRead": 255,
       "rowsWritten": 26
     },
     "1000:discord.requester.postpone.last": {
       "statements": 16,
-      "rowsRead": 230,
+      "rowsRead": 245,
       "rowsWritten": 24
     },
     "1000:discord.requester.remove.remaining": {
       "statements": 13,
-      "rowsRead": 208,
+      "rowsRead": 219,
       "rowsWritten": 8
     },
     "1000:discord.requester.remove.last": {
       "statements": 13,
-      "rowsRead": 205,
+      "rowsRead": 220,
       "rowsWritten": 10
     },
     "1000:discord.stats.all-time": {
@@ -308,7 +329,7 @@
     },
     "1000:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 5,
+      "rowsRead": 7,
       "rowsWritten": 4
     },
     "10000:discord.request.form.prefilled": {
@@ -318,127 +339,137 @@
     },
     "10000:discord.request.submit.created": {
       "statements": 15,
-      "rowsRead": 235,
-      "rowsWritten": 37
+      "rowsRead": 255,
+      "rowsWritten": 36
     },
     "10000:discord.request.submit.already-active": {
       "statements": 12,
-      "rowsRead": 190,
+      "rowsRead": 205,
       "rowsWritten": 6
     },
     "10000:discord.queue.p10": {
       "statements": 7,
-      "rowsRead": 166,
+      "rowsRead": 179,
       "rowsWritten": 0
     },
     "10000:discord.queue.p50": {
       "statements": 9,
-      "rowsRead": 174,
+      "rowsRead": 187,
       "rowsWritten": 0
     },
     "10000:discord.queue.p90": {
       "statements": 9,
-      "rowsRead": 174,
+      "rowsRead": 187,
       "rowsWritten": 0
     },
     "10000:discord.link.self": {
       "statements": 5,
-      "rowsRead": 4,
+      "rowsRead": 6,
       "rowsWritten": 5
     },
     "10000:twitch.request.created": {
-      "statements": 20,
-      "rowsRead": 238,
-      "rowsWritten": 41
+      "statements": 17,
+      "rowsRead": 256,
+      "rowsWritten": 37
     },
     "10000:twitch.request.already-active": {
-      "statements": 17,
-      "rowsRead": 194,
-      "rowsWritten": 10
+      "statements": 13,
+      "rowsRead": 193,
+      "rowsWritten": 4
     },
     "10000:twitch.request.invalid": {
-      "statements": 10,
-      "rowsRead": 183,
-      "rowsWritten": 6
+      "statements": 7,
+      "rowsRead": 184,
+      "rowsWritten": 3
     },
     "10000:twitch.queue.p10": {
-      "statements": 14,
-      "rowsRead": 173,
-      "rowsWritten": 6
+      "statements": 13,
+      "rowsRead": 187,
+      "rowsWritten": 3
     },
     "10000:twitch.queue.p50": {
-      "statements": 16,
-      "rowsRead": 181,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 195,
+      "rowsWritten": 3
     },
     "10000:twitch.queue.p90": {
-      "statements": 16,
-      "rowsRead": 181,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 195,
+      "rowsWritten": 3
     },
     "10000:discord.board.create": {
       "statements": 11,
-      "rowsRead": 532,
+      "rowsRead": 545,
       "rowsWritten": 1
     },
     "10000:discord.board.open": {
       "statements": 10,
-      "rowsRead": 532,
+      "rowsRead": 545,
       "rowsWritten": 0
     },
     "10000:discord.board.refresh": {
       "statements": 11,
-      "rowsRead": 524,
+      "rowsRead": 537,
+      "rowsWritten": 0
+    },
+    "10000:discord.board.refresh.waiting-backlog": {
+      "statements": 15,
+      "rowsRead": 9624,
+      "rowsWritten": 3294
+    },
+    "10000:discord.board.refresh.removed-history": {
+      "statements": 10,
+      "rowsRead": 545,
       "rowsWritten": 0
     },
     "10000:discord.raid.review": {
       "statements": 9,
-      "rowsRead": 192,
+      "rowsRead": 207,
       "rowsWritten": 5
     },
     "10000:discord.raid.review.cancel": {
       "statements": 8,
-      "rowsRead": 191,
+      "rowsRead": 206,
       "rowsWritten": 4
     },
     "10000:discord.raid.call-start.streamer": {
       "statements": 12,
-      "rowsRead": 218,
+      "rowsRead": 233,
       "rowsWritten": 8
     },
     "10000:discord.requester.pull.candidates": {
       "statements": 10,
-      "rowsRead": 201,
+      "rowsRead": 216,
       "rowsWritten": 3
     },
     "10000:discord.requester.pull.with-push": {
       "statements": 20,
-      "rowsRead": 335,
-      "rowsWritten": 38
+      "rowsRead": 350,
+      "rowsWritten": 37
     },
     "10000:discord.raid.result.helped": {
       "statements": 12,
-      "rowsRead": 266,
+      "rowsRead": 281,
       "rowsWritten": 22
     },
     "10000:discord.requester.postpone.remaining": {
       "statements": 16,
-      "rowsRead": 244,
+      "rowsRead": 255,
       "rowsWritten": 26
     },
     "10000:discord.requester.postpone.last": {
       "statements": 16,
-      "rowsRead": 230,
+      "rowsRead": 245,
       "rowsWritten": 24
     },
     "10000:discord.requester.remove.remaining": {
       "statements": 13,
-      "rowsRead": 208,
+      "rowsRead": 219,
       "rowsWritten": 8
     },
     "10000:discord.requester.remove.last": {
       "statements": 13,
-      "rowsRead": 205,
+      "rowsRead": 220,
       "rowsWritten": 10
     },
     "10000:discord.stats.all-time": {
@@ -463,7 +494,7 @@
     },
     "10000:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 5,
+      "rowsRead": 7,
       "rowsWritten": 4
     },
     "100000:discord.request.form.prefilled": {
@@ -473,127 +504,127 @@
     },
     "100000:discord.request.submit.created": {
       "statements": 15,
-      "rowsRead": 239,
-      "rowsWritten": 37
+      "rowsRead": 259,
+      "rowsWritten": 36
     },
     "100000:discord.request.submit.already-active": {
       "statements": 12,
-      "rowsRead": 194,
+      "rowsRead": 209,
       "rowsWritten": 6
     },
     "100000:discord.queue.p10": {
       "statements": 7,
-      "rowsRead": 166,
+      "rowsRead": 179,
       "rowsWritten": 0
     },
     "100000:discord.queue.p50": {
       "statements": 9,
-      "rowsRead": 174,
+      "rowsRead": 187,
       "rowsWritten": 0
     },
     "100000:discord.queue.p90": {
       "statements": 9,
-      "rowsRead": 174,
+      "rowsRead": 187,
       "rowsWritten": 0
     },
     "100000:discord.link.self": {
       "statements": 5,
-      "rowsRead": 4,
+      "rowsRead": 6,
       "rowsWritten": 5
     },
     "100000:twitch.request.created": {
-      "statements": 20,
-      "rowsRead": 242,
-      "rowsWritten": 41
+      "statements": 17,
+      "rowsRead": 260,
+      "rowsWritten": 37
     },
     "100000:twitch.request.already-active": {
-      "statements": 17,
-      "rowsRead": 198,
-      "rowsWritten": 10
+      "statements": 13,
+      "rowsRead": 197,
+      "rowsWritten": 4
     },
     "100000:twitch.request.invalid": {
-      "statements": 10,
-      "rowsRead": 187,
-      "rowsWritten": 6
+      "statements": 7,
+      "rowsRead": 188,
+      "rowsWritten": 3
     },
     "100000:twitch.queue.p10": {
-      "statements": 14,
-      "rowsRead": 173,
-      "rowsWritten": 6
+      "statements": 13,
+      "rowsRead": 187,
+      "rowsWritten": 3
     },
     "100000:twitch.queue.p50": {
-      "statements": 16,
-      "rowsRead": 181,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 195,
+      "rowsWritten": 3
     },
     "100000:twitch.queue.p90": {
-      "statements": 16,
-      "rowsRead": 181,
-      "rowsWritten": 6
+      "statements": 15,
+      "rowsRead": 195,
+      "rowsWritten": 3
     },
     "100000:discord.board.create": {
       "statements": 11,
-      "rowsRead": 544,
+      "rowsRead": 557,
       "rowsWritten": 1
     },
     "100000:discord.board.open": {
       "statements": 10,
-      "rowsRead": 544,
+      "rowsRead": 557,
       "rowsWritten": 0
     },
     "100000:discord.board.refresh": {
       "statements": 11,
-      "rowsRead": 536,
+      "rowsRead": 549,
       "rowsWritten": 0
     },
     "100000:discord.raid.review": {
       "statements": 9,
-      "rowsRead": 196,
+      "rowsRead": 211,
       "rowsWritten": 5
     },
     "100000:discord.raid.review.cancel": {
       "statements": 8,
-      "rowsRead": 195,
+      "rowsRead": 210,
       "rowsWritten": 4
     },
     "100000:discord.raid.call-start.streamer": {
       "statements": 12,
-      "rowsRead": 222,
+      "rowsRead": 237,
       "rowsWritten": 8
     },
     "100000:discord.requester.pull.candidates": {
       "statements": 10,
-      "rowsRead": 201,
+      "rowsRead": 216,
       "rowsWritten": 3
     },
     "100000:discord.requester.pull.with-push": {
       "statements": 20,
-      "rowsRead": 339,
-      "rowsWritten": 38
+      "rowsRead": 354,
+      "rowsWritten": 37
     },
     "100000:discord.raid.result.helped": {
       "statements": 12,
-      "rowsRead": 270,
+      "rowsRead": 285,
       "rowsWritten": 22
     },
     "100000:discord.requester.postpone.remaining": {
       "statements": 16,
-      "rowsRead": 248,
+      "rowsRead": 259,
       "rowsWritten": 26
     },
     "100000:discord.requester.postpone.last": {
       "statements": 16,
-      "rowsRead": 234,
+      "rowsRead": 249,
       "rowsWritten": 24
     },
     "100000:discord.requester.remove.remaining": {
       "statements": 13,
-      "rowsRead": 212,
+      "rowsRead": 223,
       "rowsWritten": 8
     },
     "100000:discord.requester.remove.last": {
       "statements": 13,
-      "rowsRead": 209,
+      "rowsRead": 224,
       "rowsWritten": 10
     },
     "100000:discord.stats.all-time": {
@@ -618,7 +649,7 @@
     },
     "100000:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 5,
+      "rowsRead": 7,
       "rowsWritten": 4
     }
   }

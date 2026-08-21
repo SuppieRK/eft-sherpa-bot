@@ -87,6 +87,18 @@ function markdown(report) {
     "",
     "Each scale contains a deterministic skewed mix of PvP Seasonal, PvP, and PvE requests. It also contains the stated number of user mappings, corresponding mode-safe raid memberships, capacity-aware raids distributed across the supported map catalog, the same number of recent delivery receipts, and one canonical community record. Scenario fixtures are restored outside the measured window.",
     "",
+    "| Active requests | Local D1 bytes |",
+    "|---:|---:|",
+  );
+  for (const seed of report.seeds) {
+    lines.push(
+      `| ${seed.scale.toLocaleString("en-US")} | ${seed.databaseBytes.toLocaleString("en-US")} |`,
+    );
+  }
+  lines.push(
+    "",
+    "Focused adversarial scenarios add 1,000 and 10,000 genuinely waiting requests, 600 expired receipts, and 1,000 and 10,000 removed membership rows outside the measured window. They exercise complete Worker command paths without changing the stable active-request seed matrix.",
+    "",
     "## Cost Invariants",
     "",
     "- Identical samples must have identical D1 statement, row-read, and row-write counts.",
@@ -99,6 +111,9 @@ function markdown(report) {
     "- Rollup-maintaining request and raid-result mutations must keep constant writes and no more than 32 rows of cross-scale read growth.",
     "- Discord Users page reads must be scale-independent and write zero rows.",
     "- Discord Users missing-detail completion must use bounded reads and writes.",
+    "- One waiting-backlog board refresh must materialize exactly 250 requests at both focused scales.",
+    "- One expired-receipt operation must remove exactly 250 expired receipts.",
+    "- Removed membership history must not increase open-board D1 rows read with history size.",
     "",
   );
   return lines.join("\n");
@@ -197,6 +212,12 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     )
   ) {
     fail(`${operationId} must keep D1 reads and writes bounded`);
+  }
+  if (operationId === "discord.board.refresh.removed-history") {
+    const historyReads = new Set(
+      operationResults.map((result) => result.aggregate.rowsRead.median),
+    );
+    if (historyReads.size !== 1) fail(`${operationId} row reads changed with history size`);
   }
   for (let index = 1; index < operationResults.length; index += 1) {
     const previous = operationResults[index - 1];

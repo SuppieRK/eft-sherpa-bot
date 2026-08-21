@@ -41,6 +41,8 @@ const CALL_STATUS = { pending: 0, sent: 1, failed: 2, not_requested: 3 } as cons
 const MEMBER_STATE = { planned: 0, completed: 1, removed: 2 } as const;
 const SORT_STEP = 1_000_000;
 const RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
+const RECEIPT_CLEANUP_BATCH_SIZE = 250;
+const MATERIALIZATION_BATCH_SIZE = 250;
 
 interface RequestRow {
   id: number;
@@ -300,7 +302,7 @@ function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
   return [...raids.values()];
 }
 
-function raidSelectSql(where: string): string {
+function raidSelectSql(where: string, currentMembersOnly = false): string {
   return `SELECT raid.id,
                  CASE raid.game_mode WHEN 0 THEN 'pvp-seasonal'
                       WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
@@ -325,7 +327,7 @@ function raidSelectSql(where: string): string {
                  coalesce(request.discord_user_id, mapping.discord_user_id) AS discordUserId,
                  request.objective, request.notes, member.position AS memberPosition
           FROM raid_groups AS raid
-          LEFT JOIN raid_group_members AS member ON member.group_id = raid.id
+          LEFT JOIN raid_group_members AS member ON member.group_id = raid.id${currentMembersOnly ? " AND member.state = 0" : ""}
           LEFT JOIN help_requests AS request ON request.id = member.request_id
           LEFT JOIN user_mappings AS mapping ON mapping.twitch_login = request.twitch_login
           ${where}
@@ -703,26 +705,71 @@ export class D1MvpRepository
   }): Promise<number> {
     let materialized = 0;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      const remainingBudget = MATERIALIZATION_BATCH_SIZE - materialized;
+      if (remainingBudget === 0) break;
       // Concurrent Worker invocations can win a planned assignment. Re-read D1 before retrying.
       // oxlint-disable-next-line no-await-in-loop
-      const result = await this.materializeWaitingRequestsPass(input);
+      const result = await this.materializeWaitingRequestsPass(input, remainingBudget);
       materialized += result.materialized;
       if (!result.shouldRetry) break;
     }
     return materialized;
   }
 
-  private async materializeWaitingRequestsPass(input: {
-    recipientLimit: number;
-    changedAt: Date;
-  }): Promise<{ materialized: number; shouldRetry: boolean }> {
+  private async materializeWaitingRequestsPass(
+    input: {
+      recipientLimit: number;
+      changedAt: Date;
+    },
+    batchLimit: number,
+  ): Promise<{ materialized: number; shouldRetry: boolean }> {
     const waiting = await this.database
       .prepare(
-        `SELECT id AS requestId, game_mode AS gameMode, map_id AS mapId,
-                is_priority AS isPriority
-         FROM help_requests WHERE state = 0
-         ORDER BY is_priority DESC, id`,
+        `WITH reserved_ids AS MATERIALIZED (
+           SELECT cast(value AS INTEGER) AS requestId
+           FROM json_each(json_array(
+             (SELECT id FROM help_requests
+              WHERE state = 0 AND is_priority = 1 AND game_mode = 0 ORDER BY id LIMIT 1),
+             (SELECT id FROM help_requests
+              WHERE state = 0 AND is_priority = 1 AND game_mode = 1 ORDER BY id LIMIT 1),
+             (SELECT id FROM help_requests
+              WHERE state = 0 AND is_priority = 1 AND game_mode = 2 ORDER BY id LIMIT 1),
+             (SELECT id FROM help_requests
+              WHERE state = 0 AND is_priority = 0 AND game_mode = 0 ORDER BY id LIMIT 1),
+             (SELECT id FROM help_requests
+              WHERE state = 0 AND is_priority = 0 AND game_mode = 1 ORDER BY id LIMIT 1),
+             (SELECT id FROM help_requests
+              WHERE state = 0 AND is_priority = 0 AND game_mode = 2 ORDER BY id LIMIT 1)
+           ))
+           WHERE value IS NOT NULL
+         ), reserved AS MATERIALIZED (
+           SELECT request.id AS requestId, request.game_mode AS gameMode,
+                  request.map_id AS mapId, request.is_priority AS isPriority
+           FROM help_requests AS request
+           JOIN reserved_ids ON reserved_ids.requestId = request.id
+         ), fifo AS MATERIALIZED (
+           SELECT id AS requestId, game_mode AS gameMode, map_id AS mapId,
+                  is_priority AS isPriority
+           FROM help_requests WHERE state = 0
+           ORDER BY is_priority DESC, id LIMIT ?
+         ), candidates AS MATERIALIZED (
+           SELECT requestId, gameMode, mapId, isPriority, 0 AS reservationOrder FROM reserved
+           UNION ALL
+           SELECT fifo.requestId, fifo.gameMode, fifo.mapId, fifo.isPriority, 1
+           FROM fifo
+           WHERE NOT EXISTS (
+             SELECT 1 FROM reserved WHERE reserved.requestId = fifo.requestId
+           )
+         ), chosen AS MATERIALIZED (
+           SELECT requestId, gameMode, mapId, isPriority
+           FROM candidates
+           ORDER BY reservationOrder, isPriority DESC, requestId
+           LIMIT ?
+         )
+         SELECT requestId, gameMode, mapId, isPriority FROM chosen
+         ORDER BY isPriority DESC, requestId`,
       )
+      .bind(batchLimit, batchLimit)
       .all<WaitingRow>();
     if (waiting.results.length === 0) return { materialized: 0, shouldRetry: false };
 
@@ -819,11 +866,12 @@ export class D1MvpRepository
              AND EXISTS (
                SELECT 1 FROM raid_group_members AS member
                WHERE member.request_id = help_requests.id AND member.state = 0
-             )`,
+             )
+           RETURNING id`,
         )
         .bind(timestamp, assignmentJson),
     ]);
-    const materialized = results[1]?.results.length ?? 0;
+    const materialized = results[2]?.results.length ?? 0;
     return { materialized, shouldRetry: materialized < assignments.length };
   }
 
@@ -864,7 +912,9 @@ export class D1MvpRepository
       visibleIds.length === 0
         ? { results: [] as RaidRow[] }
         : await this.database
-            .prepare(raidSelectSql(`WHERE raid.id IN (${visibleIds.map(() => "?").join(", ")})`))
+            .prepare(
+              raidSelectSql(`WHERE raid.id IN (${visibleIds.map(() => "?").join(", ")})`, true),
+            )
             .bind(...visibleIds)
             .all<RaidRow>();
     const raidsById = new Map(mapRaidRows(detailRows.results).map((raid) => [raid.id, raid]));
@@ -1723,7 +1773,17 @@ export class D1MvpRepository
            WHEN excluded.in_game_name IS NULL THEN user_mappings.in_game_name
            WHEN user_mappings.in_game_name IS NULL OR excluded.discord_user_id IS NOT NULL
              THEN excluded.in_game_name ELSE user_mappings.in_game_name END,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at
+       WHERE user_mappings.twitch_user_id IS NOT
+               coalesce(excluded.twitch_user_id, user_mappings.twitch_user_id)
+          OR user_mappings.discord_user_id IS NOT
+               coalesce(excluded.discord_user_id, user_mappings.discord_user_id)
+          OR user_mappings.discord_display_name IS NOT
+               coalesce(excluded.discord_display_name, user_mappings.discord_display_name)
+          OR user_mappings.in_game_name IS NOT CASE
+               WHEN excluded.in_game_name IS NULL THEN user_mappings.in_game_name
+               WHEN user_mappings.in_game_name IS NULL OR excluded.discord_user_id IS NOT NULL
+                 THEN excluded.in_game_name ELSE user_mappings.in_game_name END`,
         )
         .bind(
           twitchLogin,
@@ -1954,12 +2014,33 @@ export class D1MvpRepository
     return result.meta.changes === 1 ? "updated" : "stale";
   }
 
-  observeTwitchIdentity(input: {
+  async observeTwitchIdentity(input: {
     twitchLogin: string;
     twitchUserId: string;
     observedAt: Date;
-  }): Promise<UserMapping> {
-    return this.upsertUserMapping(input);
+  }): Promise<void> {
+    const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
+    if (twitchLogin === undefined) throw new RepositoryInvariantError("Enter a valid Twitch name.");
+    const timestamp = epoch(input.observedAt);
+    await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE user_mappings SET twitch_user_id = NULL, updated_at = ?
+           WHERE twitch_user_id = ? AND twitch_login <> ?`,
+        )
+        .bind(timestamp, input.twitchUserId, twitchLogin),
+      this.database
+        .prepare(
+          `INSERT INTO user_mappings
+             (twitch_login, twitch_user_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(twitch_login) DO UPDATE SET
+             twitch_user_id = excluded.twitch_user_id,
+             updated_at = excluded.updated_at
+           WHERE user_mappings.twitch_user_id IS NOT excluded.twitch_user_id`,
+        )
+        .bind(twitchLogin, input.twitchUserId, timestamp, timestamp),
+    ]);
   }
 
   linkDiscordToTwitch(input: {
@@ -1990,8 +2071,13 @@ export class D1MvpRepository
     const receivedAt = epoch(input.receivedAt);
     const results = await this.database.batch([
       this.database
-        .prepare(`DELETE FROM event_receipts WHERE received_at < ?`)
-        .bind(receivedAt - RECEIPT_TTL_MS),
+        .prepare(
+          `DELETE FROM event_receipts WHERE (platform, delivery_id) IN (
+             SELECT platform, delivery_id FROM event_receipts WHERE received_at < ?
+             ORDER BY received_at, platform, delivery_id LIMIT ?
+           )`,
+        )
+        .bind(receivedAt - RECEIPT_TTL_MS, RECEIPT_CLEANUP_BATCH_SIZE),
       this.database
         .prepare(
           `INSERT OR IGNORE INTO event_receipts
@@ -2065,8 +2151,13 @@ export class D1MvpRepository
     const timestamp = epoch(receivedAt);
     const results = await this.database.batch([
       this.database
-        .prepare(`DELETE FROM event_receipts WHERE received_at < ?`)
-        .bind(timestamp - RECEIPT_TTL_MS),
+        .prepare(
+          `DELETE FROM event_receipts WHERE (platform, delivery_id) IN (
+             SELECT platform, delivery_id FROM event_receipts WHERE received_at < ?
+             ORDER BY received_at, platform, delivery_id LIMIT ?
+           )`,
+        )
+        .bind(timestamp - RECEIPT_TTL_MS, RECEIPT_CLEANUP_BATCH_SIZE),
       this.database
         .prepare(
           `INSERT OR IGNORE INTO event_receipts (platform, delivery_id, event_type, received_at)

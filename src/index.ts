@@ -550,12 +550,19 @@ async function buildTwitchPublicReply(
       objective: parsed.goal,
       observedAt,
     });
-    await materializeRaidBoard(repository, communityConfig, observedAt);
+    if (result.request.state === "waiting") {
+      await materializeRaidBoard(repository, communityConfig, observedAt);
+    }
     const raidName = formatModeMap(parsed.gameMode, parsed.map.name);
     return result.outcome === "already_active"
       ? `You are already queued for ${raidName}. Use !queue to check it.`
       : `You are queued for ${raidName}. Use !queue to check it.`;
   }
+  await repository.observeTwitchIdentity({
+    twitchUserId,
+    twitchLogin,
+    observedAt,
+  });
   await materializeRaidBoard(repository, communityConfig, observedAt);
   const queryService = new QueueQueryService(repository);
   return renderQueueFacts(
@@ -702,11 +709,6 @@ async function handleTwitchEventSub(
   }
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);
-  await repository.observeTwitchIdentity({
-    twitchUserId: event.chatterUserId,
-    twitchLogin: event.chatterUserLogin,
-    observedAt,
-  });
   const receipt = await repository.recordTwitchReply({
     deliveryId: verification.headers.messageId,
     eventType: `command:${command.name}`,

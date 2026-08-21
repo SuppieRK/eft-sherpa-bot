@@ -14,12 +14,15 @@ export const USER_OPERATION_IDS = [
   "twitch.request.created",
   "twitch.request.already-active",
   "twitch.request.invalid",
+  "twitch.request.invalid.expired-receipts",
   "twitch.queue.p10",
   "twitch.queue.p50",
   "twitch.queue.p90",
   "discord.board.create",
   "discord.board.open",
   "discord.board.refresh",
+  "discord.board.refresh.waiting-backlog",
+  "discord.board.refresh.removed-history",
   "discord.raid.review",
   "discord.raid.review.cancel",
   "discord.raid.call-start.streamer",
@@ -38,6 +41,14 @@ export const USER_OPERATION_IDS = [
 ] as const;
 
 export type UserOperationId = (typeof USER_OPERATION_IDS)[number];
+
+export const BENCHMARK_SCALES_BY_OPERATION: Readonly<
+  Partial<Record<UserOperationId, readonly number[]>>
+> = {
+  "twitch.request.invalid.expired-receipts": [1_000],
+  "discord.board.refresh.waiting-backlog": [1_000, 10_000],
+  "discord.board.refresh.removed-history": [1_000, 10_000],
+};
 
 export const BENCHMARK_OPERATION_FAMILIES = [
   "discord:request",
@@ -73,12 +84,15 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "twitch.request.created": "twitch:request",
   "twitch.request.already-active": "twitch:request",
   "twitch.request.invalid": "twitch:request",
+  "twitch.request.invalid.expired-receipts": "twitch:request",
   "twitch.queue.p10": "twitch:queue",
   "twitch.queue.p50": "twitch:queue",
   "twitch.queue.p90": "twitch:queue",
   "discord.board.create": "board:create",
   "discord.board.open": "board:open",
   "discord.board.refresh": "board:refresh",
+  "discord.board.refresh.waiting-backlog": "board:refresh",
+  "discord.board.refresh.removed-history": "board:refresh",
   "discord.raid.review": "raid:review",
   "discord.raid.review.cancel": "raid:cancel-review",
   "discord.raid.call-start.streamer": "raid:call-start",

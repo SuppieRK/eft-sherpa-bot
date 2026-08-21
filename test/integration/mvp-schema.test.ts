@@ -121,6 +121,7 @@ describe("eight-table dual-queue schema", () => {
          'help_requests_mode_queue_order_idx',
          'help_requests_queue_order_idx',
          'help_requests_waiting_order_idx',
+         'help_requests_waiting_mode_order_idx',
          'raid_groups_outstanding_idx',
          'raid_groups_open_sort_key_idx',
          'raid_groups_compatible_idx',
@@ -135,8 +136,8 @@ describe("eight-table dual-queue schema", () => {
       expect.arrayContaining([
         "help_requests_one_active_mode_map_per_twitch",
         "help_requests_mode_queue_order_idx",
-        "help_requests_queue_order_idx",
         "help_requests_waiting_order_idx",
+        "help_requests_waiting_mode_order_idx",
         "raid_groups_outstanding_idx",
         "raid_groups_outstanding_mode_idx",
         "raid_groups_open_sort_key_idx",
@@ -154,6 +155,7 @@ describe("eight-table dual-queue schema", () => {
          'help_requests_twitch_idx'
          ,'help_requests_one_active_map_per_twitch'
          ,'raid_groups_compatible_idx'
+         ,'help_requests_queue_order_idx'
        )`,
     ).all<{ name: string }>();
     expect(retired.results).toEqual([]);
@@ -228,6 +230,46 @@ describe("eight-table dual-queue schema", () => {
     );
     expect(raidMaxPlan.results.map((row) => row.detail).join(" ")).toContain(
       "raid_groups_open_sort_key_idx",
+    );
+  });
+
+  it("uses dedicated indexes for bounded waiting recovery and caller selection", async () => {
+    const waitingFifoPlan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM help_requests
+       WHERE state = 0 ORDER BY is_priority DESC, id LIMIT 250`,
+    ).all<{ detail: string }>();
+    const waitingModePlan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM help_requests
+       WHERE state = 0 AND is_priority = 0 AND game_mode = 2
+       ORDER BY id LIMIT 1`,
+    ).all<{ detail: string }>();
+    const callerPlan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM help_requests
+       WHERE twitch_login = 'viewer' AND state IN (0, 1)
+       ORDER BY is_priority DESC, id LIMIT 1`,
+    ).all<{ detail: string }>();
+    const activeDuplicatePlan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM help_requests
+       WHERE twitch_login = 'viewer' AND game_mode = 2 AND map_id = 'customs'
+         AND state IN (0, 1)
+       ORDER BY is_priority DESC, id LIMIT 1`,
+    ).all<{ detail: string }>();
+
+    expect(waitingFifoPlan.results.map((row) => row.detail).join(" ")).toContain(
+      "help_requests_waiting_order_idx",
+    );
+    expect(waitingModePlan.results.map((row) => row.detail).join(" ")).toContain(
+      "help_requests_waiting_mode_order_idx",
+    );
+    expect(callerPlan.results.map((row) => row.detail).join(" ")).toContain(
+      "help_requests_twitch_login_idx",
+    );
+    expect(activeDuplicatePlan.results.map((row) => row.detail).join(" ")).toContain(
+      "help_requests_one_active_mode_map_per_twitch",
     );
   });
 

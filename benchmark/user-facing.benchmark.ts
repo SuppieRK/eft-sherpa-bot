@@ -8,6 +8,7 @@ import { testCommunityConfig } from "../test/fixtures/community";
 import {
   BENCHMARK_SAMPLES,
   BENCHMARK_SCALES,
+  BENCHMARK_SCALES_BY_OPERATION,
   BENCHMARK_WARMUPS,
   type UserOperationId,
 } from "./contract";
@@ -23,8 +24,11 @@ import {
   resetOperationFixture,
   runWorkerRequest,
   seedDatabase,
+  seedExpiredReceiptBacklog,
   seedOperationMapping,
   seedOperationRaid,
+  seedRemovedMembershipHistory,
+  seedWaitingBacklog,
   type SeedState,
   signedDiscordRequest,
   signedTwitchRequest,
@@ -404,6 +408,29 @@ function operationDefinitions(input: {
         };
       },
     },
+    {
+      id: "twitch.request.invalid.expired-receipts",
+      label: "Twitch invalid request with expired-receipt backlog",
+      async prepare(_seed, sample) {
+        await seedExpiredReceiptBacklog(600);
+        return {
+          request: await twitch({
+            text: "!request pve",
+            deliveryId: `${OPERATION_PREFIX}twitch-expired-${sample}`,
+            twitchUserId: `${OPERATION_PREFIX}twitch-expired`,
+            twitchLogin: "op_twitch_expired",
+          }),
+          async verify(response) {
+            expect(response.status).toBe(204);
+            const remaining = await env.DB.prepare(
+              `SELECT count(*) AS count FROM event_receipts
+               WHERE delivery_id LIKE 'bench-op-expired-%'`,
+            ).first<{ count: number }>();
+            expect(remaining?.count).toBe(350);
+          },
+        };
+      },
+    },
     ...queueDefinitions("twitch"),
     {
       id: "discord.board.create",
@@ -467,6 +494,48 @@ function operationDefinitions(input: {
             expect(response.status).toBe(200);
             expect(discordMock.calls.some((call) => call.method === "GET")).toBe(false);
             expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(true);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.board.refresh.waiting-backlog",
+      label: "Discord board Refresh with waiting recovery backlog",
+      async prepare(seed, sample) {
+        await seedWaitingBacklog(seed, seed.scale);
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}board-waiting-${sample}`,
+            customId: "board:v6:refresh",
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const counts = await env.DB.prepare(
+              `SELECT sum(state = 0) AS waiting, sum(state = 1) AS planned
+               FROM help_requests WHERE twitch_login LIKE 'op_waiting_%'`,
+            ).first<{ waiting: number; planned: number }>();
+            expect(counts).toEqual({ waiting: seed.scale - 250, planned: 250 });
+          },
+        };
+      },
+    },
+    {
+      id: "discord.board.refresh.removed-history",
+      label: "Discord board Refresh with removed membership history",
+      async prepare(seed, sample) {
+        await seedRemovedMembershipHistory(seed, seed.scale);
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}board-history-${sample}`,
+            customId: "board:v6:refresh",
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const remaining = await env.DB.prepare(
+              `SELECT count(*) AS count FROM raid_group_members
+               WHERE group_id = 1 AND state = 2`,
+            ).first<{ count: number }>();
+            expect(remaining?.count).toBe(seed.scale);
           },
         };
       },
@@ -938,6 +1007,8 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
       const seed = await seedDatabase(scale);
       seeds.push(await seedCounts(seed));
       for (const definition of definitions) {
+        const selectedScales = BENCHMARK_SCALES_BY_OPERATION[definition.id];
+        if (selectedScales !== undefined && !selectedScales.includes(scale)) continue;
         const measurements: OperationMeasurement[] = [];
         for (let sample = 0; sample < BENCHMARK_WARMUPS + BENCHMARK_SAMPLES; sample += 1) {
           await resetOperationFixture(seed);

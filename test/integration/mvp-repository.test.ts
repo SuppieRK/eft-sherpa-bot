@@ -36,6 +36,52 @@ async function materialize(repo: D1MvpRepository): Promise<void> {
   await repo.materializeWaitingRequests({ recipientLimit: 3, changedAt: now });
 }
 
+async function seedWaitingRequests(
+  count: number,
+  input: {
+    offset?: number;
+    gameMode?: (index: number) => number;
+    isPriority?: (index: number) => number;
+  } = {},
+): Promise<void> {
+  const offset = input.offset ?? 0;
+  for (let start = 1; start <= count; start += 1_000) {
+    const end = Math.min(count, start + 999);
+    const rows = Array.from({ length: end - start + 1 }, (_, rowOffset) => {
+      const index = offset + start + rowOffset;
+      return {
+        index,
+        gameMode: input.gameMode?.(index) ?? 2,
+        isPriority: input.isPriority?.(index) ?? 0,
+      };
+    });
+    // Test fixtures are inserted in bounded chunks so the recovery path, not setup, is measured.
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO user_mappings
+           (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
+         SELECT printf('bulk_viewer_%d', json_extract(value, '$.index')),
+                printf('bulk-twitch-%d', json_extract(value, '$.index')),
+                printf('Bulk PMC %d', json_extract(value, '$.index')), ?, ?
+         FROM json_each(?)`,
+      ).bind(now.getTime(), now.getTime(), JSON.stringify(rows)),
+      env.DB.prepare(
+        `INSERT INTO help_requests
+         (source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+          game_mode, map_id, objective, is_priority, state, created_at, updated_at)
+       SELECT 1, printf('bulk-delivery-%d', json_extract(value, '$.index')),
+              printf('bulk-twitch-%d', json_extract(value, '$.index')),
+              printf('bulk_viewer_%d', json_extract(value, '$.index')),
+              printf('Bulk PMC %d', json_extract(value, '$.index')),
+              json_extract(value, '$.gameMode'), 'customs',
+              printf('Bulk goal %d', json_extract(value, '$.index')),
+              json_extract(value, '$.isPriority'), 0, ?, ?
+         FROM json_each(?)`,
+      ).bind(now.getTime(), now.getTime(), JSON.stringify(rows)),
+    ]);
+  }
+}
+
 async function currentMemberCount(groupId: number): Promise<number> {
   const row = await env.DB.prepare(
     `SELECT current_member_count AS count FROM raid_groups WHERE id = ?`,
@@ -1164,6 +1210,58 @@ describe("schedule-independent dual queues", () => {
     });
   });
 
+  it("keeps removed membership history out of open board hydration", async () => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    await materialize(repo);
+    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    await seedWaitingRequests(1_000, { offset: 1 });
+    await env.DB.prepare(`UPDATE help_requests SET state = 3 WHERE id > 1`).run();
+    const history = Array.from({ length: 1_000 }, (_, index) => ({
+      requestId: index + 2,
+      position: index + 2,
+    }));
+    await env.DB.prepare(
+      `INSERT INTO raid_group_members
+         (group_id, request_id, position, state, created_at, updated_at)
+       SELECT ?, json_extract(value, '$.requestId'), json_extract(value, '$.position'), 2, ?, ?
+       FROM json_each(?)`,
+    )
+      .bind(raid.id, now.getTime(), now.getTime(), JSON.stringify(history))
+      .run();
+    const metrics = new D1Metrics();
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+
+    const snapshot = await measured.getBoardSnapshot();
+
+    expect(snapshot.ordinaryRaids[0]?.members).toHaveLength(1);
+    expect(metrics.snapshot().rowsRead).toBeLessThan(100);
+  });
+
+  it("retains completed participants in historical single-raid reads", async () => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    await materialize(repo);
+    const raid = await start(
+      repo,
+      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+    );
+    const completed = await repo.recordRaidResult({
+      groupId: raid.id,
+      outcome: "helped",
+      attemptLimit: 3,
+      actionKey: "completed-history",
+      changedAt: now,
+    });
+
+    expect(completed.state).toBe("completed");
+    expect(completed.members.map((member) => member.twitchLogin)).toEqual(["viewer_1"]);
+    await expect(repo.getRaid(raid.id)).resolves.toMatchObject({
+      state: "completed",
+      members: [{ twitchLogin: "viewer_1" }],
+    });
+  });
+
   it("does not mutate outstanding raids when time advances", async () => {
     const repo = repository();
     await createRequest(repo, 1);
@@ -1194,7 +1292,7 @@ describe("schedule-independent dual queues", () => {
     expect(metrics.snapshot().statements).toBe(1);
   });
 
-  it("materializes a backlog in one bulk assignment and keeps every requester", async () => {
+  it("materializes a backlog smaller than one batch and keeps every requester", async () => {
     const repo = repository();
     for (let index = 1; index <= 180; index += 1) await createRequest(repo, index);
     const metrics = new D1Metrics();
@@ -1225,6 +1323,63 @@ describe("schedule-independent dual queues", () => {
     expect(queueMetrics.snapshot().rowsRead).toBeLessThan(200);
   }, 15_000);
 
+  it("bounds and drains a 1,000-request recovery backlog in 250-request batches", async () => {
+    const repo = repository();
+    await seedWaitingRequests(1_000);
+
+    for (const expectedWaiting of [750, 500, 250, 0]) {
+      // Recovery intentionally advances one bounded batch per invocation.
+      await expect(
+        repo.materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
+      ).resolves.toBe(250);
+      await expect(
+        env.DB.prepare(`SELECT count(*) AS count FROM help_requests WHERE state = 0`).first(),
+      ).resolves.toEqual({ count: expectedWaiting });
+    }
+  }, 15_000);
+
+  it("reads and materializes only one bounded batch from 10,000 waiting requests", async () => {
+    await seedWaitingRequests(10_000);
+    const metrics = new D1Metrics();
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+
+    await expect(
+      measured.materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toBe(250);
+    expect(metrics.snapshot().rowsRead).toBeLessThan(12_000);
+    await expect(
+      env.DB.prepare(
+        `SELECT sum(state = 0) AS waiting, sum(state = 1) AS planned FROM help_requests`,
+      ).first(),
+    ).resolves.toEqual({ waiting: 9_750, planned: 250 });
+  }, 20_000);
+
+  it("reserves every non-empty queue-kind and mode pair outside the FIFO batch", async () => {
+    await seedWaitingRequests(600, {
+      gameMode: (index) => {
+        if (index === 301 || index === 599) return 1;
+        if (index === 302 || index === 600) return 0;
+        return 2;
+      },
+      isPriority: (index) => (index <= 302 ? 1 : 0),
+    });
+
+    await expect(
+      repository().materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toBe(250);
+    const reserved = await env.DB.prepare(
+      `SELECT id, state FROM help_requests WHERE id IN (1, 301, 302, 303, 599, 600) ORDER BY id`,
+    ).all<{ id: number; state: number }>();
+    expect(reserved.results).toEqual([
+      { id: 1, state: 1 },
+      { id: 301, state: 1 },
+      { id: 302, state: 1 },
+      { id: 303, state: 1 },
+      { id: 599, state: 1 },
+      { id: 600, state: 1 },
+    ]);
+  });
+
   it("expires old delivery receipts while preserving recent duplicate protection", async () => {
     const repo = repository();
     const old = new Date(now.getTime() - 25 * 60 * 60 * 1_000);
@@ -1235,6 +1390,148 @@ describe("schedule-independent dual queues", () => {
       `SELECT delivery_id AS deliveryId FROM event_receipts ORDER BY delivery_id`,
     ).all<{ deliveryId: string }>();
     expect(receipts.results).toEqual([{ deliveryId: "recent" }]);
+  });
+
+  it("deletes expired Discord receipts in oldest-first batches of 250", async () => {
+    const rows = Array.from({ length: 600 }, (_, index) => ({ index }));
+    await env.DB.prepare(
+      `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
+       SELECT 0, printf('expired-discord-%03d', json_extract(value, '$.index')), 'component',
+              ? + json_extract(value, '$.index')
+       FROM json_each(?)`,
+    )
+      .bind(now.getTime() - 48 * 60 * 60 * 1_000, JSON.stringify(rows))
+      .run();
+
+    const repo = repository();
+    await expect(repo.claimDiscordMutation("current-one", "component", now)).resolves.toBe(true);
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count, min(delivery_id) AS oldest
+         FROM event_receipts WHERE delivery_id LIKE 'expired-discord-%'`,
+      ).first(),
+    ).resolves.toEqual({ count: 350, oldest: "expired-discord-250" });
+    await expect(repo.claimDiscordMutation("current-two", "component", now)).resolves.toBe(true);
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count, min(delivery_id) AS oldest
+         FROM event_receipts WHERE delivery_id LIKE 'expired-discord-%'`,
+      ).first(),
+    ).resolves.toEqual({ count: 100, oldest: "expired-discord-500" });
+  });
+
+  it("bounds expired-receipt cleanup while recording a Twitch reply", async () => {
+    const rows = Array.from({ length: 300 }, (_, index) => ({ index }));
+    await env.DB.prepare(
+      `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
+       SELECT 1, printf('expired-twitch-%03d', json_extract(value, '$.index')), 'command:queue',
+              ? + json_extract(value, '$.index')
+       FROM json_each(?)`,
+    )
+      .bind(now.getTime() - 48 * 60 * 60 * 1_000, JSON.stringify(rows))
+      .run();
+
+    await expect(
+      repository().recordTwitchReply({
+        deliveryId: "current-twitch",
+        eventType: "command:queue",
+        replyText: "Current reply",
+        receivedAt: now,
+      }),
+    ).resolves.toMatchObject({ duplicate: false, replyText: "Current reply" });
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count, min(delivery_id) AS oldest
+         FROM event_receipts WHERE delivery_id LIKE 'expired-twitch-%'`,
+      ).first(),
+    ).resolves.toEqual({ count: 50, oldest: "expired-twitch-250" });
+  });
+
+  it("does not rewrite an unchanged Twitch-only identity observation", async () => {
+    const repo = repository();
+    await repo.observeTwitchIdentity({
+      twitchLogin: "same_viewer",
+      twitchUserId: "same-twitch-id",
+      observedAt: now,
+    });
+    const metrics = new D1Metrics();
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+    await measured.observeTwitchIdentity({
+      twitchLogin: "same_viewer",
+      twitchUserId: "same-twitch-id",
+      observedAt: new Date(now.getTime() + 60_000),
+    });
+
+    expect(metrics.snapshot()).toMatchObject({ statements: 2, rowsWritten: 0 });
+    await expect(
+      env.DB.prepare(
+        `SELECT twitch_user_id AS twitchUserId, updated_at AS updatedAt
+         FROM user_mappings WHERE twitch_login = 'same_viewer'`,
+      ).first(),
+    ).resolves.toEqual({ twitchUserId: "same-twitch-id", updatedAt: now.getTime() });
+  });
+
+  it("moves a conflicting Twitch platform ID to its newly observed login", async () => {
+    const repo = repository();
+    await repo.observeTwitchIdentity({
+      twitchLogin: "old_login",
+      twitchUserId: "shared-twitch-id",
+      observedAt: now,
+    });
+    await repo.observeTwitchIdentity({
+      twitchLogin: "new_login",
+      twitchUserId: "shared-twitch-id",
+      observedAt: new Date(now.getTime() + 1),
+    });
+
+    const mappings = await env.DB.prepare(
+      `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId
+       FROM user_mappings ORDER BY twitch_login`,
+    ).all<{ twitchLogin: string; twitchUserId: string | null }>();
+    expect(mappings.results).toEqual([
+      { twitchLogin: "new_login", twitchUserId: "shared-twitch-id" },
+      { twitchLogin: "old_login", twitchUserId: null },
+    ]);
+  });
+
+  it("updates changed generic identity details but skips an unchanged rewrite", async () => {
+    const repo = repository();
+    await repo.upsertUserMapping({
+      twitchLogin: "linked_viewer",
+      twitchUserId: "linked-twitch-id",
+      discordUserId: "discord-one",
+      discordDisplayName: "First name",
+      inGameName: "First PMC",
+      observedAt: now,
+    });
+    const changedAt = new Date(now.getTime() + 1);
+    await expect(
+      repo.upsertUserMapping({
+        twitchLogin: "linked_viewer",
+        twitchUserId: "linked-twitch-id",
+        discordUserId: "discord-one",
+        discordDisplayName: "Second name",
+        inGameName: "Second PMC",
+        observedAt: changedAt,
+      }),
+    ).resolves.toMatchObject({ discordDisplayName: "Second name", inGameName: "Second PMC" });
+    const metrics = new D1Metrics();
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+    await measured.upsertUserMapping({
+      twitchLogin: "linked_viewer",
+      twitchUserId: "linked-twitch-id",
+      discordUserId: "discord-one",
+      discordDisplayName: "Second name",
+      inGameName: "Second PMC",
+      observedAt: new Date(now.getTime() + 2),
+    });
+
+    expect(metrics.snapshot().rowsWritten).toBe(0);
+    await expect(
+      env.DB.prepare(
+        `SELECT updated_at AS updatedAt FROM user_mappings WHERE twitch_login = 'linked_viewer'`,
+      ).first(),
+    ).resolves.toEqual({ updatedAt: changedAt.getTime() });
   });
 });
 
