@@ -127,6 +127,7 @@ interface MaterializedGroup extends OpenGroupRow {
 }
 
 interface NewMaterializedGroup {
+  anchorRequestId: number;
   actionKey: string;
   isPriority: number;
   gameMode: number;
@@ -139,7 +140,6 @@ interface MaterializedAssignment {
   requestId: number;
   groupId: number | null;
   actionKey: string | null;
-  memberPosition: number;
 }
 
 interface QueueSelectionRow {
@@ -468,6 +468,7 @@ function planMaterialization(
       bucket.groups.push(group);
       buckets.set(bucketKey, bucket);
       newGroups.push({
+        anchorRequestId: request.requestId,
         actionKey: `materialize:${request.requestId}`,
         isPriority: request.isPriority,
         gameMode: request.gameMode,
@@ -481,7 +482,6 @@ function planMaterialization(
       requestId: request.requestId,
       groupId: group.groupId === 0 ? null : group.groupId,
       actionKey: group.actionKey ?? null,
-      memberPosition: group.memberCount,
     });
     if (group.memberCount >= group.requesterCapacity) bucket.index += 1;
   }
@@ -701,6 +701,21 @@ export class D1MvpRepository
     recipientLimit: number;
     changedAt: Date;
   }): Promise<number> {
+    let materialized = 0;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      // Concurrent Worker invocations can win a planned assignment. Re-read D1 before retrying.
+      // oxlint-disable-next-line no-await-in-loop
+      const result = await this.materializeWaitingRequestsPass(input);
+      materialized += result.materialized;
+      if (!result.shouldRetry) break;
+    }
+    return materialized;
+  }
+
+  private async materializeWaitingRequestsPass(input: {
+    recipientLimit: number;
+    changedAt: Date;
+  }): Promise<{ materialized: number; shouldRetry: boolean }> {
     const waiting = await this.database
       .prepare(
         `SELECT id AS requestId, game_mode AS gameMode, map_id AS mapId,
@@ -709,7 +724,7 @@ export class D1MvpRepository
          ORDER BY is_priority DESC, id`,
       )
       .all<WaitingRow>();
-    if (waiting.results.length === 0) return 0;
+    if (waiting.results.length === 0) return { materialized: 0, shouldRetry: false };
 
     const [existing, maxima] = await Promise.all([
       this.database
@@ -749,33 +764,54 @@ export class D1MvpRepository
     const timestamp = epoch(input.changedAt);
     const groupJson = JSON.stringify(newGroups);
     const assignmentJson = JSON.stringify(assignments);
-    await this.database.batch([
+    const results = await this.database.batch([
       this.database
         .prepare(
-          `INSERT INTO raid_groups
+          `INSERT OR IGNORE INTO raid_groups
              (is_priority, game_mode, sort_key, map_id, requester_capacity,
               last_action_key, created_at, updated_at)
            SELECT json_extract(value, '$.isPriority'), json_extract(value, '$.gameMode'),
                   json_extract(value, '$.sortKey'), json_extract(value, '$.mapId'),
                   json_extract(value, '$.capacity'),
                   json_extract(value, '$.actionKey'), ?, ?
-           FROM json_each(?)`,
+           FROM json_each(?) AS item
+           JOIN help_requests AS request
+             ON request.id = json_extract(item.value, '$.anchorRequestId')
+            AND request.state = 0`,
         )
         .bind(timestamp, timestamp, groupJson),
       this.database
         .prepare(
-          `INSERT INTO raid_group_members
+          `WITH resolved AS (
+             SELECT request.id AS request_id,
+                    coalesce(json_extract(item.value, '$.groupId'), raid.id) AS group_id,
+                    cast(item.key AS INTEGER) AS plan_order
+             FROM json_each(?) AS item
+             JOIN help_requests AS request
+               ON request.id = json_extract(item.value, '$.requestId') AND request.state = 0
+             LEFT JOIN raid_groups AS raid
+               ON raid.last_action_key = json_extract(item.value, '$.actionKey')
+           ), eligible AS (
+             SELECT resolved.*, raid.current_member_count, raid.requester_capacity,
+                    row_number() OVER (
+                      PARTITION BY resolved.group_id ORDER BY resolved.plan_order
+                    ) AS group_rank
+             FROM resolved
+             JOIN raid_groups AS raid ON raid.id = resolved.group_id
+             JOIN help_requests AS request ON request.id = resolved.request_id
+             WHERE raid.state = 0 AND raid.automatic_fill = 1
+               AND raid.game_mode = request.game_mode
+               AND raid.map_id = request.map_id
+               AND raid.is_priority = request.is_priority
+           )
+           INSERT OR IGNORE INTO raid_group_members
              (group_id, request_id, position, created_at, updated_at)
-           SELECT coalesce(json_extract(item.value, '$.groupId'), raid.id),
-                  request.id, json_extract(item.value, '$.memberPosition'), ?, ?
-           FROM json_each(?) AS item
-           JOIN help_requests AS request
-             ON request.id = json_extract(item.value, '$.requestId') AND request.state = 0
-           LEFT JOIN raid_groups AS raid
-             ON raid.last_action_key = json_extract(item.value, '$.actionKey')
-           WHERE coalesce(json_extract(item.value, '$.groupId'), raid.id) IS NOT NULL`,
+           SELECT group_id, request_id, current_member_count + group_rank, ?, ?
+           FROM eligible
+           WHERE group_rank <= requester_capacity - current_member_count
+           RETURNING request_id`,
         )
-        .bind(timestamp, timestamp, assignmentJson),
+        .bind(assignmentJson, timestamp, timestamp),
       this.database
         .prepare(
           `UPDATE help_requests SET state = 1, updated_at = ?
@@ -787,7 +823,8 @@ export class D1MvpRepository
         )
         .bind(timestamp, assignmentJson),
     ]);
-    return assignments.length;
+    const materialized = results[1]?.results.length ?? 0;
+    return { materialized, shouldRetry: materialized < assignments.length };
   }
 
   async getBoardSnapshot(_now?: Date): Promise<StaffBoardSnapshot> {
@@ -1820,16 +1857,17 @@ export class D1MvpRepository
     const lookahead = result.results.length > USER_DIRECTORY_PAGE_SIZE;
     const selected = result.results.slice(0, USER_DIRECTORY_PAGE_SIZE);
     if (reverse) selected.reverse();
-    const entries = selected.map(
-      (row): StaffUserDirectoryEntry => ({
+    const entries = selected.map((row): StaffUserDirectoryEntry => {
+      const entry: StaffUserDirectoryEntry = {
         twitchLogin: row.twitchLogin,
         twitchIdentityObserved: row.twitchUserId !== null,
-        ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
-        ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
-        ...(row.discordDisplayName === null ? {} : { discordDisplayName: row.discordDisplayName }),
-        ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
-      }),
-    );
+      };
+      if (row.twitchUserId !== null) entry.twitchUserId = row.twitchUserId;
+      if (row.discordUserId !== null) entry.discordUserId = row.discordUserId;
+      if (row.discordDisplayName !== null) entry.discordDisplayName = row.discordDisplayName;
+      if (row.inGameName !== null) entry.inGameName = row.inGameName;
+      return entry;
+    });
     let hasPrevious: boolean;
     if (input.direction === "first") {
       hasPrevious = false;
@@ -2006,6 +2044,17 @@ export class D1MvpRepository
       )
       .bind(errorCode, deliveryId)
       .run();
+  }
+
+  async claimFailedTwitchReplyRetry(deliveryId: string): Promise<boolean> {
+    const result = await this.database
+      .prepare(
+        `UPDATE event_receipts SET reply_status = 0
+         WHERE platform = 1 AND delivery_id = ? AND reply_status = 2`,
+      )
+      .bind(deliveryId)
+      .run();
+    return Number(result.meta.changes) === 1;
   }
 
   async claimDiscordMutation(

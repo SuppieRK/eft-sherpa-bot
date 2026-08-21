@@ -208,7 +208,11 @@ export function suggestTarkovMap(value: string): TarkovMapDefinition | undefined
         .split(" ")
         .slice(0, candidate.alias.split(" ").length)
         .join(" ");
-      return { ...candidate, distance: levenshtein(inputPrefix, candidate.alias) };
+      return {
+        map: candidate.map,
+        alias: candidate.alias,
+        distance: levenshtein(inputPrefix, candidate.alias),
+      };
     })
     .filter(
       (candidate) => candidate.distance <= Math.max(1, Math.floor(candidate.alias.length * 0.2)),

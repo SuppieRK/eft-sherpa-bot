@@ -1,6 +1,14 @@
+import { createLastValueAsyncCache, sharedTextEncoder } from "../crypto-key-cache";
+
 const SIGNATURE_HEADER = "X-Signature-Ed25519";
 const TIMESTAMP_HEADER = "X-Signature-Timestamp";
 const MAX_INTERACTION_AGE_MS = 10 * 60 * 1_000;
+
+const discordPublicKeyCache = createLastValueAsyncCache(async (publicKeyHex: string) => {
+  const publicKey = decodeHex(publicKeyHex, 32);
+  if (publicKey === undefined) throw new Error("Invalid Discord public key");
+  return crypto.subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, ["verify"]);
+});
 
 const DISCORD_INTERACTION_PING = 1;
 const DISCORD_INTERACTION_APPLICATION_COMMAND = 2;
@@ -237,9 +245,8 @@ export async function verifyDiscordInteractionRequest(
 ): Promise<boolean> {
   const signatureHex = headers.get(SIGNATURE_HEADER);
   const timestamp = headers.get(TIMESTAMP_HEADER);
-  const publicKey = decodeHex(publicKeyHex, 32);
   const signature = signatureHex === null ? undefined : decodeHex(signatureHex, 64);
-  if (timestamp === null || publicKey === undefined || signature === undefined) {
+  if (timestamp === null || signature === undefined) {
     return false;
   }
   const sentAt = Number(timestamp) * 1_000;
@@ -248,14 +255,12 @@ export async function verifyDiscordInteractionRequest(
   }
 
   try {
-    const key = await crypto.subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, [
-      "verify",
-    ]);
+    const key = await discordPublicKeyCache.get(publicKeyHex);
     return await crypto.subtle.verify(
       "Ed25519",
       key,
       signature,
-      new TextEncoder().encode(`${timestamp}${rawBody}`),
+      sharedTextEncoder.encode(`${timestamp}${rawBody}`),
     );
   } catch {
     return false;

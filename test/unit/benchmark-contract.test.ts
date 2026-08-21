@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertExactD1Baseline,
+  baselineKey,
+  createD1CostBaseline,
+  type D1CostBaseline,
+} from "../../benchmark/baseline";
+import {
   BENCHMARK_OPERATION_FAMILIES,
   BENCHMARK_SAMPLES,
   BENCHMARK_SCALES,
@@ -14,6 +20,7 @@ import {
   type OperationMeasurement,
 } from "../../benchmark/statistics";
 import surface from "../../config/command-surface.json";
+import committedBaseline from "../../benchmark/d1-cost-baseline.json";
 
 const measurement = (wallMs: number): OperationMeasurement => ({
   wallMs,
@@ -80,8 +87,61 @@ describe("local user-facing benchmark contract", () => {
     expect(() =>
       assertStableCost([...values.slice(0, 9), { ...measurement(10), rowsRead: 21 }]),
     ).toThrow(/rowsRead changed/);
-    expect(() => assertStableCost(values.map((value) => ({ ...value, statements: 51 })))).toThrow(
-      /limit is 50/,
+    expect(() =>
+      assertStableCost(values.map((value) => Object.assign({}, value, { statements: 51 }))),
+    ).toThrow(/limit is 50/);
+  });
+
+  it("commits one exact counter baseline entry for every scale and operation", () => {
+    const baseline = committedBaseline as D1CostBaseline;
+    const expected = BENCHMARK_SCALES.flatMap((scale) =>
+      USER_OPERATION_IDS.map((operationId) => baselineKey(scale, operationId)),
+    ).sort();
+
+    expect(Object.keys(baseline.operations).sort()).toEqual(expected);
+  });
+
+  it("reports exact D1 counter changes and missing entries", () => {
+    const report = {
+      results: [
+        {
+          id: USER_OPERATION_IDS[0],
+          scale: BENCHMARK_SCALES[0],
+          aggregate: aggregateMeasurements([measurement(10)]),
+        },
+      ],
+    };
+    const baseline = createD1CostBaseline(report);
+    expect(() => assertExactD1Baseline(report, baseline)).not.toThrow();
+    const changed: D1CostBaseline = {
+      schemaVersion: 1,
+      operations: {
+        ...baseline.operations,
+        [baselineKey(BENCHMARK_SCALES[0], USER_OPERATION_IDS[0])]: {
+          statements: 6,
+          rowsRead: 20,
+          rowsWritten: 3,
+        },
+        "100:extra.operation": { statements: 1, rowsRead: 1, rowsWritten: 0 },
+      },
+    };
+    expect(() => assertExactD1Baseline(report, changed)).toThrow(
+      /missing from benchmark report[\s\S]*statements: expected 6, measured 5/,
     );
+  });
+
+  it("updates only deterministic counters and ignores timing", () => {
+    const base = {
+      id: USER_OPERATION_IDS[0],
+      scale: BENCHMARK_SCALES[0],
+    };
+    const first = createD1CostBaseline({
+      results: [{ ...base, aggregate: aggregateMeasurements([measurement(10)]) }],
+    });
+    const second = createD1CostBaseline({
+      results: [{ ...base, aggregate: aggregateMeasurements([measurement(999)]) }],
+    });
+
+    expect(second).toEqual(first);
   });
 });

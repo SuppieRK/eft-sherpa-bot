@@ -39,7 +39,7 @@ async function authoritativeStatistics() {
     canceledRequests: Number(summary?.canceledRequests ?? 0),
     successfulRaids: Number(summary?.successfulRaids ?? 0),
     leaders: leaders.results.slice(0, 10).map((leader) => ({
-      ...leader,
+      discordUserId: leader.discordUserId,
       helpedRequests: Number(leader.helpedRequests),
       successfulRaids: Number(leader.successfulRaids),
     })),

@@ -38,7 +38,7 @@ interface ExternalCall {
 
 interface PreparedOperation {
   request: Request;
-  verify(response: Response): Promise<void>;
+  verify(response: Response): Promise<void> | void;
 }
 
 interface OperationDefinition {
@@ -375,9 +375,31 @@ function operationDefinitions(input: {
             twitchUserId: `${OPERATION_PREFIX}twitch-twitch_already-1`,
             twitchLogin: "op_twitch_already_1",
           }),
-          async verify(response) {
+          verify(response) {
             expect(response.status).toBe(204);
             expect(twitchCalls.at(-1)?.body).toContain("already queued");
+          },
+        };
+      },
+    },
+    {
+      id: "twitch.request.invalid",
+      label: "Twitch !request (invalid guidance)",
+      async prepare(_seed, sample) {
+        return {
+          request: await twitch({
+            text: "!request pve",
+            deliveryId: `${OPERATION_PREFIX}twitch-invalid-${sample}`,
+            twitchUserId: `${OPERATION_PREFIX}twitch-invalid`,
+            twitchLogin: "op_twitch_invalid",
+          }),
+          async verify(response) {
+            expect(response.status).toBe(204);
+            expect(twitchCalls.at(-1)?.body).toContain("Use !request [mode] [map] [goal]");
+            const row = await env.DB.prepare(
+              "SELECT id FROM help_requests WHERE twitch_login = 'op_twitch_invalid'",
+            ).first();
+            expect(row).toBeNull();
           },
         };
       },
@@ -416,7 +438,7 @@ function operationDefinitions(input: {
             userId: streamerId,
             staff: true,
           }),
-          async verify(response) {
+          verify(response) {
             expect(response.status).toBe(200);
             expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(true);
           },
@@ -441,7 +463,7 @@ function operationDefinitions(input: {
             id: `${OPERATION_PREFIX}board-refresh-${sample}`,
             customId: "board:v6:refresh",
           }),
-          async verify(response) {
+          verify(response) {
             expect(response.status).toBe(200);
             expect(discordMock.calls.some((call) => call.method === "GET")).toBe(false);
             expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(true);
@@ -583,7 +605,7 @@ function operationDefinitions(input: {
             customId: "board:v6:review",
             values: [String(fixture.destination.groupId)],
           }),
-          async verify(response) {
+          verify(response) {
             expect(response.status).toBe(200);
             const detailUpdate = discordMock.calls.find(
               (call) =>

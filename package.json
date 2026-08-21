@@ -20,6 +20,7 @@
   "scripts": {
     "build": "wrangler deploy --dry-run --outdir dist",
     "benchmark:d1": "node scripts/run-d1-benchmark.mjs",
+    "benchmark:d1:update-baseline": "node scripts/run-d1-benchmark.mjs --update-baseline",
     "cf-typegen": "wrangler types src/worker-configuration.d.ts",
     "check": "biome check .",
     "check:community": "node scripts/check-community-config.mjs",
@@ -37,6 +38,9 @@
     "lint:biome": "biome lint .",
     "lint:oxlint": "oxlint --report-unused-disable-directives .",
     "migrations:record": "node scripts/check-migrations.mjs --record",
+    "profile:prepare": "node scripts/profile-worker.mjs prepare",
+    "profile:replay": "node scripts/profile-worker.mjs replay",
+    "profile:worker": "node scripts/profile-worker.mjs serve",
     "test": "vitest run",
     "test:deployment": "node scripts/test-deployment-helpers.mjs",
     "test:integration": "vitest run test/integration",

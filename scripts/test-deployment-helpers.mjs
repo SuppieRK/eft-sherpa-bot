@@ -43,7 +43,7 @@ const callback = "https://worker.example/webhooks/twitch/eventsub";
     diagnosticsToken: "diagnostics-token",
     attempts: 3,
     delayMs: 25,
-    fetcher: async (url) => {
+    fetcher: (url) => {
       if (new URL(url).pathname === "/health") {
         return Response.json({ status: "ok", configuration: "ready" });
       }
@@ -56,7 +56,7 @@ const callback = "https://worker.example/webhooks/twitch/eventsub";
         database: { tableCount: 6 },
       });
     },
-    sleep: async (duration) => waits.push(duration),
+    sleep: (duration) => waits.push(duration),
   });
   assert.equal(result.attempt, 2);
   assert.equal(statusAttempts, 2);
@@ -69,17 +69,17 @@ await assert.rejects(
     diagnosticsToken: "diagnostics-token",
     attempts: 2,
     delayMs: 0,
-    fetcher: async (url) =>
+    fetcher: (url) =>
       new URL(url).pathname === "/health"
         ? Response.json({ status: "ok", configuration: "ready" })
         : new Response("error code: 1101", { status: 500 }),
-    sleep: async () => undefined,
+    sleep: () => undefined,
   }),
   /Worker did not become ready after 2 attempts: \/internal\/status failed with status 500/,
 );
 
 {
-  const payload = await checkedJson("https://worker.example/health", undefined, async () =>
+  const payload = await checkedJson("https://worker.example/health", undefined, () =>
     Response.json({ status: "ok" }),
   );
   assert.deepEqual(payload, { status: "ok" });
@@ -88,7 +88,7 @@ await assert.rejects(
     checkedJson(
       "https://worker.example/internal/status",
       undefined,
-      async () =>
+      () =>
         new Response("<!DOCTYPE html><title>Worker error</title>", {
           status: 500,
           headers: { "Content-Type": "text/html" },
@@ -107,7 +107,7 @@ function response(body, status = 200) {
 
 {
   const requests = [];
-  const fetcher = async (url, init = {}) => {
+  const fetcher = (url, init = {}) => {
     requests.push({ url: String(url), method: init.method ?? "GET" });
     return response({
       data: [
@@ -136,7 +136,7 @@ function response(body, status = 200) {
 
 {
   const requests = [];
-  const fetcher = async (url, init = {}) => {
+  const fetcher = (url, init = {}) => {
     const method = init.method ?? "GET";
     requests.push({ url: String(url), method, body: init.body });
     if (method === "DELETE") return response({}, 204);

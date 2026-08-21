@@ -83,11 +83,13 @@ export function validateCommunityConfig(config) {
   return errors;
 }
 
-export async function requireCommunityConfig(environment = process.env) {
-  const config = loadCommunityConfig(environment);
-  const errors = validateCommunityConfig(config);
-  if (errors.length > 0) {
-    throw new Error(`Invalid community configuration: ${errors.join("; ")}`);
-  }
-  return config;
+export function requireCommunityConfig(environment = process.env) {
+  return Promise.resolve().then(() => {
+    const config = loadCommunityConfig(environment);
+    const errors = validateCommunityConfig(config);
+    if (errors.length > 0) {
+      throw new Error(`Invalid community configuration: ${errors.join("; ")}`);
+    }
+    return config;
+  });
 }
