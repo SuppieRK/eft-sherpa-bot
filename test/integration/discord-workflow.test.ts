@@ -135,10 +135,6 @@ async function seedActiveRaid(input: {
     createExecutionContext(),
   );
   const repo = new D1MvpRepository(env.DB);
-  await repo.materializeWaitingRequests({
-    changedAt,
-    recipientLimit: config.policies.recipientLimit,
-  });
   const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
   await repo.reviewRaid({ groupId: planned.id, changedAt });
   const reviewMessageId = input.staffMessageId ?? `seed-review-${planned.id}`;
@@ -213,6 +209,7 @@ async function createRepositoryRequest(
     inGameName: `Pull PMC ${index}`,
     mapId,
     objective: `Pull goal ${index}`,
+    recipientLimit: 4,
     observedAt: new Date(changedAt.getTime() + index),
   });
   return created.request.id;
@@ -618,11 +615,8 @@ describe("Discord progressive raid workflow", () => {
       inGameName: "Second PMC",
       mapId: "customs",
       objective: "Second goal",
-      observedAt: changedAt,
-    });
-    await repo.materializeWaitingRequests({
-      changedAt,
       recipientLimit: config.policies.recipientLimit,
+      observedAt: changedAt,
     });
     const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
     const staff = {
@@ -1148,13 +1142,10 @@ describe("Discord progressive raid workflow", () => {
         inGameName: `Cancel PMC ${index}`,
         mapId,
         objective: `Cancel goal ${mapId}`,
+        recipientLimit: config.policies.recipientLimit,
         observedAt: new Date(changedAt.getTime() + index),
       });
     }
-    await repo.materializeWaitingRequests({
-      changedAt,
-      recipientLimit: config.policies.recipientLimit,
-    });
     const raids = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids;
     const customs = raids.find((raid) => raid.mapId === "customs") as StaffBoardRaid;
     const woods = raids.find((raid) => raid.mapId === "woods") as StaffBoardRaid;
@@ -1362,13 +1353,10 @@ describe("Discord progressive raid workflow", () => {
         inGameName: `Multi PMC ${index}`,
         mapId,
         objective: `Goal for ${mapId}`,
+        recipientLimit: config.policies.recipientLimit,
         observedAt: new Date(changedAt.getTime() + index),
       });
     }
-    await repo.materializeWaitingRequests({
-      changedAt,
-      recipientLimit: config.policies.recipientLimit,
-    });
     await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
     const staff = {
       channel_id: config.discord.staffChannelId,
@@ -1768,10 +1756,6 @@ describe("Discord requester pull-up workflow", () => {
     for (let index = 1; index <= (input.requestCount ?? 5); index += 1) {
       await createRepositoryRequest(repo, index);
     }
-    await repo.materializeWaitingRequests({
-      changedAt,
-      recipientLimit: config.policies.recipientLimit,
-    });
     const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
     await repo.reviewRaid({ groupId: first?.id as number, changedAt });
     await repo.compareAndSetRaidStaffMessage({
@@ -1904,10 +1888,6 @@ describe("Discord requester pull-up workflow", () => {
   it("does not offer or move members of a concurrent volunteer-led active raid", async () => {
     const repo = new D1MvpRepository(env.DB);
     for (let index = 1; index <= 9; index += 1) await createRepositoryRequest(repo, index);
-    await repo.materializeWaitingRequests({
-      changedAt,
-      recipientLimit: config.policies.recipientLimit,
-    });
     const [first, volunteerPlanned, later] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const active = await activateRaid({
       repo,

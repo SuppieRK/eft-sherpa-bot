@@ -5,6 +5,6 @@
     "0002_add_game_modes.sql": "7638f718d6ead421f218cd94a1b1e951a195a0bdb50763b1b55fc7c9a5cad9c5",
     "0003_add_requester_pull_source_index.sql": "61f096bf54dc06e13ae75a1a7c47a2dee27f20a1ec19fd12fe7fe4c205d00ede",
     "0004_add_staff_statistics_rollups.sql": "915ab51cf1d5ed2f12eab7b996c863640d6da5c3934d957d19a102f160d2cedc",
-    "0005_bound_recovery_work.sql": "6f697cd303098649bbe934a0421f4e3d42e657ca1cccd9fb642169106f56cba1"
+    "0005_bound_recovery_work.sql": "b4f6d32ea4b9b50399423a26b5624544aafa5d31899b6071f2b64c89008ce944"
   }
 }

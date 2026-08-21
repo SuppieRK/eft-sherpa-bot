@@ -14,12 +14,14 @@ interface BenchmarkResultLike {
     rowsRead: { median: number };
     rowsWritten: { median: number };
   };
+  statementGroups?: Record<string, DeterministicD1Counters>;
 }
 
 export interface D1CostBaseline {
-  schemaVersion: 2;
+  schemaVersion: 3;
   databaseBytes: Record<string, number>;
   operations: Record<string, DeterministicD1Counters>;
+  focusedOperations: Record<string, Record<string, DeterministicD1Counters>>;
 }
 
 export function baselineKey(scale: number, operationId: UserOperationId): string {
@@ -41,7 +43,14 @@ export function createD1CostBaseline(report: {
   const databaseBytes = Object.fromEntries(
     (report.seeds ?? []).map((seed) => [String(seed.scale), seed.databaseBytes]),
   );
-  return { schemaVersion: 2, databaseBytes, operations };
+  const focusedOperations = Object.fromEntries(
+    report.results.flatMap((result) =>
+      result.statementGroups === undefined
+        ? []
+        : [[baselineKey(result.scale, result.id), result.statementGroups]],
+    ),
+  );
+  return { schemaVersion: 3, databaseBytes, operations, focusedOperations };
 }
 
 export function assertExactD1Baseline(
@@ -83,6 +92,11 @@ export function assertExactD1Baseline(
         );
       }
     }
+  }
+  const expectedFocused = JSON.stringify(baseline.focusedOperations);
+  const actualFocused = JSON.stringify(actual.focusedOperations);
+  if (expectedFocused !== actualFocused) {
+    differences.push("focused statement-group counters differ from the committed baseline");
   }
   if (differences.length > 0) {
     throw new Error(`Exact D1 cost baseline changed:\n${differences.join("\n")}`);

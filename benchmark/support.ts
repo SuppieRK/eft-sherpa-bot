@@ -178,10 +178,10 @@ export async function seedDatabase(scale: number): Promise<SeedState> {
   }
   const communityResult = await env.DB.prepare(
     `INSERT INTO community_state
-     (community_id, staff_board_message_id, created_at, updated_at)
-     VALUES ('butcoffee', 'benchmark-canonical-board', ?, ?)`,
+     (community_id, staff_board_message_id, receipt_cleanup_after, created_at, updated_at)
+     VALUES ('butcoffee', 'benchmark-canonical-board', ?, ?, ?)`,
   )
-    .bind(timestamp, timestamp)
+    .bind(timestamp + 15 * 60 * 1_000, timestamp, timestamp)
     .run();
   databaseBytes = Number(communityResult.meta.size_after ?? databaseBytes);
   return {
@@ -205,9 +205,10 @@ export async function resetOperationFixture(seed: SeedState): Promise<void> {
     env.DB.prepare("DELETE FROM user_mappings WHERE twitch_login LIKE 'op\\_%' ESCAPE '\\'"),
     env.DB.prepare("DELETE FROM event_receipts WHERE delivery_id LIKE 'bench-op-%'"),
     env.DB.prepare(
-      `UPDATE community_state SET staff_board_message_id = 'benchmark-canonical-board', updated_at = ?
+      `UPDATE community_state
+       SET staff_board_message_id = 'benchmark-canonical-board', receipt_cleanup_after = ?, updated_at = ?
        WHERE community_id = 'butcoffee'`,
-    ).bind(Date.now()),
+    ).bind(Date.now() + 15 * 60 * 1_000, Date.now()),
     env.DB.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'help_requests'").bind(
       seed.scale,
     ),
@@ -220,51 +221,11 @@ export async function resetOperationFixture(seed: SeedState): Promise<void> {
   ]);
 }
 
-export async function seedWaitingBacklog(seed: SeedState, count: number): Promise<void> {
-  for (let start = 0; start < count; start += SEED_CHUNK_SIZE) {
-    const end = Math.min(count, start + SEED_CHUNK_SIZE);
-    const rows = Array.from({ length: end - start }, (_, offset) => {
-      const ordinal = start + offset;
-      const requestId = seed.scale + ordinal + 1;
-      const reservedOffset = ordinal - (count - 6);
-      return {
-        requestId,
-        ordinal,
-        isPriority:
-          reservedOffset >= 0 ? (reservedOffset < 3 ? 1 : 0) : ordinal < count / 2 ? 1 : 0,
-        gameMode: reservedOffset >= 0 ? reservedOffset % 3 : 2,
-      };
-    });
-    const json = JSON.stringify(rows);
-    // Benchmark setup is intentionally ordered and excluded from the measured request window.
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO user_mappings
-           (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
-         SELECT printf('op_waiting_%d', json_extract(value, '$.ordinal')),
-                printf('op-waiting-twitch-%d', json_extract(value, '$.ordinal')),
-                printf('Waiting PMC %d', json_extract(value, '$.ordinal')), ?, ?
-         FROM json_each(?)`,
-      ).bind(Date.now(), Date.now(), json),
-      env.DB.prepare(
-        `INSERT INTO help_requests
-           (id, source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
-            game_mode, map_id, objective, is_priority, state, created_at, updated_at)
-         SELECT json_extract(value, '$.requestId'), 1,
-                printf('bench-op-waiting-%d', json_extract(value, '$.ordinal')),
-                printf('op-waiting-twitch-%d', json_extract(value, '$.ordinal')),
-                printf('op_waiting_%d', json_extract(value, '$.ordinal')),
-                printf('Waiting PMC %d', json_extract(value, '$.ordinal')),
-                json_extract(value, '$.gameMode'), 'customs', 'Waiting recovery goal',
-                json_extract(value, '$.isPriority'), 0, ?, ?
-         FROM json_each(?)`,
-      ).bind(Date.now(), Date.now(), json),
-    ]);
-  }
-}
-
 export async function seedExpiredReceiptBacklog(count: number): Promise<void> {
   const expiredAt = Date.now() - 48 * 60 * 60 * 1_000;
+  await env.DB.prepare(
+    `UPDATE community_state SET receipt_cleanup_after = 0 WHERE community_id = 'butcoffee'`,
+  ).run();
   for (let start = 0; start < count; start += SEED_CHUNK_SIZE) {
     const end = Math.min(count, start + SEED_CHUNK_SIZE);
     const rows = Array.from({ length: end - start }, (_, offset) => start + offset);

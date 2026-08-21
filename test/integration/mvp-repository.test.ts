@@ -12,11 +12,19 @@ function repository(): D1MvpRepository {
   return new D1MvpRepository(env.DB);
 }
 
+async function ensureCommunityState(): Promise<void> {
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO community_state (community_id, created_at, updated_at)
+     VALUES ('butcoffee', 0, 0)`,
+  ).run();
+}
+
 async function createRequest(
   repo: D1MvpRepository,
   index: number,
   mapId = "customs",
   gameMode: GameMode = "pve",
+  recipientLimit = 3,
 ): Promise<number> {
   const created = await repo.createRequest({
     sourcePlatform: "twitch",
@@ -27,13 +35,10 @@ async function createRequest(
     inGameName: `PMC ${index}`,
     mapId,
     objective: `Goal ${index}`,
+    recipientLimit,
     observedAt: new Date(now.getTime() + index),
   });
   return created.request.id;
-}
-
-async function materialize(repo: D1MvpRepository): Promise<void> {
-  await repo.materializeWaitingRequests({ recipientLimit: 3, changedAt: now });
 }
 
 async function seedWaitingRequests(
@@ -126,10 +131,117 @@ async function postpone(
 }
 
 describe("schedule-independent dual queues", () => {
-  it("materializes requests without schedule data and bounds ordinary display at seven", async () => {
+  it("commits every new request as planned with one open membership", async () => {
+    const repo = repository();
+    const result = await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "atomic-request",
+      twitchUserId: "atomic-twitch",
+      twitchLogin: "atomic_viewer",
+      gameMode: "pve",
+      inGameName: "Atomic PMC",
+      mapId: "customs",
+      objective: "Atomic task",
+      recipientLimit: 4,
+      observedAt: now,
+    });
+
+    expect(result).toMatchObject({ outcome: "created", queueChanged: true });
+    expect(result.request.state).toBe("planned");
+    await expect(
+      env.DB.prepare(
+        `SELECT request.state, count(member.id) AS memberships
+         FROM help_requests AS request
+         LEFT JOIN raid_group_members AS member
+           ON member.request_id = request.id AND member.state = 0
+         WHERE request.id = ? GROUP BY request.id`,
+      )
+        .bind(result.request.id)
+        .first(),
+    ).resolves.toEqual({ state: 1, memberships: 1 });
+  });
+
+  it("rolls back identity, request, raid, and membership when assignment fails", async () => {
+    const repo = repository();
+    await env.DB.prepare(
+      `CREATE TRIGGER test_atomic_assignment_failure
+       BEFORE INSERT ON raid_group_members
+       BEGIN
+         SELECT RAISE(ABORT, 'injected assignment failure');
+       END;`,
+    ).run();
+    try {
+      await expect(
+        repo.createRequest({
+          sourcePlatform: "twitch",
+          sourceDeliveryId: "atomic-failure",
+          twitchUserId: "atomic-failure-twitch",
+          twitchLogin: "atomic_failure",
+          gameMode: "pve",
+          inGameName: "Atomic Failure PMC",
+          mapId: "customs",
+          objective: "Fail atomically",
+          recipientLimit: 4,
+          observedAt: now,
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER test_atomic_assignment_failure`).run();
+    }
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT count(*) FROM user_mappings WHERE twitch_login = 'atomic_failure') AS mappings,
+           (SELECT count(*) FROM help_requests WHERE source_delivery_id = 'atomic-failure') AS requests,
+           (SELECT count(*) FROM raid_groups) AS raids,
+           (SELECT count(*) FROM raid_group_members) AS memberships`,
+      ).first(),
+    ).resolves.toEqual({ mappings: 0, requests: 0, raids: 0, memberships: 0 });
+  });
+
+  it("serializes concurrent intake into exact-capacity raids with contiguous positions", async () => {
+    const repo = repository();
+    const results = await Promise.all(
+      Array.from({ length: 9 }, (_, offset) =>
+        repo.createRequest({
+          sourcePlatform: "twitch",
+          sourceDeliveryId: `atomic-concurrent-${offset}`,
+          twitchUserId: `atomic-concurrent-twitch-${offset}`,
+          twitchLogin: `atomic_concurrent_${offset}`,
+          gameMode: "pve",
+          inGameName: `Atomic PMC ${offset}`,
+          mapId: "customs",
+          objective: `Concurrent task ${offset}`,
+          recipientLimit: 4,
+          observedAt: new Date(now.getTime() + offset),
+        }),
+      ),
+    );
+    expect(results.every((result) => result.request.state === "planned")).toBe(true);
+    const groups = await env.DB.prepare(
+      `SELECT raid.current_member_count AS memberCount,
+              min(member.position) AS firstPosition,
+              max(member.position) AS lastPosition,
+              count(DISTINCT member.position) AS uniquePositions
+       FROM raid_groups AS raid
+       JOIN raid_group_members AS member ON member.group_id = raid.id AND member.state = 0
+       GROUP BY raid.id ORDER BY raid.sort_key`,
+    ).all<{
+      memberCount: number;
+      firstPosition: number;
+      lastPosition: number;
+      uniquePositions: number;
+    }>();
+    expect(groups.results).toEqual([
+      { memberCount: 4, firstPosition: 1, lastPosition: 4, uniquePositions: 4 },
+      { memberCount: 4, firstPosition: 1, lastPosition: 4, uniquePositions: 4 },
+      { memberCount: 1, firstPosition: 1, lastPosition: 1, uniquePositions: 1 },
+    ]);
+  });
+
+  it("assigns requests without schedule data and bounds ordinary display at seven", async () => {
     const repo = repository();
     for (let index = 1; index <= 25; index += 1) await createRequest(repo, index);
-    await materialize(repo);
 
     const board = await repo.getBoardSnapshot();
     expect(board).toMatchObject({
@@ -151,7 +263,6 @@ describe("schedule-independent dual queues", () => {
     }
     await createRequest(repo, 5, "customs", "pvp");
     await createRequest(repo, 6, "customs", "pvp-seasonal");
-    await materialize(repo);
 
     const raids = await env.DB.prepare(
       `SELECT raid.game_mode AS gameMode, count(member.id) AS members
@@ -174,7 +285,6 @@ describe("schedule-independent dual queues", () => {
     }
     await createRequest(repo, 22, "customs", "pvp");
     await createRequest(repo, 23, "customs", "pvp-seasonal");
-    await materialize(repo);
 
     const board = await repo.getBoardSnapshot();
     expect(board.ordinaryRaidCount).toBe(9);
@@ -193,7 +303,6 @@ describe("schedule-independent dual queues", () => {
       await createRequest(repo, index, "customs", "pve");
     }
     await createRequest(repo, 22, "customs", "pvp");
-    await materialize(repo);
 
     const board = await repo.getBoardSnapshot();
     expect(board.ordinaryRaids.map((raid) => raid.gameMode)).toEqual([
@@ -217,7 +326,6 @@ describe("schedule-independent dual queues", () => {
     }
     await createRequest(repo, 22, "customs", "pvp");
     await createRequest(repo, 23, "customs", "pvp-seasonal");
-    await materialize(repo);
     const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids;
     for (const [index, mode] of (["pve", "pvp", "pvp-seasonal"] as const).entries()) {
       const raid = ordinary.find((candidate) => candidate.gameMode === mode);
@@ -244,6 +352,7 @@ describe("schedule-independent dual queues", () => {
       inGameName: "Same PMC",
       mapId: "customs",
       objective: "Task",
+      recipientLimit: 3,
       observedAt: now,
     };
     await expect(
@@ -262,7 +371,6 @@ describe("schedule-independent dual queues", () => {
     async (existingState) => {
       const repo = repository();
       await createRequest(repo, 1);
-      await materialize(repo);
       const existing = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
       if (existingState === "active") {
         await start(repo, existing);
@@ -273,9 +381,6 @@ describe("schedule-independent dual queues", () => {
       }
 
       await createRequest(repo, 2);
-      await expect(
-        repo.materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
-      ).resolves.toBe(1);
       const groups = await env.DB.prepare(
         `SELECT sort_key AS sortKey FROM raid_groups WHERE state IN (0, 1) ORDER BY sort_key`,
       ).all<{ sortKey: number }>();
@@ -288,12 +393,10 @@ describe("schedule-independent dual queues", () => {
     let requestIndex = 1;
     for (const map of TARKOV_MAPS) {
       for (let index = 0; index < map.sherpaPartyCapacity; index += 1) {
-        await createRequest(repo, requestIndex, map.id);
+        await createRequest(repo, requestIndex, map.id, "pve", 99);
         requestIndex += 1;
       }
     }
-    await repo.materializeWaitingRequests({ recipientLimit: 99, changedAt: now });
-
     for (const map of TARKOV_MAPS) {
       const raids = await env.DB.prepare(
         `SELECT id, requester_capacity AS requesterCapacity, current_member_count AS memberCount
@@ -329,11 +432,9 @@ describe("schedule-independent dual queues", () => {
   it("shows independent three-priority and seven-ordinary windows with complete raid totals", async () => {
     const repo = repository();
     for (let index = 1; index <= 12; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const sources = (await repo.getBoardSnapshot()).ordinaryRaids.slice(0, 4);
     for (const [index, raid] of sources.entries()) await postpone(repo, raid, `source-${index}`);
     for (let index = 13; index <= 36; index += 1) await createRequest(repo, index);
-    await materialize(repo);
 
     const board = await repo.getBoardSnapshot();
     expect(board).toMatchObject({
@@ -347,7 +448,6 @@ describe("schedule-independent dual queues", () => {
   it("returns the authenticated caller's mode-scoped position", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     await expect(
       repo.getQueueFacts({ platform: "twitch", userId: "twitch-4" }),
     ).resolves.toMatchObject({
@@ -365,7 +465,6 @@ describe("schedule-independent dual queues", () => {
       await createRequest(repo, index, "customs", "pve");
     }
     await createRequest(repo, 7, "customs", "pvp");
-    await materialize(repo);
 
     await expect(
       repo.getQueueFacts({ platform: "twitch", userId: "twitch-7" }),
@@ -382,14 +481,12 @@ describe("schedule-independent dual queues", () => {
   it("counts priority raids ahead of an ordinary caller", async () => {
     const repo = repository();
     for (let index = 1; index <= 3; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     await postpone(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
       "priority",
     );
     await createRequest(repo, 4);
-    await materialize(repo);
 
     await expect(
       repo.getQueueFacts({ platform: "twitch", userId: "twitch-4" }),
@@ -404,7 +501,6 @@ describe("schedule-independent dual queues", () => {
   it("requests a Twitch call for a streamer-led raid without schedule state", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await repo.reviewRaid({ groupId: raid.id, changedAt: now });
     await repo.compareAndSetRaidStaffMessage({
@@ -427,11 +523,10 @@ describe("schedule-independent dual queues", () => {
     });
   });
 
-  it("freezes a reviewed party before later compatible requests are materialized", async () => {
+  it("freezes a reviewed party before later compatible requests are assigned", async () => {
     const repo = repository();
     const first = await createRequest(repo, 1);
     const second = await createRequest(repo, 2);
-    await materialize(repo);
     const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
 
     const reviewed = await review(repo, planned, "frozen-review");
@@ -446,7 +541,6 @@ describe("schedule-independent dual queues", () => {
     expect(reviewed.leaderDiscordUserId).toBeUndefined();
 
     const later = await createRequest(repo, 3);
-    await materialize(repo);
     const board = await repo.getBoardSnapshot();
     expect((await repo.getRaid(reviewed.id))?.members.map((member) => member.requestId)).toEqual([
       first,
@@ -459,7 +553,6 @@ describe("schedule-independent dual queues", () => {
   it("dismisses only the matching planned review and cannot clear active details", async () => {
     const repo = repository();
     const requestId = await createRequest(repo, 1);
-    await materialize(repo);
     const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     const reviewed = await review(repo, planned, "dismiss-review");
 
@@ -514,7 +607,6 @@ describe("schedule-independent dual queues", () => {
   it("serializes review dismissal against raid start", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     const reviewed = await review(repo, planned, "dismiss-or-start");
 
@@ -546,7 +638,6 @@ describe("schedule-independent dual queues", () => {
   it("allows exactly one concurrent caller to activate a reviewed raid", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await review(repo, planned, "concurrent-start-review");
 
@@ -577,7 +668,6 @@ describe("schedule-independent dual queues", () => {
   it("keeps reserved follow-up activation restricted to its leader or the streamer", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -619,7 +709,6 @@ describe("schedule-independent dual queues", () => {
     const retained = await createRequest(repo, 1);
     const moved = await createRequest(repo, 2);
     const removed = await createRequest(repo, 3);
-    await materialize(repo);
     const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await review(repo, planned, "editable-review");
 
@@ -665,7 +754,6 @@ describe("schedule-independent dual queues", () => {
   it("starts at any time and advances attempts before completing helped requests", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0];
     expect(raid).toBeDefined();
     const started = await start(repo, raid as StaffBoardRaid);
@@ -700,7 +788,6 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const firstRequest = await createRequest(repo, 1);
     const postponedRequest = await createRequest(repo, 2);
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -736,7 +823,6 @@ describe("schedule-independent dual queues", () => {
   it("uses Postpone raid as the only unresolved result after the final attempt", async () => {
     const repo = repository();
     for (let index = 1; index <= 3; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -785,7 +871,6 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const firstRequest = await createRequest(repo, 1);
     const secondRequest = await createRequest(repo, 2);
-    await materialize(repo);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await start(repo, raid);
     const result = await repo.postponeRequester({
@@ -812,7 +897,6 @@ describe("schedule-independent dual queues", () => {
   it("fills the only requester's follow-up with a later same-map request", async () => {
     const repo = repository();
     const postponedRequest = await createRequest(repo, 1, "interchange");
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -825,7 +909,6 @@ describe("schedule-independent dual queues", () => {
     });
 
     const laterRequest = await createRequest(repo, 2, "interchange");
-    await materialize(repo);
 
     const board = await repo.getBoardSnapshot();
     expect(board.ordinaryRaidCount).toBe(1);
@@ -842,7 +925,6 @@ describe("schedule-independent dual queues", () => {
   it("fills requester follow-ups only with the same game mode", async () => {
     const repo = repository();
     const postponedRequest = await createRequest(repo, 1, "interchange", "pve");
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -856,7 +938,6 @@ describe("schedule-independent dual queues", () => {
 
     const pvpRequest = await createRequest(repo, 2, "interchange", "pvp");
     const pveRequest = await createRequest(repo, 3, "interchange", "pve");
-    await materialize(repo);
 
     const followUp = await repo.getRaid(postponed.dedicated.id);
     expect(followUp?.gameMode).toBe("pve");
@@ -875,7 +956,6 @@ describe("schedule-independent dual queues", () => {
     const retainedRequest = await createRequest(repo, 1);
     const firstPostponedRequest = await createRequest(repo, 2);
     const secondPostponedRequest = await createRequest(repo, 3);
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -908,7 +988,6 @@ describe("schedule-independent dual queues", () => {
     const retainedRequest = await createRequest(repo, 1);
     const firstPostponedRequest = await createRequest(repo, 2);
     const secondPostponedRequest = await createRequest(repo, 3);
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -921,7 +1000,6 @@ describe("schedule-independent dual queues", () => {
     });
     await createRequest(repo, 4);
     await createRequest(repo, 5);
-    await materialize(repo);
     expect((await repo.getRaid(first.dedicated.id))?.members).toHaveLength(3);
 
     const second = await repo.postponeRequester({
@@ -952,7 +1030,6 @@ describe("schedule-independent dual queues", () => {
     async ({ mapId, requesterCapacity }) => {
       const repo = repository();
       const postponedRequest = await createRequest(repo, 1, mapId);
-      await materialize(repo);
       const source = await start(
         repo,
         (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -967,7 +1044,6 @@ describe("schedule-independent dual queues", () => {
       for (let index = 2; index <= requesterCapacity + 1; index += 1) {
         await createRequest(repo, index, mapId);
       }
-      await materialize(repo);
 
       const board = await repo.getBoardSnapshot();
       expect(board.ordinaryRaidCount).toBe(2);
@@ -983,7 +1059,6 @@ describe("schedule-independent dual queues", () => {
   it("does not fill a Priority requester follow-up with an Ordinary request", async () => {
     const repo = repository();
     const priorityRequest = await createRequest(repo, 1, "interchange");
-    await materialize(repo);
     const ordinarySource = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await postpone(repo, ordinarySource, "make-priority-source");
     const prioritySource = await start(
@@ -998,7 +1073,6 @@ describe("schedule-independent dual queues", () => {
     });
 
     const ordinaryRequest = await createRequest(repo, 2, "interchange");
-    await materialize(repo);
 
     const board = await repo.getBoardSnapshot();
     expect(board.priorityRaids[0]?.members.map((member) => member.requestId)).toEqual([
@@ -1013,7 +1087,6 @@ describe("schedule-independent dual queues", () => {
   it("rolls back every requester-postponement mutation when follow-up creation fails", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const raids = (await repo.getBoardSnapshot()).ordinaryRaids;
     const source = await start(repo, raids[0] as StaffBoardRaid);
     await env.DB.prepare(`UPDATE raid_groups SET last_action_key = ? WHERE id = ?`)
@@ -1039,7 +1112,6 @@ describe("schedule-independent dual queues", () => {
     const retainedRequest = await createRequest(repo, 1);
     const firstPostponedRequest = await createRequest(repo, 2);
     const secondPostponedRequest = await createRequest(repo, 3);
-    await materialize(repo);
     const source = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -1083,7 +1155,6 @@ describe("schedule-independent dual queues", () => {
   it("closes the empty source when its last requester is postponed", async () => {
     const repo = repository();
     const requestId = await createRequest(repo, 1);
-    await materialize(repo);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await start(repo, raid);
     await repo.setRaidStaffMessage(raid.id, "old-message", now);
@@ -1117,7 +1188,6 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const firstRequest = await createRequest(repo, 1);
     const secondRequest = await createRequest(repo, 2);
-    await materialize(repo);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await start(repo, raid);
     await repo.setRaidStaffMessage(raid.id, "remove-message", now);
@@ -1141,7 +1211,6 @@ describe("schedule-independent dual queues", () => {
     expect(closed).toMatchObject({ state: "canceled", outcome: "not_run" });
     expect(closed.staffMessageId).toBeUndefined();
     await expect(currentMemberCount(raid.id)).resolves.toBe(0);
-    await materialize(repo);
     expect((await repo.getBoardSnapshot()).ordinaryRaids).toEqual([]);
     const requests = await env.DB.prepare(
       `SELECT id, CASE state WHEN 3 THEN 'canceled' ELSE 'other' END AS state
@@ -1156,7 +1225,6 @@ describe("schedule-independent dual queues", () => {
   it("moves the same whole raid to the end of priority with attempts reset", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids;
     await postpone(repo, ordinary[0] as StaffBoardRaid, "existing-priority");
     const source = ordinary[1] as StaffBoardRaid;
@@ -1213,7 +1281,6 @@ describe("schedule-independent dual queues", () => {
   it("keeps removed membership history out of open board hydration", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     await seedWaitingRequests(1_000, { offset: 1 });
     await env.DB.prepare(`UPDATE help_requests SET state = 3 WHERE id > 1`).run();
@@ -1238,10 +1305,23 @@ describe("schedule-independent dual queues", () => {
     expect(metrics.snapshot().rowsRead).toBeLessThan(100);
   });
 
+  it("captures statement details only when explicitly enabled", async () => {
+    const totalsOnly = new D1Metrics();
+    await new D1MvpRepository(instrumentD1Database(env.DB, totalsOnly)).getDiagnostics();
+    expect(totalsOnly.statementDetails()).toEqual([]);
+
+    const detailed = new D1Metrics(true);
+    await new D1MvpRepository(instrumentD1Database(env.DB, detailed)).getDiagnostics();
+    expect(detailed.statementDetails()).toHaveLength(4);
+    expect(detailed.statementDetails().every((statement) => statement.query.length > 0)).toBe(true);
+    expect(
+      detailed.statementDetails().reduce((sum, statement) => sum + statement.statements, 0),
+    ).toBe(detailed.snapshot().statements);
+  });
+
   it("retains completed participants in historical single-raid reads", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const raid = await start(
       repo,
       (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
@@ -1262,12 +1342,11 @@ describe("schedule-independent dual queues", () => {
     });
   });
 
-  it("does not mutate outstanding raids when time advances", async () => {
+  it("does not mutate outstanding raids during an empty legacy repair", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const before = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
-    await repo.materializeWaitingRequests({
+    await repo.repairLegacyUnassignedRequests({
       changedAt: new Date("2196-08-16T04:00:00.000Z"),
       recipientLimit: 3,
     });
@@ -1280,26 +1359,24 @@ describe("schedule-independent dual queues", () => {
     });
   });
 
-  it("checks only for waiting requests in the steady-state materialization path", async () => {
+  it("checks only for unassigned requests in the empty legacy-repair path", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    await materialize(repo);
     const metrics = new D1Metrics();
     const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
     await expect(
-      measured.materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
-    ).resolves.toBe(0);
-    expect(metrics.snapshot().statements).toBe(1);
+      measured.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toEqual({ repaired: 0, hasMore: false });
+    expect(metrics.snapshot().statements).toBe(2);
   });
 
-  it("materializes a backlog smaller than one batch and keeps every requester", async () => {
-    const repo = repository();
-    for (let index = 1; index <= 180; index += 1) await createRequest(repo, index);
+  it("repairs a legacy backlog smaller than one batch and keeps every requester", async () => {
+    await seedWaitingRequests(60);
     const metrics = new D1Metrics();
     const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
     await expect(
-      measured.materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
-    ).resolves.toBe(180);
+      measured.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toEqual({ repaired: 60, hasMore: false });
     expect(metrics.snapshot().statements).toBe(6);
     const stored = await env.DB.prepare(
       `SELECT count(*) AS requestCount,
@@ -1307,31 +1384,23 @@ describe("schedule-independent dual queues", () => {
               (SELECT count(*) FROM raid_group_members WHERE state = 0) AS memberCount
          FROM help_requests WHERE state = 1`,
     ).first<{ requestCount: number; raidCount: number; memberCount: number }>();
-    expect(stored).toEqual({ requestCount: 180, raidCount: 60, memberCount: 180 });
-
-    const queueMetrics = new D1Metrics();
-    const queueRepository = new D1MvpRepository(instrumentD1Database(env.DB, queueMetrics));
-    await expect(
-      queueRepository.getQueueFacts({ platform: "twitch", userId: "twitch-180" }),
-    ).resolves.toMatchObject({
-      caller: {
-        queuePosition: { kind: "more_than", requestsAhead: 100 },
-        raidsAhead: { kind: "more_than", count: 50 },
-      },
-    });
-    expect(queueMetrics.snapshot().statements).toBe(8);
-    expect(queueMetrics.snapshot().rowsRead).toBeLessThan(200);
+    expect(stored).toEqual({ requestCount: 60, raidCount: 20, memberCount: 60 });
   }, 15_000);
 
-  it("bounds and drains a 1,000-request recovery backlog in 250-request batches", async () => {
+  it("bounds and drains a 1,000-request recovery backlog in 80-request lookahead batches", async () => {
     const repo = repository();
     await seedWaitingRequests(1_000);
 
-    for (const expectedWaiting of [750, 500, 250, 0]) {
+    for (const expectedWaiting of Array.from({ length: 13 }, (_, index) =>
+      Math.max(1_000 - (index + 1) * 80, 0),
+    )) {
       // Recovery intentionally advances one bounded batch per invocation.
       await expect(
-        repo.materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
-      ).resolves.toBe(250);
+        repo.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+      ).resolves.toEqual({
+        repaired: expectedWaiting === 0 ? 40 : 80,
+        hasMore: expectedWaiting > 0,
+      });
       await expect(
         env.DB.prepare(`SELECT count(*) AS count FROM help_requests WHERE state = 0`).first(),
       ).resolves.toEqual({ count: expectedWaiting });
@@ -1344,14 +1413,15 @@ describe("schedule-independent dual queues", () => {
     const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
 
     await expect(
-      measured.materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
-    ).resolves.toBe(250);
-    expect(metrics.snapshot().rowsRead).toBeLessThan(12_000);
+      measured.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toEqual({ repaired: 80, hasMore: true });
+    expect(metrics.snapshot().rowsRead).toBeLessThanOrEqual(2_500);
+    expect(metrics.snapshot().rowsWritten).toBeLessThanOrEqual(1_000);
     await expect(
       env.DB.prepare(
         `SELECT sum(state = 0) AS waiting, sum(state = 1) AS planned FROM help_requests`,
       ).first(),
-    ).resolves.toEqual({ waiting: 9_750, planned: 250 });
+    ).resolves.toEqual({ waiting: 9_920, planned: 80 });
   }, 20_000);
 
   it("reserves every non-empty queue-kind and mode pair outside the FIFO batch", async () => {
@@ -1365,8 +1435,8 @@ describe("schedule-independent dual queues", () => {
     });
 
     await expect(
-      repository().materializeWaitingRequests({ recipientLimit: 3, changedAt: now }),
-    ).resolves.toBe(250);
+      repository().repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toEqual({ repaired: 80, hasMore: true });
     const reserved = await env.DB.prepare(
       `SELECT id, state FROM help_requests WHERE id IN (1, 301, 302, 303, 599, 600) ORDER BY id`,
     ).all<{ id: number; state: number }>();
@@ -1380,19 +1450,60 @@ describe("schedule-independent dual queues", () => {
     ]);
   });
 
-  it("expires old delivery receipts while preserving recent duplicate protection", async () => {
+  it("keeps concurrent recovery within capacity with unique contiguous positions", async () => {
+    await seedWaitingRequests(500);
+    const results = await Promise.all(
+      [0, 1].map((offset) =>
+        repository().repairLegacyUnassignedRequests({
+          recipientLimit: 3,
+          changedAt: new Date(now.getTime() + offset),
+        }),
+      ),
+    );
+    expect(results.every((result) => result.repaired <= 80)).toBe(true);
+    expect(results.reduce((total, result) => total + result.repaired, 0)).toBe(160);
+    const invalidGroups = await env.DB.prepare(
+      `SELECT raid.id
+       FROM raid_groups AS raid
+       JOIN raid_group_members AS member ON member.group_id = raid.id AND member.state = 0
+       GROUP BY raid.id
+       HAVING count(*) > raid.requester_capacity
+          OR count(*) <> count(DISTINCT member.position)
+          OR min(member.position) <> 1 OR max(member.position) <> count(*)`,
+    ).all();
+    expect(invalidGroups.results).toEqual([]);
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count FROM help_requests AS request
+         WHERE request.state = 1 AND NOT EXISTS (
+           SELECT 1 FROM raid_group_members AS member
+           WHERE member.request_id = request.id AND member.state = 0
+         )`,
+      ).first(),
+    ).resolves.toEqual({ count: 0 });
+    await expect(
+      env.DB.prepare(
+        `SELECT sum(state = 0) AS waiting, sum(state = 1) AS planned FROM help_requests`,
+      ).first(),
+    ).resolves.toEqual({ waiting: 340, planned: 160 });
+  });
+
+  it("expires old delivery receipts only during leased maintenance", async () => {
     const repo = repository();
+    await ensureCommunityState();
     const old = new Date(now.getTime() - 25 * 60 * 60 * 1_000);
     await repo.claimDiscordMutation("old", "component", old);
     await expect(repo.claimDiscordMutation("recent", "component", now)).resolves.toBe(true);
     await expect(repo.claimDiscordMutation("recent", "component", now)).resolves.toBe(false);
+    await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: true, deleted: 1 });
     const receipts = await env.DB.prepare(
       `SELECT delivery_id AS deliveryId FROM event_receipts ORDER BY delivery_id`,
     ).all<{ deliveryId: string }>();
     expect(receipts.results).toEqual([{ deliveryId: "recent" }]);
   });
 
-  it("deletes expired Discord receipts in oldest-first batches of 250", async () => {
+  it("deletes expired Discord receipts in oldest-first leased batches of 100", async () => {
+    await ensureCommunityState();
     const rows = Array.from({ length: 600 }, (_, index) => ({ index }));
     await env.DB.prepare(
       `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
@@ -1405,22 +1516,80 @@ describe("schedule-independent dual queues", () => {
 
     const repo = repository();
     await expect(repo.claimDiscordMutation("current-one", "component", now)).resolves.toBe(true);
+    await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: true, deleted: 100 });
     await expect(
       env.DB.prepare(
         `SELECT count(*) AS count, min(delivery_id) AS oldest
          FROM event_receipts WHERE delivery_id LIKE 'expired-discord-%'`,
       ).first(),
-    ).resolves.toEqual({ count: 350, oldest: "expired-discord-250" });
+    ).resolves.toEqual({ count: 500, oldest: "expired-discord-100" });
     await expect(repo.claimDiscordMutation("current-two", "component", now)).resolves.toBe(true);
+    await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: false, deleted: 0 });
+    const nextLease = new Date(now.getTime() + 15 * 60 * 1_000);
+    await expect(repo.maintainExpiredReceipts(nextLease)).resolves.toEqual({
+      ran: true,
+      deleted: 100,
+    });
     await expect(
       env.DB.prepare(
         `SELECT count(*) AS count, min(delivery_id) AS oldest
          FROM event_receipts WHERE delivery_id LIKE 'expired-discord-%'`,
       ).first(),
-    ).resolves.toEqual({ count: 100, oldest: "expired-discord-500" });
+    ).resolves.toEqual({ count: 400, oldest: "expired-discord-200" });
+  });
+
+  it("allows one concurrent receipt-maintenance winner and drains on later leases", async () => {
+    await ensureCommunityState();
+    const rows = Array.from({ length: 250 }, (_, index) => ({ index }));
+    await env.DB.prepare(
+      `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
+       SELECT 0, printf('lease-race-%03d', json_extract(value, '$.index')), 'component', ?
+       FROM json_each(?)`,
+    )
+      .bind(now.getTime() - 48 * 60 * 60 * 1_000, JSON.stringify(rows))
+      .run();
+    const first = await Promise.all([
+      repository().maintainExpiredReceipts(now),
+      repository().maintainExpiredReceipts(now),
+    ]);
+    expect(first.filter((result) => result.ran)).toEqual([{ ran: true, deleted: 100 }]);
+    await expect(
+      repository().maintainExpiredReceipts(new Date(now.getTime() + 15 * 60 * 1_000)),
+    ).resolves.toEqual({ ran: true, deleted: 100 });
+    await expect(
+      repository().maintainExpiredReceipts(new Date(now.getTime() + 30 * 60 * 1_000)),
+    ).resolves.toEqual({ ran: true, deleted: 50 });
+  });
+
+  it("keeps cleanup failure non-destructive until a later lease", async () => {
+    await ensureCommunityState();
+    await env.DB.prepare(
+      `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
+       VALUES (0, 'cleanup-failure', 'component', ?)`,
+    )
+      .bind(now.getTime() - 48 * 60 * 60 * 1_000)
+      .run();
+    await env.DB.prepare(
+      `CREATE TRIGGER test_fail_receipt_cleanup
+       BEFORE DELETE ON event_receipts
+       BEGIN
+         SELECT RAISE(ABORT, 'simulated cleanup failure');
+       END`,
+    ).run();
+    await expect(repository().maintainExpiredReceipts(now)).rejects.toThrow(
+      "simulated cleanup failure",
+    );
+    await env.DB.prepare("DROP TRIGGER test_fail_receipt_cleanup").run();
+    await expect(
+      repository().maintainExpiredReceipts(new Date(now.getTime() + 1)),
+    ).resolves.toEqual({ ran: false, deleted: 0 });
+    await expect(
+      repository().maintainExpiredReceipts(new Date(now.getTime() + 15 * 60 * 1_000)),
+    ).resolves.toEqual({ ran: true, deleted: 1 });
   });
 
   it("bounds expired-receipt cleanup while recording a Twitch reply", async () => {
+    await ensureCommunityState();
     const rows = Array.from({ length: 300 }, (_, index) => ({ index }));
     await env.DB.prepare(
       `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
@@ -1431,20 +1600,22 @@ describe("schedule-independent dual queues", () => {
       .bind(now.getTime() - 48 * 60 * 60 * 1_000, JSON.stringify(rows))
       .run();
 
+    const repo = repository();
     await expect(
-      repository().recordTwitchReply({
+      repo.recordTwitchReply({
         deliveryId: "current-twitch",
         eventType: "command:queue",
         replyText: "Current reply",
         receivedAt: now,
       }),
     ).resolves.toMatchObject({ duplicate: false, replyText: "Current reply" });
+    await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: true, deleted: 100 });
     await expect(
       env.DB.prepare(
         `SELECT count(*) AS count, min(delivery_id) AS oldest
          FROM event_receipts WHERE delivery_id LIKE 'expired-twitch-%'`,
       ).first(),
-    ).resolves.toEqual({ count: 50, oldest: "expired-twitch-250" });
+    ).resolves.toEqual({ count: 200, oldest: "expired-twitch-100" });
   });
 
   it("does not rewrite an unchanged Twitch-only identity observation", async () => {
@@ -1539,7 +1710,6 @@ describe("requester pull-up", () => {
   it("pulls one requester and pushes the complete source remainder into one successor", async () => {
     const repo = repository();
     for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, source, successor] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const destination = await review(repo, first as StaffBoardRaid, "pull-destination");
     await repo.removeRequester({
@@ -1586,7 +1756,6 @@ describe("requester pull-up", () => {
   it("retains the complete source party when the immediate successor cannot fit it", async () => {
     const repo = repository();
     for (let index = 1; index <= 8; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, source, successor] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const destination = await review(repo, first as StaffBoardRaid, "retained-destination");
     await repo.removeRequester({
@@ -1620,7 +1789,6 @@ describe("requester pull-up", () => {
     const repo = repository();
     await createRequest(repo, 1);
     await createRequest(repo, 2);
-    await materialize(repo);
     const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
     const active = await start(repo, ordinary);
     const priority = await repo.postponeRaid({
@@ -1630,7 +1798,6 @@ describe("requester pull-up", () => {
     });
     const destination = await review(repo, priority, "priority-pull-destination");
     for (let index = 3; index <= 6; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const candidates = await repo.getPullRequesterCandidates(destination.id);
     const selected = candidates?.source.members[0]?.requestId as number;
     const unselected = candidates?.source.members.slice(1).map((member) => member.requestId) ?? [];
@@ -1662,7 +1829,6 @@ describe("requester pull-up", () => {
   it("never pulls a requester from a concurrent volunteer-led active raid", async () => {
     const repo = repository();
     for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, volunteerRaid, later] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const active = await start(repo, volunteerRaid as StaffBoardRaid);
     const activeRequestIds = active.members.map((member) => member.requestId);
@@ -1695,7 +1861,6 @@ describe("requester pull-up", () => {
   it("rejects a stale source selection without moving any requester", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const reviewed = await review(repo, first as StaffBoardRaid, "stale-pull-destination");
     await repo.removeRequester({
@@ -1729,9 +1894,8 @@ describe("requester pull-up", () => {
     const repo = repository();
     const requesterCapacity = map.sherpaPartyCapacity - 1;
     for (let index = 1; index <= requesterCapacity + 1; index += 1) {
-      await createRequest(repo, index, map.id);
+      await createRequest(repo, index, map.id, "pve", 99);
     }
-    await repo.materializeWaitingRequests({ recipientLimit: 99, changedAt: now });
     const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const reviewed = await review(repo, first as StaffBoardRaid, "icebreaker-pull");
     await repo.removeRequester({
@@ -1764,7 +1928,6 @@ describe("requester pull-up", () => {
       await createRequest(repo, index, "woods", "pve");
     }
     const compatibleRequest = await createRequest(repo, 10, "customs", "pve");
-    await materialize(repo);
     const destinationSeed = (await repo.getBoardSnapshot()).ordinaryRaids.find(
       (raid) => raid.gameMode === "pve" && raid.mapId === "customs",
     ) as StaffBoardRaid;
@@ -1786,7 +1949,6 @@ describe("requester pull-up", () => {
   it("uses a later Priority source before an Ordinary source", async () => {
     const repo = repository();
     for (let index = 1; index <= 9; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, second, ordinarySource] = (await repo.getBoardSnapshot()).ordinaryRaids;
     await postpone(repo, first as StaffBoardRaid, "first-priority-pull-raid");
     await postpone(repo, second as StaffBoardRaid, "second-priority-pull-raid");
@@ -1819,7 +1981,6 @@ describe("requester pull-up", () => {
   it("never offers a Priority source to an Ordinary destination", async () => {
     const repo = repository();
     for (let index = 1; index <= 9; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [prioritySeed, ordinaryDestinationSeed, ordinarySource] = (await repo.getBoardSnapshot())
       .ordinaryRaids;
     await postpone(repo, prioritySeed as StaffBoardRaid, "priority-before-ordinary-pull");
@@ -1845,7 +2006,6 @@ describe("requester pull-up", () => {
   it("stops push-down at a reviewed compatible boundary", async () => {
     const repo = repository();
     for (let index = 1; index <= 10; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, source, boundary, farther] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const frozenBoundary = await review(repo, boundary as StaffBoardRaid, "frozen-push-boundary");
     const destination = await review(repo, first as StaffBoardRaid, "bounded-push-destination");
@@ -1881,7 +2041,6 @@ describe("requester pull-up", () => {
   it("does not offer a reviewed or leader-reserved source", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
     await review(repo, source as StaffBoardRaid, "reviewed-source-boundary");
     const destination = await review(repo, first as StaffBoardRaid, "reviewed-source-destination");
@@ -1906,7 +2065,6 @@ describe("requester pull-up", () => {
   it("rolls back the complete pull when a push membership write fails", async () => {
     const repo = repository();
     for (let index = 1; index <= 8; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, source, target] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const destination = await review(repo, first as StaffBoardRaid, "rollback-pull-destination");
     await repo.removeRequester({
@@ -1920,19 +2078,28 @@ describe("requester pull-up", () => {
     );
     const sourceBefore = source?.members.map((member) => member.requestId) ?? [];
     const targetBefore = target?.members.map((member) => member.requestId) ?? [];
-    await env.DB.prepare("UPDATE raid_groups SET current_member_count = 0 WHERE id = ?")
-      .bind(target?.id)
-      .run();
+    await env.DB.prepare(
+      `CREATE TRIGGER test_fail_pull_push
+       BEFORE INSERT ON raid_group_members
+       WHEN NEW.group_id = ${String(destination.id)}
+       BEGIN
+         SELECT RAISE(ABORT, 'simulated pull failure');
+       END`,
+    ).run();
 
-    await expect(
-      repo.pullRequester({
-        destinationGroupId: destination.id,
-        sourceGroupId: source?.id as number,
-        requestId: source?.members[0]?.requestId as number,
-        actionKey: "rollback-failing-push",
-        changedAt: now,
-      }),
-    ).rejects.toThrow("out of date");
+    try {
+      await expect(
+        repo.pullRequester({
+          destinationGroupId: destination.id,
+          sourceGroupId: source?.id as number,
+          requestId: source?.members[0]?.requestId as number,
+          actionKey: "rollback-failing-push",
+          changedAt: now,
+        }),
+      ).rejects.toThrow("out of date");
+    } finally {
+      await env.DB.prepare("DROP TRIGGER test_fail_pull_push").run();
+    }
     expect((await repo.getRaid(destination.id))?.members.map((member) => member.requestId)).toEqual(
       destinationBefore,
     );
@@ -1949,15 +2116,11 @@ describe("requester pull-up", () => {
       .bind(source?.members[0]?.requestId)
       .first<{ count: number }>();
     expect(selectedOpenMemberships?.count).toBe(1);
-    await env.DB.prepare("UPDATE raid_groups SET current_member_count = ? WHERE id = ?")
-      .bind(targetBefore.length, target?.id)
-      .run();
   });
 
   it("allows only one concurrent pull of the same requester", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    await materialize(repo);
     const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
     const reviewed = await review(repo, first as StaffBoardRaid, "concurrent-pull-destination");
     await repo.removeRequester({

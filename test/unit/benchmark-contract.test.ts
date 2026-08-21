@@ -119,8 +119,9 @@ describe("local user-facing benchmark contract", () => {
     const baseline = createD1CostBaseline(report);
     expect(() => assertExactD1Baseline(report, baseline)).not.toThrow();
     const changed: D1CostBaseline = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       databaseBytes: baseline.databaseBytes,
+      focusedOperations: baseline.focusedOperations,
       operations: {
         ...baseline.operations,
         [baselineKey(BENCHMARK_SCALES[0], USER_OPERATION_IDS[0])]: {

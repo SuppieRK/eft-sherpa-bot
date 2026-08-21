@@ -48,6 +48,9 @@ if (health.status !== "ok" || health.configuration !== "ready") {
   throw new Error("Worker health did not report ready configuration");
 }
 if (status.authorization?.ok !== true) throw new Error("Twitch authorization is not healthy");
+if (status.database?.hasLegacyUnassignedRequests !== false) {
+  throw new Error("D1 still contains legacy unassigned requests");
+}
 if (discord.ok !== true) throw new Error("Discord validation did not complete");
 if (!["created", "reused"].includes(twitch.action)) {
   throw new Error("Twitch subscription validation did not complete");

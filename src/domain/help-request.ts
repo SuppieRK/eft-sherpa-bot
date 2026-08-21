@@ -37,7 +37,7 @@ export type RequestFormValidation =
 
 const requestTransitions: Readonly<Record<RequestState, readonly RequestState[]>> = {
   waiting: ["planned", "canceled"],
-  planned: ["waiting", "completed", "canceled"],
+  planned: ["completed", "canceled"],
   completed: [],
   canceled: [],
 };

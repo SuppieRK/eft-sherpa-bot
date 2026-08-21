@@ -108,7 +108,11 @@ describe("eight-table dual-queue schema", () => {
     );
     expect(stateColumns.results.map((column) => column.name)).toContain("staff_board_message_id");
     expect(stateColumns.results.map((column) => column.name)).toEqual(
-      expect.arrayContaining(["priority_open_raid_count", "ordinary_open_raid_count"]),
+      expect.arrayContaining([
+        "priority_open_raid_count",
+        "ordinary_open_raid_count",
+        "receipt_cleanup_after",
+      ]),
     );
   });
 
@@ -237,7 +241,7 @@ describe("eight-table dual-queue schema", () => {
     const waitingFifoPlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM help_requests
-       WHERE state = 0 ORDER BY is_priority DESC, id LIMIT 250`,
+       WHERE state = 0 ORDER BY is_priority DESC, id LIMIT 80`,
     ).all<{ detail: string }>();
     const waitingModePlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
@@ -577,5 +581,41 @@ describe("eight-table dual-queue schema", () => {
          FROM community_state WHERE community_id = 'butcoffee'`,
       ).first<{ priorityCount: number; ordinaryCount: number }>(),
     ).toEqual({ priorityCount: 1, ordinaryCount: 0 });
+  });
+
+  it("moves a waiting request to planned atomically and accepts the previous explicit update", async () => {
+    await insertMapping("upgrade_viewer", "upgrade-twitch");
+    await env.DB.prepare(
+      `INSERT INTO help_requests
+         (id, source_platform, source_delivery_id, twitch_user_id, twitch_login,
+          in_game_name, map_id, objective, state, created_at, updated_at)
+       VALUES (1, 1, 'upgrade-request', 'upgrade-twitch', 'upgrade_viewer',
+               'PMC', 'customs', 'Task', 0, ?, ?)`,
+    )
+      .bind(nowEpoch, nowEpoch)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO raid_groups
+         (id, is_priority, sort_key, map_id, requester_capacity, created_at, updated_at)
+       VALUES (1, 0, 1000000, 'customs', 3, ?, ?)`,
+    )
+      .bind(nowEpoch, nowEpoch)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO raid_group_members
+         (group_id, request_id, position, created_at, updated_at)
+       VALUES (1, 1, 1, ?, ?)`,
+    )
+      .bind(nowEpoch, nowEpoch)
+      .run();
+    await expect(
+      env.DB.prepare(`SELECT state FROM help_requests WHERE id = 1`).first(),
+    ).resolves.toEqual({ state: 1 });
+    const repeated = await env.DB.prepare(
+      `UPDATE help_requests SET state = 1, updated_at = ? WHERE id = 1 AND state = 0`,
+    )
+      .bind(nowEpoch + 1)
+      .run();
+    expect(repeated.meta.changes).toBe(0);
   });
 });

@@ -21,7 +21,6 @@ export const USER_OPERATION_IDS = [
   "discord.board.create",
   "discord.board.open",
   "discord.board.refresh",
-  "discord.board.refresh.waiting-backlog",
   "discord.board.refresh.removed-history",
   "discord.raid.review",
   "discord.raid.review.cancel",
@@ -42,11 +41,24 @@ export const USER_OPERATION_IDS = [
 
 export type UserOperationId = (typeof USER_OPERATION_IDS)[number];
 
+export const FOCUSED_D1_OPERATION_IDS = [
+  "discord.request.submit.created",
+  "twitch.request.created",
+  "twitch.request.invalid",
+  "twitch.request.invalid.expired-receipts",
+  "discord.queue.p10",
+  "discord.queue.p50",
+  "discord.queue.p90",
+  "twitch.queue.p10",
+  "twitch.queue.p50",
+  "twitch.queue.p90",
+  "discord.board.refresh",
+] as const satisfies readonly UserOperationId[];
+
 export const BENCHMARK_SCALES_BY_OPERATION: Readonly<
   Partial<Record<UserOperationId, readonly number[]>>
 > = {
   "twitch.request.invalid.expired-receipts": [1_000],
-  "discord.board.refresh.waiting-backlog": [1_000, 10_000],
   "discord.board.refresh.removed-history": [1_000, 10_000],
 };
 
@@ -91,7 +103,6 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "discord.board.create": "board:create",
   "discord.board.open": "board:open",
   "discord.board.refresh": "board:refresh",
-  "discord.board.refresh.waiting-backlog": "board:refresh",
   "discord.board.refresh.removed-history": "board:refresh",
   "discord.raid.review": "raid:review",
   "discord.raid.review.cancel": "raid:cancel-review",

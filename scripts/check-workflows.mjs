@@ -118,6 +118,9 @@ const secretStepIndex = deploymentSteps.findIndex((step) => step.name === "Uploa
 const discordStepIndex = deploymentSteps.findIndex(
   (step) => step.name === "Configure Discord commands and endpoint",
 );
+const repairStepIndex = deploymentSteps.findIndex(
+  (step) => step.name === "Repair legacy unassigned requests",
+);
 if (
   readinessStepIndex <= secretStepIndex ||
   readinessStepIndex >= discordStepIndex ||
@@ -125,6 +128,15 @@ if (
 ) {
   failures.push(
     `${workflowDirectory}/deploy-production.yml: Worker readiness must pass between secret upload and platform configuration`,
+  );
+}
+if (
+  repairStepIndex <= readinessStepIndex ||
+  repairStepIndex >= discordStepIndex ||
+  deploymentSteps[repairStepIndex]?.run !== "node scripts/deployment/repair-legacy-requests.mjs"
+) {
+  failures.push(
+    `${workflowDirectory}/deploy-production.yml: legacy request repair must pass after Worker readiness and before platform configuration`,
   );
 }
 

@@ -118,10 +118,12 @@ export async function synchronizeCanonicalBoard(input: {
   communityConfig: CommunityConfig;
   changedAt: Date;
   createIfMissing: boolean;
+  snapshot?: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
+  message?: DiscordBotMessage;
 }): Promise<string | undefined> {
   const repository = new D1MvpRepository(input.environment.DB);
-  const snapshot = await repository.getBoardSnapshot(input.changedAt);
-  const message = boardMessage(snapshot, input.communityConfig);
+  const snapshot = input.snapshot ?? (await repository.getBoardSnapshot(input.changedAt));
+  const message = input.message ?? boardMessage(snapshot, input.communityConfig);
   if (snapshot.canonicalMessageId !== undefined) {
     try {
       await updateDiscordMessage(
@@ -169,10 +171,10 @@ async function reconcileRaidMessage(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
-}): Promise<void> {
+}): Promise<string | null | undefined> {
   const current = await input.repository.getRaid(input.raid.id);
   const isReviewedPlanned = current?.state === "planned" && !current.automaticFill;
-  if (current === undefined || (current.state !== "active" && !isReviewedPlanned)) return;
+  if (current === undefined || (current.state !== "active" && !isReviewedPlanned)) return undefined;
   const channelId = input.communityConfig.discord.staffChannelId;
   const message = await raidDetailMessage({
     raid: current,
@@ -182,9 +184,9 @@ async function reconcileRaidMessage(input: {
   if (current.staffMessageId !== undefined) {
     try {
       await updateDiscordMessage(input.environment, channelId, current.staffMessageId, message);
-      return;
+      return current.staffMessageId;
     } catch (error) {
-      if (!(error instanceof DiscordApiError) || error.status !== 404) return;
+      if (!(error instanceof DiscordApiError) || error.status !== 404) return undefined;
     }
     if (current.state === "planned") {
       await input.repository.compareAndSetRaidStaffMessage({
@@ -192,7 +194,7 @@ async function reconcileRaidMessage(input: {
         expectedMessageId: current.staffMessageId,
         changedAt: input.changedAt,
       });
-      return;
+      return null;
     }
   }
   const created = await createDiscordMessage(input.environment, channelId, message);
@@ -211,7 +213,9 @@ async function reconcileRaidMessage(input: {
         channelId,
         messageId: created.id,
       });
+      return undefined;
     }
+    return created.id;
   } catch (error) {
     await deleteDuplicateRaidMessage({
       environment: input.environment,
@@ -226,13 +230,14 @@ async function reconcileVisibleRaidMessages(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
+  snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
+  message: DiscordBotMessage;
 }): Promise<void> {
   const repository = new D1MvpRepository(input.environment.DB);
-  const snapshot = await repository.getBoardSnapshot(input.changedAt);
-  const visibleRaids = [...snapshot.priorityRaids, ...snapshot.ordinaryRaids].filter(
+  const visibleRaids = [...input.snapshot.priorityRaids, ...input.snapshot.ordinaryRaids].filter(
     (raid) => raid.state === "active" || raid.staffMessageId !== undefined,
   );
-  await Promise.allSettled(
+  const reconciled = await Promise.allSettled(
     visibleRaids.map((raid) =>
       reconcileRaidMessage({
         ...input,
@@ -241,7 +246,18 @@ async function reconcileVisibleRaidMessages(input: {
       }),
     ),
   );
-  await synchronizeCanonicalBoard({ ...input, createIfMissing: false });
+  for (const [index, result] of reconciled.entries()) {
+    if (result.status !== "fulfilled" || result.value === undefined) continue;
+    const raid = visibleRaids[index];
+    if (raid === undefined) continue;
+    if (result.value === null) delete raid.staffMessageId;
+    else raid.staffMessageId = result.value;
+  }
+  await synchronizeCanonicalBoard({
+    ...input,
+    message: boardMessage(input.snapshot, input.communityConfig),
+    createIfMissing: false,
+  });
 }
 
 async function sendRaidCalls(
@@ -303,11 +319,18 @@ class StaffBoardHandler {
     this.repository = new D1MvpRepository(dependencies.environment.DB);
   }
 
-  private async materialize(): Promise<void> {
-    await this.repository.materializeWaitingRequests({
-      changedAt: this.dependencies.changedAt,
-      recipientLimit: this.dependencies.communityConfig.policies.recipientLimit,
-    });
+  private async claimMutation(deliveryId: string, eventType: string): Promise<boolean> {
+    const claimed = await this.repository.claimDiscordMutation(
+      deliveryId,
+      eventType,
+      this.dependencies.changedAt,
+    );
+    if (claimed) {
+      this.dependencies.context?.waitUntil(
+        this.repository.maintainExpiredReceipts(this.dependencies.changedAt).catch(() => undefined),
+      );
+    }
+    return claimed;
   }
 
   private refreshBoardLater(): void {
@@ -320,8 +343,15 @@ class StaffBoardHandler {
     this.dependencies.context?.waitUntil(work);
   }
 
-  private reconcileBoardLater(): void {
-    const work = reconcileVisibleRaidMessages(this.dependencies).catch(() => undefined);
+  private reconcileBoardLater(
+    snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>,
+    message: DiscordBotMessage,
+  ): void {
+    const work = reconcileVisibleRaidMessages({
+      ...this.dependencies,
+      snapshot,
+      message,
+    }).catch(() => undefined);
     this.dependencies.context?.waitUntil(work);
   }
 
@@ -432,15 +462,18 @@ class StaffBoardHandler {
     if (!hasAccess(interaction, communityConfig)) {
       return ephemeral("Use `/board` in the staff channel as the streamer or a volunteer sherpa.");
     }
-    await this.materialize();
+    const snapshot = await this.repository.getBoardSnapshot(this.dependencies.changedAt);
+    const message = boardMessage(snapshot, communityConfig);
     const messageId = await synchronizeCanonicalBoard({
       environment: this.dependencies.environment,
       communityConfig,
       changedAt: this.dependencies.changedAt,
       createIfMissing: true,
+      snapshot,
+      message,
     });
     if (messageId === undefined) throw new Error("The canonical board was not created.");
-    this.reconcileBoardLater();
+    this.reconcileBoardLater(snapshot, message);
     return ephemeral(
       `[Open the sherpa board](${discordMessageUrl(
         communityConfig.discord.guildId,
@@ -726,21 +759,19 @@ class StaffBoardHandler {
     if (boardAction === undefined && raidAction === undefined) {
       return new Response("Unsupported component", { status: 400 });
     }
-    await this.materialize();
     if (boardAction?.action === "retired_start") {
       return ephemeral("This board is out of date. Use Refresh, then review the raid again.");
     }
     if (boardAction?.action === "refresh") {
-      this.reconcileBoardLater();
-      return update(
-        boardMessage(await this.repository.getBoardSnapshot(changedAt), communityConfig),
-      );
+      const snapshot = await this.repository.getBoardSnapshot(changedAt);
+      const message = boardMessage(snapshot, communityConfig);
+      this.reconcileBoardLater(snapshot, message);
+      return update(message);
     }
     if (
-      !(await this.repository.claimDiscordMutation(
+      !(await this.claimMutation(
         interaction.interactionId,
         boardAction === undefined ? `raid:${raidAction?.action}` : "raid:review",
-        changedAt,
       ))
     ) {
       return ephemeral("That action was already received.");

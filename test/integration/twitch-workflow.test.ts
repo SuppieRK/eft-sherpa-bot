@@ -64,6 +64,42 @@ async function eventSubRequest(
 
 afterEach(() => vi.restoreAllMocks());
 
+async function seedLegacyWaitingRequest(input: {
+  deliveryId: string;
+  gameMode: number;
+  mapId: string;
+  twitchLogin: string;
+  twitchUserId: string;
+}): Promise<number> {
+  const repo = new D1MvpRepository(testEnvironment.DB);
+  const observedAt = new Date("2096-08-15T20:00:00.000Z");
+  await repo.upsertUserMapping({
+    twitchLogin: input.twitchLogin,
+    twitchUserId: input.twitchUserId,
+    observedAt,
+  });
+  const row = await env.DB.prepare(
+    `INSERT INTO help_requests
+       (source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+        game_mode, map_id, objective, created_at, updated_at)
+     VALUES (1, ?, ?, ?, ?, ?, ?, 'Legacy task', ?, ?)
+     RETURNING id`,
+  )
+    .bind(
+      input.deliveryId,
+      input.twitchUserId,
+      input.twitchLogin,
+      input.twitchLogin,
+      input.gameMode,
+      input.mapId,
+      observedAt.getTime(),
+      observedAt.getTime(),
+    )
+    .first<{ id: number }>();
+  if (row === null) throw new Error("Legacy request was not seeded");
+  return row.id;
+}
+
 describe("Twitch private-pilot commands", () => {
   it.each([
     ["!request", "use !request [mode] [map] [goal]"],
@@ -166,19 +202,13 @@ describe("Twitch private-pilot commands", () => {
   });
 
   it("recovers a duplicate request that committed before materialization", async () => {
-    const repo = new D1MvpRepository(testEnvironment.DB);
-    const created = await repo.createRequest({
-      sourcePlatform: "twitch",
-      sourceDeliveryId: "recover-waiting",
+    const requestId = await seedLegacyWaitingRequest({
+      deliveryId: "recover-waiting",
       twitchUserId: "twitch-viewer",
       twitchLogin: "viewer",
-      gameMode: "pve",
-      inGameName: "viewer",
+      gameMode: 2,
       mapId: "customs",
-      objective: "Pocket watch",
-      observedAt: new Date("2096-08-15T20:00:00.000Z"),
     });
-    expect(created.request.state).toBe("waiting");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }),
     );
@@ -191,9 +221,7 @@ describe("Twitch private-pilot commands", () => {
     await waitOnExecutionContext(context);
 
     await expect(
-      env.DB.prepare(`SELECT state FROM help_requests WHERE id = ?`)
-        .bind(created.request.id)
-        .first(),
+      env.DB.prepare(`SELECT state FROM help_requests WHERE id = ?`).bind(requestId).first(),
     ).resolves.toEqual({ state: 1 });
     await expect(
       env.DB.prepare(`SELECT count(*) AS count FROM raid_group_members`).first(),
@@ -211,22 +239,15 @@ describe("Twitch private-pilot commands", () => {
       inGameName: "viewer",
       mapId: "customs",
       objective: "Pocket watch",
+      recipientLimit: 3,
       observedAt: new Date("2096-08-15T20:00:00.000Z"),
     });
-    await repo.materializeWaitingRequests({
-      recipientLimit: 3,
-      changedAt: new Date("2096-08-15T20:00:01.000Z"),
-    });
-    const unrelated = await repo.createRequest({
-      sourcePlatform: "twitch",
-      sourceDeliveryId: "unrelated-waiting",
+    const unrelatedRequestId = await seedLegacyWaitingRequest({
+      deliveryId: "unrelated-waiting",
       twitchUserId: "other-twitch-viewer",
       twitchLogin: "other_viewer",
-      gameMode: "pvp",
-      inGameName: "other_viewer",
+      gameMode: 1,
       mapId: "woods",
-      objective: "Another task",
-      observedAt: new Date("2096-08-15T20:00:02.000Z"),
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }),
@@ -246,7 +267,7 @@ describe("Twitch private-pilot commands", () => {
     ).resolves.toEqual({ state: 1 });
     await expect(
       env.DB.prepare(`SELECT state FROM help_requests WHERE id = ?`)
-        .bind(unrelated.request.id)
+        .bind(unrelatedRequestId)
         .first(),
     ).resolves.toEqual({ state: 0 });
   });
