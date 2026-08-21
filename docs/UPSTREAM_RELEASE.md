@@ -9,7 +9,7 @@ The original repository uses a `production` environment that points to maintaine
 1. Merge the release candidate into upstream `main`.
 2. Confirm that CI passes for the exact commit.
 3. Download the `benchmark-evidence` artifact for the exact commit.
-4. Review the D1 rows read and rows written for each operation and size.
+4. Review the D1 binding calls, rows read, rows written, and database size for each operation and size.
 5. Compare these row statistics with the prior release report.
 6. Explain each material regression before you continue.
 7. Run **Deploy production** in `SuppieRK/eft-sherpa-bot`.
@@ -27,6 +27,10 @@ The release workflow rejects a commit that does not have a successful upstream d
 Migration `0002` sets all existing requests and raids to PvE. It also keeps old Worker writes compatible during deployment. After the bot accepts PvP Seasonal or PvP data, use a forward repair instead of a version that has no game-mode support.
 
 Migration `0004` backfills compact staff statistics from retained request and raid history. It then maintains the rollups in the same D1 transactions as source changes. After this migration is applied, preserve the source history and use a forward migration to repair a rollup defect.
+
+Migration `0006` repairs duplicate active requests that have the same stable Twitch user ID, mode, and map. It keeps the oldest request. It cancels later duplicates and removes their open memberships. Before deployment, record the value of `stableIdentityRepairCount` from `/internal/status`. Stop if the value is not expected.
+
+The local benchmark is regression evidence. Cloudflare D1 Analytics is the source for billed D1 use. Compare both sources for the same Worker version and time period. Investigate a material difference. Do not change a local fixture only to make the values look equal.
 
 ## Complete the smoke test
 
@@ -55,5 +59,9 @@ Use only maintainer-owned test accounts and the disposable test D1 database.
 21. Confirm that the Twitch call shows the mode and map.
 22. Record one raid result.
 23. Confirm that the raid state changes correctly.
+24. Change a test Twitch login while you keep the same Twitch user ID.
+25. Run `!queue` and confirm that the existing request remains visible.
+26. Send the exact same Twitch delivery twice and confirm that the bot sends one reply.
+27. Refresh the board after several quick test requests. Confirm that the final board contains the newest queue state.
 
 Do not publish the release if one step fails.

@@ -112,6 +112,11 @@ describe("eight-table dual-queue schema", () => {
         "priority_open_raid_count",
         "ordinary_open_raid_count",
         "receipt_cleanup_after",
+        "board_dirty_version",
+        "board_rendered_version",
+        "board_lease_until",
+        "board_lease_token",
+        "stable_identity_repair_count",
       ]),
     );
   });
@@ -122,6 +127,7 @@ describe("eight-table dual-queue schema", () => {
        WHERE type = 'index' AND name IN (
          'help_requests_one_active_map_per_twitch',
          'help_requests_one_active_mode_map_per_twitch',
+         'help_requests_one_active_mode_map_per_twitch_id',
          'help_requests_mode_queue_order_idx',
          'help_requests_queue_order_idx',
          'help_requests_waiting_order_idx',
@@ -139,10 +145,10 @@ describe("eight-table dual-queue schema", () => {
     expect(indexes.results.map((index) => index.name)).toEqual(
       expect.arrayContaining([
         "help_requests_one_active_mode_map_per_twitch",
+        "help_requests_one_active_mode_map_per_twitch_id",
         "help_requests_mode_queue_order_idx",
         "help_requests_waiting_order_idx",
         "help_requests_waiting_mode_order_idx",
-        "raid_groups_outstanding_idx",
         "raid_groups_outstanding_mode_idx",
         "raid_groups_open_sort_key_idx",
         "raid_groups_compatible_mode_idx",
@@ -160,6 +166,8 @@ describe("eight-table dual-queue schema", () => {
          ,'help_requests_one_active_map_per_twitch'
          ,'raid_groups_compatible_idx'
          ,'help_requests_queue_order_idx'
+         ,'help_requests_twitch_login_idx'
+         ,'raid_groups_outstanding_idx'
        )`,
     ).all<{ name: string }>();
     expect(retired.results).toEqual([]);
@@ -262,6 +270,19 @@ describe("eight-table dual-queue schema", () => {
          AND state IN (0, 1)
        ORDER BY is_priority DESC, id LIMIT 1`,
     ).all<{ detail: string }>();
+    const stableCallerPlan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM help_requests
+       WHERE twitch_user_id = 'stable-viewer' AND state IN (0, 1)
+       ORDER BY is_priority DESC, id LIMIT 1`,
+    ).all<{ detail: string }>();
+    const stableDuplicatePlan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id FROM help_requests
+       WHERE twitch_user_id = 'stable-viewer' AND game_mode = 2 AND map_id = 'customs'
+         AND state IN (0, 1)
+       ORDER BY is_priority DESC, id LIMIT 1`,
+    ).all<{ detail: string }>();
 
     expect(waitingFifoPlan.results.map((row) => row.detail).join(" ")).toContain(
       "help_requests_waiting_order_idx",
@@ -270,10 +291,16 @@ describe("eight-table dual-queue schema", () => {
       "help_requests_waiting_mode_order_idx",
     );
     expect(callerPlan.results.map((row) => row.detail).join(" ")).toContain(
-      "help_requests_twitch_login_idx",
+      "help_requests_one_active_mode_map_per_twitch",
     );
     expect(activeDuplicatePlan.results.map((row) => row.detail).join(" ")).toContain(
       "help_requests_one_active_mode_map_per_twitch",
+    );
+    expect(stableCallerPlan.results.map((row) => row.detail).join(" ")).toContain(
+      "help_requests_one_active_mode_map_per_twitch_id",
+    );
+    expect(stableDuplicatePlan.results.map((row) => row.detail).join(" ")).toContain(
+      "help_requests_one_active_mode_map_per_twitch_id",
     );
   });
 

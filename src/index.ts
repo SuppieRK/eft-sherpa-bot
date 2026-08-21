@@ -9,11 +9,17 @@ import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
 import { parseTwitchRequestInput } from "./domain/twitch-request";
 import { isStaffBoardMember } from "./domain/staff-board";
-import { D1MvpRepository } from "./infrastructure/cloudflare/d1-mvp-repository";
+import {
+  D1MvpRepository,
+  type TwitchReplyReceipt,
+} from "./infrastructure/cloudflare/d1-mvp-repository";
 import { logDiagnostic } from "./infrastructure/cloudflare/diagnostics";
 import type { CloudflareEnvironment } from "./infrastructure/cloudflare/environment";
 import { requireEnvironmentValue } from "./infrastructure/cloudflare/environment";
-import { observeWorkerRequest } from "./infrastructure/cloudflare/telemetry";
+import {
+  observeWorkerRequest,
+  type TrackedExecutionContext,
+} from "./infrastructure/cloudflare/telemetry";
 import {
   DISCORD_EPHEMERAL_MESSAGE_FLAG,
   DISCORD_INTERACTION_RESPONSE_CHANNEL_MESSAGE,
@@ -144,7 +150,7 @@ type UserDirectoryEditAction = Extract<UserDirectoryAction, { twitchLogin: strin
 interface DiscordInteractionDependencies {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
-  context: ExecutionContext;
+  context: TrackedExecutionContext;
   changedAt: Date;
   repository: D1MvpRepository;
 }
@@ -154,19 +160,28 @@ async function claimDiscordMutation(
   deliveryId: string,
   eventType: string,
 ): Promise<boolean> {
-  const claimed = await dependencies.repository.claimDiscordMutation(
+  return dependencies.repository.claimDiscordMutation(
     deliveryId,
     eventType,
     dependencies.changedAt,
   );
-  if (claimed) {
-    dependencies.context.waitUntil(
-      dependencies.repository
-        .maintainExpiredReceipts(dependencies.changedAt)
-        .catch(() => undefined),
-    );
-  }
-  return claimed;
+}
+
+async function completeDiscordMutation(
+  dependencies: DiscordInteractionDependencies,
+  deliveryId: string,
+): Promise<void> {
+  await dependencies.repository.completeDiscordMutation(deliveryId);
+  dependencies.context.waitUntilTask("discord.receipt_cleanup", async (environment) => {
+    await new D1MvpRepository(environment.DB).maintainExpiredReceipts(dependencies.changedAt);
+  });
+}
+
+async function releaseDiscordMutation(
+  dependencies: DiscordInteractionDependencies,
+  deliveryId: string,
+): Promise<void> {
+  await dependencies.repository.releaseDiscordMutation(deliveryId);
 }
 
 async function handleStaffInsightsCommand(
@@ -239,20 +254,26 @@ async function handleDiscordLinkCommand(
     "identity:link-twitch",
   );
   if (!claimed) return discordEphemeralMessage("That link command was already received.");
-  const discordDisplayName =
-    targetDiscordUserId === interaction.discordUserId
-      ? interaction.discordDisplayName
-      : interaction.resolvedUserDisplayNames[targetDiscordUserId];
-  await repository.linkDiscordToTwitch({
-    twitchLogin,
-    discordUserId: targetDiscordUserId,
-    ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
-    ...(inGameName === undefined ? {} : { inGameName }),
-    linkedAt: changedAt,
-  });
-  return discordEphemeralMessage(
-    buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
-  );
+  try {
+    const discordDisplayName =
+      targetDiscordUserId === interaction.discordUserId
+        ? interaction.discordDisplayName
+        : interaction.resolvedUserDisplayNames[targetDiscordUserId];
+    await repository.linkDiscordToTwitch({
+      twitchLogin,
+      discordUserId: targetDiscordUserId,
+      ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
+      ...(inGameName === undefined ? {} : { inGameName }),
+      linkedAt: changedAt,
+    });
+    await completeDiscordMutation(dependencies, interaction.interactionId);
+    return discordEphemeralMessage(
+      buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
+    );
+  } catch (error) {
+    await releaseDiscordMutation(dependencies, interaction.interactionId);
+    throw error;
+  }
 }
 
 async function handleDiscordQueueCommand(
@@ -327,18 +348,17 @@ async function completeMissingDiscord(
   }
   try {
     const discordDisplayName = interaction.resolvedUserDisplayNames[discordUserId];
-    const outcome = await repository.completeMissingDiscord({
+    const result = await repository.completeMissingDiscordAndGet({
       twitchLogin: action.twitchLogin,
       discordUserId,
       ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
       changedAt,
     });
-    const entry = await repository.findUserMappingByTwitchLogin(action.twitchLogin);
-    return updatedUserDetail(outcome, entry, action.pageFirst);
-  } catch {
-    return discordEphemeralMessage(
-      "That Discord member is already linked. Use `/link-twitch` to correct the association.",
-    );
+    await completeDiscordMutation(dependencies, interaction.interactionId);
+    return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
+  } catch (error) {
+    await releaseDiscordMutation(dependencies, interaction.interactionId);
+    throw error;
   }
 }
 
@@ -418,20 +438,25 @@ async function handleUserDirectoryEftModal(
   if (!claimed) {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
   }
-  const outcome = await repository.completeMissingInGameName({
-    twitchLogin: action.twitchLogin,
-    inGameName,
-    changedAt,
-  });
-  const entry = await repository.findUserMappingByTwitchLogin(action.twitchLogin);
-  return updatedUserDetail(outcome, entry, action.pageFirst);
+  const result = await repository
+    .completeMissingInGameNameAndGet({
+      twitchLogin: action.twitchLogin,
+      inGameName,
+      changedAt,
+    })
+    .catch(async (error: unknown) => {
+      await releaseDiscordMutation(dependencies, interaction.interactionId);
+      throw error;
+    });
+  await completeDiscordMutation(dependencies, interaction.interactionId);
+  return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
 }
 
 async function handleDiscordRequestModal(
   interaction: DiscordModalSubmitInteraction,
   dependencies: DiscordInteractionDependencies,
 ): Promise<Response> {
-  const { environment, communityConfig, context, changedAt, repository } = dependencies;
+  const { communityConfig, context, changedAt, repository } = dependencies;
   const gameMode = requestModalGameMode(interaction.customId);
   if (gameMode === undefined) {
     if (interaction.customId.startsWith(DISCORD_REQUEST_MODAL_V2_PREFIX)) {
@@ -443,7 +468,6 @@ async function handleDiscordRequestModal(
   if (!validation.valid) {
     return discordEphemeralMessage(buildDiscordRequestValidationReply(validation));
   }
-  await claimDiscordMutation(dependencies, interaction.interactionId, "request:create");
   const created = await repository.createRequest({
     sourcePlatform: "discord",
     sourceDeliveryId: interaction.interactionId,
@@ -461,14 +485,14 @@ async function handleDiscordRequestModal(
     observedAt: changedAt,
   });
   if (created.queueChanged) {
-    context.waitUntil(
-      synchronizeCanonicalBoard({
-        environment,
+    context.waitUntilTask("discord.board_drain", async (backgroundEnvironment) => {
+      await synchronizeCanonicalBoard({
+        environment: backgroundEnvironment,
         communityConfig,
         changedAt,
         createIfMissing: false,
-      }).catch(() => undefined),
-    );
+      });
+    });
   }
   const mapName = resolveTarkovMap(validation.value.mapId)?.name ?? validation.value.mapId;
   return discordEphemeralMessage(
@@ -494,7 +518,7 @@ async function handleDiscordInteraction(
   request: Request,
   environment: CloudflareEnvironment,
   communityConfig: CommunityConfig,
-  context: ExecutionContext,
+  context: TrackedExecutionContext,
 ): Promise<Response> {
   const rawBody = await request.text();
   const verified = await verifyDiscordInteractionRequest(
@@ -686,11 +710,38 @@ async function deliverTwitchReply(input: {
   }
 }
 
+async function handleExistingTwitchReceipt(input: {
+  receipt: TwitchReplyReceipt;
+  deliveryId: string;
+  repository: D1MvpRepository;
+  context: TrackedExecutionContext;
+  communityConfig: CommunityConfig;
+}): Promise<Response> {
+  const shouldRetry =
+    input.receipt.replyStatus === "failed" &&
+    (await input.repository.claimFailedTwitchReplyRetry(input.deliveryId));
+  if (shouldRetry) {
+    input.context.waitUntilTask("twitch.reply_retry", async (backgroundEnvironment) => {
+      await deliverTwitchReply({
+        environment: backgroundEnvironment,
+        communityConfig: input.communityConfig,
+        repository: new D1MvpRepository(backgroundEnvironment.DB),
+        deliveryId: input.deliveryId,
+        replyText: input.receipt.replyText,
+        ...(input.receipt.replyToMessageId === undefined
+          ? {}
+          : { replyToMessageId: input.receipt.replyToMessageId }),
+      });
+    });
+  }
+  return new Response(null, { status: 204 });
+}
+
 async function handleTwitchEventSub(
   request: Request,
   environment: CloudflareEnvironment,
   communityConfig: CommunityConfig,
-  context: ExecutionContext,
+  context: TrackedExecutionContext,
   replyToMessage = true,
 ): Promise<Response> {
   const rawBody = await request.text();
@@ -723,6 +774,16 @@ async function handleTwitchEventSub(
   }
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);
+  const existingReceipt = await repository.findTwitchReply(verification.headers.messageId);
+  if (existingReceipt !== undefined) {
+    return handleExistingTwitchReceipt({
+      receipt: existingReceipt,
+      deliveryId: verification.headers.messageId,
+      repository,
+      context,
+      communityConfig,
+    });
+  }
   const commandResult = await buildTwitchPublicReply(
     command,
     event.chatterUserId,
@@ -740,7 +801,9 @@ async function handleTwitchEventSub(
     receivedAt: observedAt,
   });
   if (!receipt.duplicate) {
-    context.waitUntil(repository.maintainExpiredReceipts(observedAt).catch(() => undefined));
+    context.waitUntilTask("twitch.receipt_cleanup", async (backgroundEnvironment) => {
+      await new D1MvpRepository(backgroundEnvironment.DB).maintainExpiredReceipts(observedAt);
+    });
   }
   const shouldDeliver =
     (!receipt.duplicate && receipt.replyStatus === "pending") ||
@@ -748,28 +811,28 @@ async function handleTwitchEventSub(
       receipt.replyStatus === "failed" &&
       (await repository.claimFailedTwitchReplyRetry(verification.headers.messageId)));
   if (shouldDeliver) {
-    context.waitUntil(
-      deliverTwitchReply({
-        environment,
+    context.waitUntilTask("twitch.reply_delivery", async (backgroundEnvironment) => {
+      await deliverTwitchReply({
+        environment: backgroundEnvironment,
         communityConfig,
-        repository,
+        repository: new D1MvpRepository(backgroundEnvironment.DB),
         deliveryId: verification.headers.messageId,
         replyText: receipt.replyText,
         ...(receipt.replyToMessageId === undefined
           ? {}
           : { replyToMessageId: receipt.replyToMessageId }),
-      }),
-    );
+      });
+    });
   }
-  if (commandResult.boardChanged) {
-    context.waitUntil(
-      synchronizeCanonicalBoard({
-        environment,
+  if (!receipt.duplicate && commandResult.boardChanged) {
+    context.waitUntilTask("twitch.board_drain", async (backgroundEnvironment) => {
+      await synchronizeCanonicalBoard({
+        environment: backgroundEnvironment,
         communityConfig,
         changedAt: observedAt,
         createIfMissing: false,
-      }).catch(() => undefined),
-    );
+      });
+    });
   }
   return new Response(null, { status: 204 });
 }
@@ -787,6 +850,121 @@ function hasDiagnosticsAccess(request: Request, environment: CloudflareEnvironme
   return mismatch === 0;
 }
 
+type WorkerRoute = "health" | "twitch" | "discord" | "status" | "legacy_repair";
+
+function workerRoute(request: Request, url: URL): WorkerRoute | undefined {
+  if (request.method === "GET" && url.pathname === "/health") return "health";
+  if (request.method === "POST" && url.pathname === "/webhooks/twitch/eventsub") return "twitch";
+  if (request.method === "POST" && url.pathname === "/webhooks/discord/interactions") {
+    return "discord";
+  }
+  if (request.method === "GET" && url.pathname === "/internal/status") return "status";
+  if (request.method === "POST" && url.pathname === "/internal/repair-unassigned-requests") {
+    return "legacy_repair";
+  }
+  return undefined;
+}
+
+async function handleLegacyRepair(
+  environment: CloudflareEnvironment,
+  communityConfig: CommunityConfig,
+): Promise<Response> {
+  const repository = new D1MvpRepository(environment.DB);
+  const result = await repository.repairLegacyUnassignedRequests({
+    recipientLimit: communityConfig.policies.recipientLimit,
+    changedAt: new Date(),
+  });
+  if (result.repaired > 0 && !result.hasMore) {
+    await synchronizeCanonicalBoard({
+      environment,
+      communityConfig,
+      changedAt: new Date(),
+      createIfMissing: false,
+    });
+  }
+  return Response.json(result);
+}
+
+async function handleInternalStatus(
+  environment: CloudflareEnvironment,
+  communityConfig: CommunityConfig,
+): Promise<Response> {
+  const [authorization, database] = await Promise.all([
+    validateTwitchAuthorization(environment, {
+      clientId: communityConfig.twitch.clientId,
+      botUserId: communityConfig.twitch.botUserId,
+    }),
+    new D1MvpRepository(environment.DB).getDiagnostics(),
+  ]);
+  const recovery = getTwitchAuthorizationRecovery(authorization);
+  return Response.json({
+    authorization,
+    database,
+    ...(recovery === undefined ? {} : { recovery }),
+  });
+}
+
+async function handleConfiguredWorkerRequest(input: {
+  route: Exclude<WorkerRoute, "health">;
+  request: Request;
+  environment: CloudflareEnvironment;
+  communityConfig: CommunityConfig;
+  context: TrackedExecutionContext;
+}): Promise<Response> {
+  if (input.route === "twitch") {
+    return handleTwitchEventSub(
+      input.request,
+      input.environment,
+      input.communityConfig,
+      input.context,
+    );
+  }
+  if (input.route === "discord") {
+    return handleDiscordInteraction(
+      input.request,
+      input.environment,
+      input.communityConfig,
+      input.context,
+    );
+  }
+  if (!hasDiagnosticsAccess(input.request, input.environment)) {
+    return new Response("Not found", { status: 404 });
+  }
+  return input.route === "legacy_repair"
+    ? handleLegacyRepair(input.environment, input.communityConfig)
+    : handleInternalStatus(input.environment, input.communityConfig);
+}
+
+async function handleWorkerRequest(input: {
+  request: Request;
+  environment: CloudflareEnvironment;
+  context: TrackedExecutionContext;
+  communityConfigOverride?: CommunityConfig;
+}): Promise<Response> {
+  const communityConfig =
+    input.communityConfigOverride ?? communityConfigFromEnvironment(input.environment);
+  const configurationErrors = validateCommunityConfig(communityConfig);
+  const route = workerRoute(input.request, new URL(input.request.url));
+  if (route === "health") {
+    return Response.json({
+      status: "ok",
+      environment: input.environment.APP_ENV,
+      configuration: configurationErrors.length === 0 ? "ready" : "incomplete",
+    });
+  }
+  if (route === undefined) return new Response("Not found", { status: 404 });
+  if (configurationErrors.length > 0) {
+    return new Response("Community configuration is incomplete", { status: 503 });
+  }
+  return handleConfiguredWorkerRequest({
+    route,
+    request: input.request,
+    environment: input.environment,
+    communityConfig,
+    context: input.context,
+  });
+}
+
 export function createWorker(communityConfigOverride?: CommunityConfig) {
   return {
     async fetch(
@@ -794,68 +972,12 @@ export function createWorker(communityConfigOverride?: CommunityConfig) {
       environment: CloudflareEnvironment,
       context: ExecutionContext,
     ): Promise<Response> {
-      return observeWorkerRequest(request, environment, async (measured) => {
-        const communityConfig = communityConfigOverride ?? communityConfigFromEnvironment(measured);
-        const configurationErrors = validateCommunityConfig(communityConfig);
-        const url = new URL(request.url);
-        if (request.method === "GET" && url.pathname === "/health") {
-          return Response.json({
-            status: "ok",
-            environment: measured.APP_ENV,
-            configuration: configurationErrors.length === 0 ? "ready" : "incomplete",
-          });
-        }
-        const isTwitch = request.method === "POST" && url.pathname === "/webhooks/twitch/eventsub";
-        const isDiscord =
-          request.method === "POST" && url.pathname === "/webhooks/discord/interactions";
-        const isStatus = request.method === "GET" && url.pathname === "/internal/status";
-        const isLegacyRepair =
-          request.method === "POST" && url.pathname === "/internal/repair-unassigned-requests";
-        if (!(isTwitch || isDiscord || isStatus || isLegacyRepair)) {
-          return new Response("Not found", { status: 404 });
-        }
-        if (configurationErrors.length > 0) {
-          return new Response("Community configuration is incomplete", { status: 503 });
-        }
-        if (isTwitch) {
-          return handleTwitchEventSub(request, measured, communityConfig, context);
-        }
-        if (isDiscord) {
-          return handleDiscordInteraction(request, measured, communityConfig, context);
-        }
-        if (isStatus || isLegacyRepair) {
-          if (!hasDiagnosticsAccess(request, measured)) {
-            return new Response("Not found", { status: 404 });
-          }
-        }
-        if (isLegacyRepair) {
-          const repository = new D1MvpRepository(measured.DB);
-          const result = await repository.repairLegacyUnassignedRequests({
-            recipientLimit: communityConfig.policies.recipientLimit,
-            changedAt: new Date(),
-          });
-          if (result.repaired > 0 && !result.hasMore) {
-            await synchronizeCanonicalBoard({
-              environment: measured,
-              communityConfig,
-              changedAt: new Date(),
-              createIfMissing: false,
-            });
-          }
-          return Response.json(result);
-        }
-        const [authorization, database] = await Promise.all([
-          validateTwitchAuthorization(measured, {
-            clientId: communityConfig.twitch.clientId,
-            botUserId: communityConfig.twitch.botUserId,
-          }),
-          new D1MvpRepository(measured.DB).getDiagnostics(),
-        ]);
-        const recovery = getTwitchAuthorizationRecovery(authorization);
-        return Response.json({
-          authorization,
-          database,
-          ...(recovery === undefined ? {} : { recovery }),
+      return observeWorkerRequest(request, environment, context, async (measured, tracked) => {
+        return handleWorkerRequest({
+          request,
+          environment: measured,
+          context: tracked,
+          ...(communityConfigOverride === undefined ? {} : { communityConfigOverride }),
         });
       });
     },

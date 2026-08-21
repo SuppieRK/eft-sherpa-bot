@@ -1,0 +1,36 @@
+## MODIFIED Requirements
+
+### Requirement: Inbound commands are authenticated and idempotent
+The system SHALL verify platform signatures and a ten-minute timestamp window before parsing private data. It SHALL retain completed delivery protection for 24 hours and purge expired receipts only through bounded leased background maintenance. Discord request creation SHALL use its source-delivery uniqueness instead of storing a redundant mutation receipt. Every other Discord mutation SHALL either commit its completion receipt atomically with the guarded D1 mutation or retain an incomplete retryable receipt until the durable mutation succeeds. Twitch SHALL check for an exact stored delivery before it performs command-side D1 work, SHALL store a new reply with the command result atomically, and SHALL permit only the stored winner to send a reply or synchronize the board. A failed Twitch reply SHALL remain eligible for one atomically claimed retry.
+
+#### Scenario: Discord request modal repeats
+- **WHEN** Discord repeats the same valid request-modal delivery
+- **THEN** source-delivery uniqueness returns the existing request without a separate Discord receipt or duplicate queue state
+
+#### Scenario: Discord mutation fails after it is claimed
+- **WHEN** a guarded Discord mutation fails before its durable state commits
+- **THEN** a later exact delivery can reclaim or retry it and the failed attempt is not recorded as complete
+
+#### Scenario: Discord mutation repeats after commit
+- **WHEN** a completed Discord mutation delivery repeats
+- **THEN** it does not apply the state transition or its external effect again
+
+#### Scenario: Twitch delivery repeats after its receipt exists
+- **WHEN** a committed Twitch delivery is received again
+- **THEN** the Worker reads the stored reply state before command processing and performs no repeated identity, request, queue, or board mutation work
+
+#### Scenario: Twitch delivery overlaps while reply is pending
+- **WHEN** several copies of one signed Twitch command overlap before the first reply finishes
+- **THEN** the stored winning receipt permits at most one platform reply and one canonical-board synchronization
+
+#### Scenario: Failed Twitch reply is retried concurrently
+- **WHEN** several repeated deliveries observe the same failed Twitch reply
+- **THEN** one delivery atomically claims and retries the stored reply
+
+#### Scenario: A valid signature has a stale timestamp
+- **WHEN** a Discord or Twitch delivery is outside the ten-minute replay window
+- **THEN** the system rejects it before parsing or storing the delivery
+
+#### Scenario: An old receipt passes retention
+- **WHEN** receipt maintenance runs more than 24 hours after that receipt was accepted
+- **THEN** the bounded background batch can delete it while recent duplicate protection remains active

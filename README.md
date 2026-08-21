@@ -50,7 +50,7 @@ npm run verify
 
 `npm run verify` checks format, lint rules, TypeScript, unused code, migrations, documentation, workflows, tests, the Worker build, and tracked secrets.
 
-Run `npm run benchmark:d1` before a release. This command measures all user operations with a fully local D1 database. It writes the new latency and D1 row statistics to the `reports` directory. Review rows read and rows written first. The benchmark cannot use a remote D1 database.
+Run `npm run benchmark:d1` before a release. This command measures all user operations with a fully local D1 database. It writes latency, binding calls, statements, rows read, rows written, and database size to the `reports` directory. Review D1 rows and binding calls first. The command checks an exact baseline and a separate maximum budget. The baseline update command cannot change the maximum budget. The benchmark cannot use a remote D1 database.
 
 See [Contributing](CONTRIBUTING.md) before you send a change.
 

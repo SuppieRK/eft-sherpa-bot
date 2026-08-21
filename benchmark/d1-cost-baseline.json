@@ -1,1873 +1,3402 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "databaseBytes": {
-    "100": 188416,
-    "1000": 778240,
-    "10000": 6246400,
-    "100000": 63930368
+    "100": 196608,
+    "1000": 786432,
+    "10000": 6340608,
+    "100000": 64901120
   },
   "operations": {
     "100:discord.request.form.prefilled": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 1,
       "rowsWritten": 0
     },
     "100:discord.request.submit.created": {
-      "statements": 13,
-      "rowsRead": 219,
-      "rowsWritten": 29
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 248,
+      "rowsWritten": 28
     },
     "100:discord.request.submit.already-active": {
       "statements": 10,
-      "rowsRead": 28,
-      "rowsWritten": 6
+      "bindingCalls": 1,
+      "rowsRead": 26,
+      "rowsWritten": 4
+    },
+    "100:discord.request.submit.exact-replay": {
+      "statements": 10,
+      "bindingCalls": 1,
+      "rowsRead": 33,
+      "rowsWritten": 4
     },
     "100:discord.queue.p10": {
       "statements": 6,
-      "rowsRead": 25,
+      "bindingCalls": 5,
+      "rowsRead": 27,
       "rowsWritten": 0
     },
     "100:discord.queue.p50": {
       "statements": 8,
-      "rowsRead": 54,
+      "bindingCalls": 6,
+      "rowsRead": 56,
       "rowsWritten": 0
     },
     "100:discord.queue.p90": {
       "statements": 8,
-      "rowsRead": 111,
+      "bindingCalls": 6,
+      "rowsRead": 113,
       "rowsWritten": 0
     },
     "100:discord.link.self": {
       "statements": 5,
-      "rowsRead": 5,
-      "rowsWritten": 5
+      "bindingCalls": 4,
+      "rowsRead": 6,
+      "rowsWritten": 6
     },
     "100:twitch.request.created": {
-      "statements": 15,
-      "rowsRead": 220,
-      "rowsWritten": 30
+      "statements": 20,
+      "bindingCalls": 9,
+      "rowsRead": 253,
+      "rowsWritten": 32
+    },
+    "100:twitch.request.exact-replay": {
+      "statements": 1,
+      "bindingCalls": 1,
+      "rowsRead": 1,
+      "rowsWritten": 0
     },
     "100:twitch.request.already-active": {
-      "statements": 12,
-      "rowsRead": 30,
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 32,
       "rowsWritten": 4
     },
     "100:twitch.request.invalid": {
       "statements": 4,
+      "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 3
     },
     "100:twitch.queue.p10": {
       "statements": 12,
-      "rowsRead": 32,
+      "bindingCalls": 10,
+      "rowsRead": 35,
       "rowsWritten": 3
     },
     "100:twitch.queue.p50": {
       "statements": 14,
-      "rowsRead": 61,
+      "bindingCalls": 11,
+      "rowsRead": 64,
       "rowsWritten": 3
     },
     "100:twitch.queue.p90": {
       "statements": 14,
-      "rowsRead": 118,
+      "bindingCalls": 11,
+      "rowsRead": 121,
       "rowsWritten": 3
     },
     "100:discord.board.create": {
       "statements": 4,
-      "rowsRead": 168,
+      "bindingCalls": 3,
+      "rowsRead": 197,
       "rowsWritten": 1
     },
     "100:discord.board.open": {
-      "statements": 3,
-      "rowsRead": 168,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 201,
       "rowsWritten": 0
     },
     "100:discord.board.refresh": {
-      "statements": 4,
-      "rowsRead": 170,
-      "rowsWritten": 0
-    },
-    "100:discord.raid.review": {
-      "statements": 8,
-      "rowsRead": 183,
-      "rowsWritten": 5
-    },
-    "100:discord.raid.review.cancel": {
-      "statements": 7,
-      "rowsRead": 182,
-      "rowsWritten": 4
-    },
-    "100:discord.raid.call-start.streamer": {
-      "statements": 11,
-      "rowsRead": 209,
-      "rowsWritten": 8
-    },
-    "100:discord.requester.pull.candidates": {
-      "statements": 9,
-      "rowsRead": 192,
+      "statements": 6,
+      "bindingCalls": 5,
+      "rowsRead": 196,
       "rowsWritten": 3
     },
-    "100:discord.requester.pull.with-push": {
-      "statements": 19,
-      "rowsRead": 323,
-      "rowsWritten": 37
-    },
-    "100:discord.raid.result.helped": {
-      "statements": 11,
-      "rowsRead": 257,
-      "rowsWritten": 22
-    },
-    "100:discord.requester.postpone.remaining": {
-      "statements": 15,
-      "rowsRead": 223,
-      "rowsWritten": 26
-    },
-    "100:discord.requester.postpone.last": {
-      "statements": 15,
+    "100:discord.raid.review": {
+      "statements": 13,
+      "bindingCalls": 11,
       "rowsRead": 222,
-      "rowsWritten": 24
+      "rowsWritten": 9
     },
-    "100:discord.requester.remove.remaining": {
+    "100:discord.raid.review.cancel": {
       "statements": 12,
-      "rowsRead": 195,
+      "bindingCalls": 10,
+      "rowsRead": 221,
       "rowsWritten": 8
     },
+    "100:discord.raid.call-start.streamer": {
+      "statements": 18,
+      "bindingCalls": 16,
+      "rowsRead": 256,
+      "rowsWritten": 11
+    },
+    "100:discord.requester.pull.candidates": {
+      "statements": 15,
+      "bindingCalls": 13,
+      "rowsRead": 233,
+      "rowsWritten": 7
+    },
+    "100:discord.requester.pull.with-push": {
+      "statements": 28,
+      "bindingCalls": 20,
+      "rowsRead": 376,
+      "rowsWritten": 40
+    },
+    "100:discord.raid.result.helped": {
+      "statements": 18,
+      "bindingCalls": 14,
+      "rowsRead": 304,
+      "rowsWritten": 29
+    },
+    "100:discord.requester.postpone.remaining": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 261,
+      "rowsWritten": 28
+    },
+    "100:discord.requester.postpone.last": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 260,
+      "rowsWritten": 27
+    },
+    "100:discord.requester.remove.remaining": {
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 233,
+      "rowsWritten": 12
+    },
     "100:discord.requester.remove.last": {
-      "statements": 12,
-      "rowsRead": 196,
-      "rowsWritten": 10
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 234,
+      "rowsWritten": 14
     },
     "100:discord.stats.all-time": {
       "statements": 2,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "100:discord.users.first": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "100:discord.users.middle": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "100:discord.users.last": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 10,
       "rowsWritten": 0
     },
     "100:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 6,
-      "rowsWritten": 4
+      "bindingCalls": 4,
+      "rowsRead": 8,
+      "rowsWritten": 5
+    },
+    "100:operator.status": {
+      "statements": 3,
+      "bindingCalls": 1,
+      "rowsRead": 59,
+      "rowsWritten": 0
     },
     "1000:discord.request.form.prefilled": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 1,
       "rowsWritten": 0
     },
     "1000:discord.request.submit.created": {
-      "statements": 13,
-      "rowsRead": 228,
-      "rowsWritten": 29
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 257,
+      "rowsWritten": 28
     },
     "1000:discord.request.submit.already-active": {
       "statements": 10,
-      "rowsRead": 28,
-      "rowsWritten": 6
+      "bindingCalls": 1,
+      "rowsRead": 26,
+      "rowsWritten": 4
+    },
+    "1000:discord.request.submit.exact-replay": {
+      "statements": 10,
+      "bindingCalls": 1,
+      "rowsRead": 33,
+      "rowsWritten": 4
     },
     "1000:discord.queue.p10": {
       "statements": 6,
-      "rowsRead": 137,
+      "bindingCalls": 5,
+      "rowsRead": 139,
       "rowsWritten": 0
     },
     "1000:discord.queue.p50": {
       "statements": 8,
-      "rowsRead": 173,
+      "bindingCalls": 6,
+      "rowsRead": 175,
       "rowsWritten": 0
     },
     "1000:discord.queue.p90": {
       "statements": 8,
-      "rowsRead": 173,
+      "bindingCalls": 6,
+      "rowsRead": 175,
       "rowsWritten": 0
     },
     "1000:discord.link.self": {
       "statements": 5,
-      "rowsRead": 5,
-      "rowsWritten": 5
+      "bindingCalls": 4,
+      "rowsRead": 6,
+      "rowsWritten": 6
     },
     "1000:twitch.request.created": {
-      "statements": 15,
-      "rowsRead": 229,
-      "rowsWritten": 30
+      "statements": 20,
+      "bindingCalls": 9,
+      "rowsRead": 262,
+      "rowsWritten": 32
+    },
+    "1000:twitch.request.exact-replay": {
+      "statements": 1,
+      "bindingCalls": 1,
+      "rowsRead": 1,
+      "rowsWritten": 0
     },
     "1000:twitch.request.already-active": {
-      "statements": 12,
-      "rowsRead": 30,
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 32,
       "rowsWritten": 4
     },
     "1000:twitch.request.invalid": {
       "statements": 4,
+      "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 3
     },
     "1000:twitch.request.invalid.expired-receipts": {
       "statements": 5,
+      "bindingCalls": 5,
       "rowsRead": 406,
       "rowsWritten": 104
     },
     "1000:twitch.queue.p10": {
       "statements": 12,
-      "rowsRead": 144,
+      "bindingCalls": 10,
+      "rowsRead": 147,
       "rowsWritten": 3
     },
     "1000:twitch.queue.p50": {
       "statements": 14,
-      "rowsRead": 180,
+      "bindingCalls": 11,
+      "rowsRead": 183,
       "rowsWritten": 3
     },
     "1000:twitch.queue.p90": {
       "statements": 14,
-      "rowsRead": 180,
+      "bindingCalls": 11,
+      "rowsRead": 183,
       "rowsWritten": 3
     },
     "1000:discord.board.create": {
       "statements": 4,
-      "rowsRead": 177,
+      "bindingCalls": 3,
+      "rowsRead": 206,
       "rowsWritten": 1
     },
     "1000:discord.board.open": {
-      "statements": 3,
-      "rowsRead": 177,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 210,
       "rowsWritten": 0
     },
     "1000:discord.board.refresh": {
-      "statements": 4,
-      "rowsRead": 179,
-      "rowsWritten": 0
-    },
-    "1000:discord.board.refresh.removed-history": {
-      "statements": 3,
-      "rowsRead": 177,
-      "rowsWritten": 0
-    },
-    "1000:discord.raid.review": {
-      "statements": 8,
-      "rowsRead": 192,
-      "rowsWritten": 5
-    },
-    "1000:discord.raid.review.cancel": {
-      "statements": 7,
-      "rowsRead": 191,
-      "rowsWritten": 4
-    },
-    "1000:discord.raid.call-start.streamer": {
-      "statements": 11,
-      "rowsRead": 218,
-      "rowsWritten": 8
-    },
-    "1000:discord.requester.pull.candidates": {
-      "statements": 9,
-      "rowsRead": 197,
+      "statements": 6,
+      "bindingCalls": 5,
+      "rowsRead": 205,
       "rowsWritten": 3
     },
-    "1000:discord.requester.pull.with-push": {
-      "statements": 19,
-      "rowsRead": 332,
-      "rowsWritten": 37
+    "1000:discord.board.refresh.removed-history": {
+      "statements": 6,
+      "bindingCalls": 5,
+      "rowsRead": 211,
+      "rowsWritten": 3
     },
-    "1000:discord.raid.result.helped": {
-      "statements": 11,
-      "rowsRead": 266,
-      "rowsWritten": 22
-    },
-    "1000:discord.requester.postpone.remaining": {
-      "statements": 15,
-      "rowsRead": 241,
-      "rowsWritten": 26
-    },
-    "1000:discord.requester.postpone.last": {
-      "statements": 15,
+    "1000:discord.raid.review": {
+      "statements": 13,
+      "bindingCalls": 11,
       "rowsRead": 231,
-      "rowsWritten": 24
+      "rowsWritten": 9
     },
-    "1000:discord.requester.remove.remaining": {
+    "1000:discord.raid.review.cancel": {
       "statements": 12,
-      "rowsRead": 204,
+      "bindingCalls": 10,
+      "rowsRead": 230,
       "rowsWritten": 8
     },
+    "1000:discord.raid.call-start.streamer": {
+      "statements": 18,
+      "bindingCalls": 16,
+      "rowsRead": 265,
+      "rowsWritten": 11
+    },
+    "1000:discord.requester.pull.candidates": {
+      "statements": 15,
+      "bindingCalls": 13,
+      "rowsRead": 237,
+      "rowsWritten": 7
+    },
+    "1000:discord.requester.pull.with-push": {
+      "statements": 28,
+      "bindingCalls": 20,
+      "rowsRead": 385,
+      "rowsWritten": 40
+    },
+    "1000:discord.raid.result.helped": {
+      "statements": 18,
+      "bindingCalls": 14,
+      "rowsRead": 313,
+      "rowsWritten": 29
+    },
+    "1000:discord.requester.postpone.remaining": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 281,
+      "rowsWritten": 28
+    },
+    "1000:discord.requester.postpone.last": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 269,
+      "rowsWritten": 27
+    },
+    "1000:discord.requester.remove.remaining": {
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 242,
+      "rowsWritten": 12
+    },
     "1000:discord.requester.remove.last": {
-      "statements": 12,
-      "rowsRead": 205,
-      "rowsWritten": 10
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 243,
+      "rowsWritten": 14
     },
     "1000:discord.stats.all-time": {
       "statements": 2,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "1000:discord.users.first": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "1000:discord.users.middle": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "1000:discord.users.last": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 10,
       "rowsWritten": 0
     },
     "1000:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 6,
-      "rowsWritten": 4
+      "bindingCalls": 4,
+      "rowsRead": 8,
+      "rowsWritten": 5
+    },
+    "1000:operator.status": {
+      "statements": 3,
+      "bindingCalls": 1,
+      "rowsRead": 59,
+      "rowsWritten": 0
     },
     "10000:discord.request.form.prefilled": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 1,
       "rowsWritten": 0
     },
     "10000:discord.request.submit.created": {
-      "statements": 13,
-      "rowsRead": 228,
-      "rowsWritten": 29
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 257,
+      "rowsWritten": 28
     },
     "10000:discord.request.submit.already-active": {
       "statements": 10,
-      "rowsRead": 28,
-      "rowsWritten": 6
+      "bindingCalls": 1,
+      "rowsRead": 26,
+      "rowsWritten": 4
+    },
+    "10000:discord.request.submit.exact-replay": {
+      "statements": 10,
+      "bindingCalls": 1,
+      "rowsRead": 33,
+      "rowsWritten": 4
     },
     "10000:discord.queue.p10": {
       "statements": 6,
-      "rowsRead": 165,
+      "bindingCalls": 5,
+      "rowsRead": 167,
       "rowsWritten": 0
     },
     "10000:discord.queue.p50": {
       "statements": 8,
-      "rowsRead": 173,
+      "bindingCalls": 6,
+      "rowsRead": 175,
       "rowsWritten": 0
     },
     "10000:discord.queue.p90": {
       "statements": 8,
-      "rowsRead": 173,
+      "bindingCalls": 6,
+      "rowsRead": 175,
       "rowsWritten": 0
     },
     "10000:discord.link.self": {
       "statements": 5,
-      "rowsRead": 5,
-      "rowsWritten": 5
+      "bindingCalls": 4,
+      "rowsRead": 6,
+      "rowsWritten": 6
     },
     "10000:twitch.request.created": {
-      "statements": 15,
-      "rowsRead": 229,
-      "rowsWritten": 30
+      "statements": 20,
+      "bindingCalls": 9,
+      "rowsRead": 262,
+      "rowsWritten": 32
+    },
+    "10000:twitch.request.exact-replay": {
+      "statements": 1,
+      "bindingCalls": 1,
+      "rowsRead": 1,
+      "rowsWritten": 0
     },
     "10000:twitch.request.already-active": {
-      "statements": 12,
-      "rowsRead": 30,
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 32,
       "rowsWritten": 4
     },
     "10000:twitch.request.invalid": {
       "statements": 4,
+      "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 3
     },
     "10000:twitch.queue.p10": {
       "statements": 12,
-      "rowsRead": 172,
+      "bindingCalls": 10,
+      "rowsRead": 175,
       "rowsWritten": 3
     },
     "10000:twitch.queue.p50": {
       "statements": 14,
-      "rowsRead": 180,
+      "bindingCalls": 11,
+      "rowsRead": 183,
       "rowsWritten": 3
     },
     "10000:twitch.queue.p90": {
       "statements": 14,
-      "rowsRead": 180,
+      "bindingCalls": 11,
+      "rowsRead": 183,
       "rowsWritten": 3
     },
     "10000:discord.board.create": {
       "statements": 4,
-      "rowsRead": 177,
+      "bindingCalls": 3,
+      "rowsRead": 206,
       "rowsWritten": 1
     },
     "10000:discord.board.open": {
-      "statements": 3,
-      "rowsRead": 177,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 210,
       "rowsWritten": 0
     },
     "10000:discord.board.refresh": {
-      "statements": 4,
-      "rowsRead": 179,
-      "rowsWritten": 0
-    },
-    "10000:discord.board.refresh.removed-history": {
-      "statements": 3,
-      "rowsRead": 177,
-      "rowsWritten": 0
-    },
-    "10000:discord.raid.review": {
-      "statements": 8,
-      "rowsRead": 192,
-      "rowsWritten": 5
-    },
-    "10000:discord.raid.review.cancel": {
-      "statements": 7,
-      "rowsRead": 191,
-      "rowsWritten": 4
-    },
-    "10000:discord.raid.call-start.streamer": {
-      "statements": 11,
-      "rowsRead": 218,
-      "rowsWritten": 8
-    },
-    "10000:discord.requester.pull.candidates": {
-      "statements": 9,
-      "rowsRead": 201,
+      "statements": 6,
+      "bindingCalls": 5,
+      "rowsRead": 205,
       "rowsWritten": 3
     },
-    "10000:discord.requester.pull.with-push": {
-      "statements": 19,
-      "rowsRead": 332,
-      "rowsWritten": 37
+    "10000:discord.board.refresh.removed-history": {
+      "statements": 6,
+      "bindingCalls": 5,
+      "rowsRead": 211,
+      "rowsWritten": 3
     },
-    "10000:discord.raid.result.helped": {
-      "statements": 11,
-      "rowsRead": 266,
-      "rowsWritten": 22
-    },
-    "10000:discord.requester.postpone.remaining": {
-      "statements": 15,
-      "rowsRead": 241,
-      "rowsWritten": 26
-    },
-    "10000:discord.requester.postpone.last": {
-      "statements": 15,
+    "10000:discord.raid.review": {
+      "statements": 13,
+      "bindingCalls": 11,
       "rowsRead": 231,
-      "rowsWritten": 24
+      "rowsWritten": 9
     },
-    "10000:discord.requester.remove.remaining": {
+    "10000:discord.raid.review.cancel": {
       "statements": 12,
-      "rowsRead": 204,
+      "bindingCalls": 10,
+      "rowsRead": 230,
       "rowsWritten": 8
     },
+    "10000:discord.raid.call-start.streamer": {
+      "statements": 18,
+      "bindingCalls": 16,
+      "rowsRead": 265,
+      "rowsWritten": 11
+    },
+    "10000:discord.requester.pull.candidates": {
+      "statements": 15,
+      "bindingCalls": 13,
+      "rowsRead": 242,
+      "rowsWritten": 7
+    },
+    "10000:discord.requester.pull.with-push": {
+      "statements": 28,
+      "bindingCalls": 20,
+      "rowsRead": 385,
+      "rowsWritten": 40
+    },
+    "10000:discord.raid.result.helped": {
+      "statements": 18,
+      "bindingCalls": 14,
+      "rowsRead": 313,
+      "rowsWritten": 29
+    },
+    "10000:discord.requester.postpone.remaining": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 281,
+      "rowsWritten": 28
+    },
+    "10000:discord.requester.postpone.last": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 269,
+      "rowsWritten": 27
+    },
+    "10000:discord.requester.remove.remaining": {
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 242,
+      "rowsWritten": 12
+    },
     "10000:discord.requester.remove.last": {
-      "statements": 12,
-      "rowsRead": 205,
-      "rowsWritten": 10
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 243,
+      "rowsWritten": 14
     },
     "10000:discord.stats.all-time": {
       "statements": 2,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "10000:discord.users.first": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "10000:discord.users.middle": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "10000:discord.users.last": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 10,
       "rowsWritten": 0
     },
     "10000:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 6,
-      "rowsWritten": 4
+      "bindingCalls": 4,
+      "rowsRead": 8,
+      "rowsWritten": 5
+    },
+    "10000:operator.status": {
+      "statements": 3,
+      "bindingCalls": 1,
+      "rowsRead": 59,
+      "rowsWritten": 0
     },
     "100000:discord.request.form.prefilled": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 1,
       "rowsWritten": 0
     },
     "100000:discord.request.submit.created": {
-      "statements": 13,
-      "rowsRead": 232,
-      "rowsWritten": 29
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 262,
+      "rowsWritten": 28
     },
     "100000:discord.request.submit.already-active": {
       "statements": 10,
-      "rowsRead": 28,
-      "rowsWritten": 6
+      "bindingCalls": 1,
+      "rowsRead": 26,
+      "rowsWritten": 4
+    },
+    "100000:discord.request.submit.exact-replay": {
+      "statements": 10,
+      "bindingCalls": 1,
+      "rowsRead": 33,
+      "rowsWritten": 4
     },
     "100000:discord.queue.p10": {
       "statements": 6,
-      "rowsRead": 165,
+      "bindingCalls": 5,
+      "rowsRead": 167,
       "rowsWritten": 0
     },
     "100000:discord.queue.p50": {
       "statements": 8,
-      "rowsRead": 173,
+      "bindingCalls": 6,
+      "rowsRead": 175,
       "rowsWritten": 0
     },
     "100000:discord.queue.p90": {
       "statements": 8,
-      "rowsRead": 173,
+      "bindingCalls": 6,
+      "rowsRead": 175,
       "rowsWritten": 0
     },
     "100000:discord.link.self": {
       "statements": 5,
-      "rowsRead": 5,
-      "rowsWritten": 5
+      "bindingCalls": 4,
+      "rowsRead": 6,
+      "rowsWritten": 6
     },
     "100000:twitch.request.created": {
-      "statements": 15,
-      "rowsRead": 233,
-      "rowsWritten": 30
+      "statements": 20,
+      "bindingCalls": 9,
+      "rowsRead": 267,
+      "rowsWritten": 32
+    },
+    "100000:twitch.request.exact-replay": {
+      "statements": 1,
+      "bindingCalls": 1,
+      "rowsRead": 1,
+      "rowsWritten": 0
     },
     "100000:twitch.request.already-active": {
-      "statements": 12,
-      "rowsRead": 30,
+      "statements": 15,
+      "bindingCalls": 5,
+      "rowsRead": 32,
       "rowsWritten": 4
     },
     "100000:twitch.request.invalid": {
       "statements": 4,
+      "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 3
     },
     "100000:twitch.queue.p10": {
       "statements": 12,
-      "rowsRead": 172,
+      "bindingCalls": 10,
+      "rowsRead": 175,
       "rowsWritten": 3
     },
     "100000:twitch.queue.p50": {
       "statements": 14,
-      "rowsRead": 180,
+      "bindingCalls": 11,
+      "rowsRead": 183,
       "rowsWritten": 3
     },
     "100000:twitch.queue.p90": {
       "statements": 14,
-      "rowsRead": 180,
+      "bindingCalls": 11,
+      "rowsRead": 183,
       "rowsWritten": 3
     },
     "100000:discord.board.create": {
       "statements": 4,
-      "rowsRead": 181,
+      "bindingCalls": 3,
+      "rowsRead": 211,
       "rowsWritten": 1
     },
     "100000:discord.board.open": {
-      "statements": 3,
-      "rowsRead": 181,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 215,
       "rowsWritten": 0
     },
     "100000:discord.board.refresh": {
-      "statements": 4,
-      "rowsRead": 183,
-      "rowsWritten": 0
-    },
-    "100000:discord.raid.review": {
-      "statements": 8,
-      "rowsRead": 196,
-      "rowsWritten": 5
-    },
-    "100000:discord.raid.review.cancel": {
-      "statements": 7,
-      "rowsRead": 195,
-      "rowsWritten": 4
-    },
-    "100000:discord.raid.call-start.streamer": {
-      "statements": 11,
-      "rowsRead": 222,
-      "rowsWritten": 8
-    },
-    "100000:discord.requester.pull.candidates": {
-      "statements": 9,
-      "rowsRead": 201,
+      "statements": 6,
+      "bindingCalls": 5,
+      "rowsRead": 210,
       "rowsWritten": 3
     },
-    "100000:discord.requester.pull.with-push": {
-      "statements": 19,
-      "rowsRead": 336,
-      "rowsWritten": 37
+    "100000:discord.board.refresh.removed-history": {
+      "statements": 6,
+      "bindingCalls": 5,
+      "rowsRead": 216,
+      "rowsWritten": 3
     },
-    "100000:discord.raid.result.helped": {
-      "statements": 11,
-      "rowsRead": 270,
-      "rowsWritten": 22
+    "100000:discord.raid.review": {
+      "statements": 13,
+      "bindingCalls": 11,
+      "rowsRead": 236,
+      "rowsWritten": 9
     },
-    "100000:discord.requester.postpone.remaining": {
-      "statements": 15,
-      "rowsRead": 245,
-      "rowsWritten": 26
-    },
-    "100000:discord.requester.postpone.last": {
-      "statements": 15,
-      "rowsRead": 235,
-      "rowsWritten": 24
-    },
-    "100000:discord.requester.remove.remaining": {
+    "100000:discord.raid.review.cancel": {
       "statements": 12,
-      "rowsRead": 208,
+      "bindingCalls": 10,
+      "rowsRead": 235,
       "rowsWritten": 8
     },
+    "100000:discord.raid.call-start.streamer": {
+      "statements": 18,
+      "bindingCalls": 16,
+      "rowsRead": 270,
+      "rowsWritten": 11
+    },
+    "100000:discord.requester.pull.candidates": {
+      "statements": 15,
+      "bindingCalls": 13,
+      "rowsRead": 242,
+      "rowsWritten": 7
+    },
+    "100000:discord.requester.pull.with-push": {
+      "statements": 28,
+      "bindingCalls": 20,
+      "rowsRead": 390,
+      "rowsWritten": 40
+    },
+    "100000:discord.raid.result.helped": {
+      "statements": 18,
+      "bindingCalls": 14,
+      "rowsRead": 318,
+      "rowsWritten": 29
+    },
+    "100000:discord.requester.postpone.remaining": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 286,
+      "rowsWritten": 28
+    },
+    "100000:discord.requester.postpone.last": {
+      "statements": 23,
+      "bindingCalls": 18,
+      "rowsRead": 274,
+      "rowsWritten": 27
+    },
+    "100000:discord.requester.remove.remaining": {
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 247,
+      "rowsWritten": 12
+    },
     "100000:discord.requester.remove.last": {
-      "statements": 12,
-      "rowsRead": 209,
-      "rowsWritten": 10
+      "statements": 19,
+      "bindingCalls": 14,
+      "rowsRead": 248,
+      "rowsWritten": 14
     },
     "100000:discord.stats.all-time": {
       "statements": 2,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "100000:discord.users.first": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "100000:discord.users.middle": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 11,
       "rowsWritten": 0
     },
     "100000:discord.users.last": {
       "statements": 1,
+      "bindingCalls": 1,
       "rowsRead": 10,
       "rowsWritten": 0
     },
     "100000:discord.users.complete-discord": {
       "statements": 4,
-      "rowsRead": 6,
-      "rowsWritten": 4
+      "bindingCalls": 4,
+      "rowsRead": 8,
+      "rowsWritten": 5
+    },
+    "100000:operator.status": {
+      "statements": 3,
+      "bindingCalls": 1,
+      "rowsRead": 59,
+      "rowsWritten": 0
     }
   },
   "focusedOperations": {
     "100:discord.request.submit.created": {
-      "receipt.claim": {
+      "sql.9d4a1c53": {
         "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 2
-      },
-      "receipt.lease": {
-        "statements": 1,
-        "rowsRead": 2,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "other": {
-        "statements": 6,
-        "rowsRead": 20,
-        "rowsWritten": 10
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
       },
-      "assignment.raid-insert": {
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 6
+      },
+      "sql.27f314b5": {
         "statements": 1,
         "rowsRead": 11,
-        "rowsWritten": 10
+        "rowsWritten": 9
       },
-      "assignment.membership-insert": {
+      "sql.8729dd9e": {
         "statements": 1,
         "rowsRead": 16,
         "rowsWritten": 7
       },
-      "board.state": {
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.ceb3b83b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 21,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 146,
-        "rowsWritten": 0
-      }
-    },
-    "100:discord.queue.p10": {
-      "other": {
-        "statements": 4,
-        "rowsRead": 21,
+        "rowsRead": 175,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
-        "statements": 1,
-        "rowsRead": 3,
-        "rowsWritten": 0
-      },
-      "board.candidates": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      }
-    },
-    "100:discord.queue.p50": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 47,
-        "rowsWritten": 0
-      },
-      "board.raid-hydration": {
-        "statements": 1,
-        "rowsRead": 3,
-        "rowsWritten": 0
-      },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 4,
-        "rowsWritten": 0
-      }
-    },
-    "100:discord.queue.p90": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 104,
-        "rowsWritten": 0
-      },
-      "board.raid-hydration": {
-        "statements": 1,
-        "rowsRead": 3,
-        "rowsWritten": 0
-      },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 4,
-        "rowsWritten": 0
-      }
-    },
-    "100:twitch.request.created": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 19,
-        "rowsWritten": 10
-      },
-      "assignment.raid-insert": {
-        "statements": 1,
-        "rowsRead": 11,
-        "rowsWritten": 10
-      },
-      "assignment.membership-insert": {
-        "statements": 1,
-        "rowsRead": 16,
-        "rowsWritten": 7
-      },
-      "receipt.claim": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 2
-      },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
-        "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 0
-      },
-      "board.state": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "board.candidates": {
-        "statements": 1,
-        "rowsRead": 21,
-        "rowsWritten": 0
-      },
-      "receipt.reply-status": {
+      "sql.4e61647f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       },
-      "board.raid-hydration": {
+      "sql.74d3ce76": {
         "statements": 1,
-        "rowsRead": 146,
-        "rowsWritten": 0
+        "rowsRead": 2,
+        "rowsWritten": 1
       }
     },
-    "100:twitch.request.invalid": {
-      "receipt.claim": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 2
-      },
-      "receipt.load": {
+    "100:discord.request.submit.exact-replay": {
+      "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 1
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 0
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      }
+    },
+    "100:discord.queue.p10": {
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 10,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      }
+    },
+    "100:discord.queue.p50": {
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.5fe4032e": {
+        "statements": 1,
+        "rowsRead": 29,
+        "rowsWritten": 0
+      }
+    },
+    "100:discord.queue.p90": {
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 64,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.5fe4032e": {
+        "statements": 1,
+        "rowsRead": 29,
+        "rowsWritten": 0
+      }
+    },
+    "100:twitch.request.created": {
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.a72c7059": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.bfb9542": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 7
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 11,
+        "rowsWritten": 9
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 16,
+        "rowsWritten": 7
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.ceb3b83b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.261d5b0a": {
+        "statements": 1,
+        "rowsRead": 21,
+        "rowsWritten": 0
+      },
+      "sql.29b2e9cb": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.c021e885": {
+        "statements": 1,
+        "rowsRead": 175,
+        "rowsWritten": 0
+      },
+      "sql.4e61647f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "100:twitch.request.exact-replay": {
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      }
+    },
+    "100:twitch.request.invalid": {
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100:twitch.queue.p10": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 22,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 10,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.a9ac17fc": {
         "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.claim": {
-        "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100:twitch.queue.p50": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 48,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 4,
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.5fe4032e": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 29,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100:twitch.queue.p90": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 105,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 64,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 4,
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.5fe4032e": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 29,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100:discord.board.refresh": {
-      "board.state": {
+      "sql.d6d32c35": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.ceb3b83b": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 21,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 141,
+        "rowsRead": 169,
         "rowsWritten": 0
       },
-      "board.raid-validation": {
+      "sql.4e61647f": {
         "statements": 1,
-        "rowsRead": 7,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "100:operator.status": {
+      "sql.7ff2d7a5": {
+        "statements": 1,
+        "rowsRead": 56,
+        "rowsWritten": 0
+      },
+      "sql.91816b53": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.cc23e3f3": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "1000:discord.request.submit.created": {
-      "receipt.claim": {
-        "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 2
-      },
-      "receipt.lease": {
-        "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 0
-      },
-      "other": {
-        "statements": 6,
-        "rowsRead": 20,
-        "rowsWritten": 10
-      },
-      "assignment.raid-insert": {
-        "statements": 1,
-        "rowsRead": 11,
-        "rowsWritten": 10
-      },
-      "assignment.membership-insert": {
-        "statements": 1,
-        "rowsRead": 16,
-        "rowsWritten": 7
-      },
-      "board.state": {
+      "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 6
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 11,
+        "rowsWritten": 9
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 16,
+        "rowsWritten": 7
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.ceb3b83b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 146,
+        "rowsRead": 175,
+        "rowsWritten": 0
+      },
+      "sql.4e61647f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "1000:discord.request.submit.exact-replay": {
+      "sql.9d4a1c53": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 1
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 0
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "1000:discord.queue.p10": {
-      "other": {
-        "statements": 4,
-        "rowsRead": 131,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 73,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       }
     },
     "1000:discord.queue.p50": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 164,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
         "rowsWritten": 0
       }
     },
     "1000:discord.queue.p90": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 164,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
         "rowsWritten": 0
       }
     },
     "1000:twitch.request.created": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 19,
-        "rowsWritten": 10
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
       },
-      "assignment.raid-insert": {
+      "sql.a72c7059": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.bfb9542": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 7
+      },
+      "sql.27f314b5": {
         "statements": 1,
         "rowsRead": 11,
-        "rowsWritten": 10
+        "rowsWritten": 9
       },
-      "assignment.membership-insert": {
+      "sql.8729dd9e": {
         "statements": 1,
         "rowsRead": 16,
         "rowsWritten": 7
       },
-      "receipt.claim": {
+      "sql.6587ea19": {
         "statements": 1,
         "rowsRead": 1,
-        "rowsWritten": 2
+        "rowsWritten": 1
       },
-      "receipt.load": {
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "board.state": {
+      "sql.ceb3b83b": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 146,
+        "rowsRead": 175,
+        "rowsWritten": 0
+      },
+      "sql.4e61647f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "1000:twitch.request.exact-replay": {
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "1000:twitch.request.invalid": {
-      "receipt.claim": {
+      "sql.e39c5426": {
         "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 2
-      },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "1000:twitch.request.invalid.expired-receipts": {
-      "receipt.claim": {
+      "sql.e39c5426": {
         "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 2
-      },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       },
-      "receipt.delete": {
+      "sql.760be84e": {
         "statements": 1,
         "rowsRead": 400,
         "rowsWritten": 100
       }
     },
     "1000:twitch.queue.p10": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 132,
-        "rowsWritten": 0
-      },
-      "board.raid-hydration": {
+      "sql.e39c5426": {
         "statements": 1,
-        "rowsRead": 3,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 1,
-        "rowsRead": 3,
-        "rowsWritten": 0
-      },
-      "receipt.claim": {
+      "sql.aec07dd7": {
         "statements": 1,
         "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 73,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "1000:twitch.queue.p50": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 165,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.a23911cf": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "1000:twitch.queue.p90": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 165,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.a23911cf": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "1000:discord.board.refresh": {
-      "board.state": {
+      "sql.d6d32c35": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.ceb3b83b": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 141,
+        "rowsRead": 169,
         "rowsWritten": 0
       },
-      "board.raid-validation": {
+      "sql.4e61647f": {
         "statements": 1,
-        "rowsRead": 7,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "1000:operator.status": {
+      "sql.7ff2d7a5": {
+        "statements": 1,
+        "rowsRead": 56,
+        "rowsWritten": 0
+      },
+      "sql.91816b53": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.cc23e3f3": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "10000:discord.request.submit.created": {
-      "receipt.claim": {
-        "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 2
-      },
-      "receipt.lease": {
-        "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 0
-      },
-      "other": {
-        "statements": 6,
-        "rowsRead": 20,
-        "rowsWritten": 10
-      },
-      "assignment.raid-insert": {
-        "statements": 1,
-        "rowsRead": 11,
-        "rowsWritten": 10
-      },
-      "assignment.membership-insert": {
-        "statements": 1,
-        "rowsRead": 16,
-        "rowsWritten": 7
-      },
-      "board.state": {
+      "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 6
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 11,
+        "rowsWritten": 9
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 16,
+        "rowsWritten": 7
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.ceb3b83b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 146,
+        "rowsRead": 175,
+        "rowsWritten": 0
+      },
+      "sql.4e61647f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "10000:discord.request.submit.exact-replay": {
+      "sql.9d4a1c53": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 1
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 0
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "10000:discord.queue.p10": {
-      "other": {
-        "statements": 4,
-        "rowsRead": 159,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 101,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       }
     },
     "10000:discord.queue.p50": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 164,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
         "rowsWritten": 0
       }
     },
     "10000:discord.queue.p90": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 164,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
         "rowsWritten": 0
       }
     },
     "10000:twitch.request.created": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 19,
-        "rowsWritten": 10
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
       },
-      "assignment.raid-insert": {
+      "sql.a72c7059": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.bfb9542": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 7
+      },
+      "sql.27f314b5": {
         "statements": 1,
         "rowsRead": 11,
-        "rowsWritten": 10
+        "rowsWritten": 9
       },
-      "assignment.membership-insert": {
+      "sql.8729dd9e": {
         "statements": 1,
         "rowsRead": 16,
         "rowsWritten": 7
       },
-      "receipt.claim": {
+      "sql.6587ea19": {
         "statements": 1,
         "rowsRead": 1,
-        "rowsWritten": 2
+        "rowsWritten": 1
       },
-      "receipt.load": {
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "board.state": {
+      "sql.ceb3b83b": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 146,
+        "rowsRead": 175,
+        "rowsWritten": 0
+      },
+      "sql.4e61647f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "10000:twitch.request.exact-replay": {
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "10000:twitch.request.invalid": {
-      "receipt.claim": {
+      "sql.e39c5426": {
         "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 2
-      },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "10000:twitch.queue.p10": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 160,
-        "rowsWritten": 0
-      },
-      "board.raid-hydration": {
+      "sql.e39c5426": {
         "statements": 1,
-        "rowsRead": 3,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 1,
-        "rowsRead": 3,
-        "rowsWritten": 0
-      },
-      "receipt.claim": {
+      "sql.aec07dd7": {
         "statements": 1,
         "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 101,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "10000:twitch.queue.p50": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 165,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.a23911cf": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "10000:twitch.queue.p90": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 165,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.a23911cf": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "10000:discord.board.refresh": {
-      "board.state": {
+      "sql.d6d32c35": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.ceb3b83b": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 141,
+        "rowsRead": 169,
         "rowsWritten": 0
       },
-      "board.raid-validation": {
+      "sql.4e61647f": {
         "statements": 1,
-        "rowsRead": 7,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "10000:operator.status": {
+      "sql.7ff2d7a5": {
+        "statements": 1,
+        "rowsRead": 56,
+        "rowsWritten": 0
+      },
+      "sql.91816b53": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.cc23e3f3": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "100000:discord.request.submit.created": {
-      "receipt.claim": {
-        "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 2
-      },
-      "receipt.lease": {
-        "statements": 1,
-        "rowsRead": 2,
-        "rowsWritten": 0
-      },
-      "other": {
-        "statements": 6,
-        "rowsRead": 20,
-        "rowsWritten": 10
-      },
-      "assignment.raid-insert": {
-        "statements": 1,
-        "rowsRead": 11,
-        "rowsWritten": 10
-      },
-      "assignment.membership-insert": {
-        "statements": 1,
-        "rowsRead": 16,
-        "rowsWritten": 7
-      },
-      "board.state": {
+      "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 6
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 11,
+        "rowsWritten": 9
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 16,
+        "rowsWritten": 7
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.ceb3b83b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 150,
+        "rowsRead": 180,
+        "rowsWritten": 0
+      },
+      "sql.4e61647f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "100000:discord.request.submit.exact-replay": {
+      "sql.9d4a1c53": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 1
+      },
+      "sql.27f314b5": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.8729dd9e": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 0
+      },
+      "sql.6587ea19": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "100000:discord.queue.p10": {
-      "other": {
-        "statements": 4,
-        "rowsRead": 159,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 101,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       }
     },
     "100000:discord.queue.p50": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 164,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
         "rowsWritten": 0
       }
     },
     "100000:discord.queue.p90": {
-      "other": {
-        "statements": 5,
-        "rowsRead": 164,
+      "sql.b29e4af2": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
         "rowsWritten": 0
       }
     },
     "100000:twitch.request.created": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 19,
-        "rowsWritten": 10
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
       },
-      "assignment.raid-insert": {
+      "sql.a72c7059": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.bfb9542": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      },
+      "sql.3c6f8f82": {
+        "statements": 1,
+        "rowsRead": 0,
+        "rowsWritten": 3
+      },
+      "sql.fe4eddaa": {
+        "statements": 1,
+        "rowsRead": 8,
+        "rowsWritten": 7
+      },
+      "sql.27f314b5": {
         "statements": 1,
         "rowsRead": 11,
-        "rowsWritten": 10
+        "rowsWritten": 9
       },
-      "assignment.membership-insert": {
+      "sql.8729dd9e": {
         "statements": 1,
         "rowsRead": 16,
         "rowsWritten": 7
       },
-      "receipt.claim": {
+      "sql.6587ea19": {
         "statements": 1,
         "rowsRead": 1,
-        "rowsWritten": 2
+        "rowsWritten": 1
       },
-      "receipt.load": {
+      "sql.dc00d5c": {
+        "statements": 1,
+        "rowsRead": 7,
+        "rowsWritten": 0
+      },
+      "sql.755a264d": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.2cb5635a": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.c56090a1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "board.state": {
+      "sql.ceb3b83b": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 150,
+        "rowsRead": 180,
+        "rowsWritten": 0
+      },
+      "sql.4e61647f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "100000:twitch.request.exact-replay": {
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     },
     "100000:twitch.request.invalid": {
-      "receipt.claim": {
+      "sql.e39c5426": {
         "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 2
-      },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "receipt.lease": {
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 2
+      },
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100000:twitch.queue.p10": {
-      "other": {
-        "statements": 6,
-        "rowsRead": 160,
-        "rowsWritten": 0
-      },
-      "board.raid-hydration": {
+      "sql.e39c5426": {
         "statements": 1,
-        "rowsRead": 3,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 1,
-        "rowsRead": 3,
-        "rowsWritten": 0
-      },
-      "receipt.claim": {
+      "sql.aec07dd7": {
         "statements": 1,
         "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.d62d4a8f": {
+        "statements": 1,
+        "rowsRead": 101,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "sql.a23911cf": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100000:twitch.queue.p50": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 165,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.a23911cf": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100000:twitch.queue.p90": {
-      "other": {
-        "statements": 7,
-        "rowsRead": 165,
+      "sql.e39c5426": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.aec07dd7": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.eea509b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.5ad6c375": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.b2ab6e4a": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.da72631c": {
+        "statements": 1,
+        "rowsRead": 102,
+        "rowsWritten": 0
+      },
+      "sql.9dc1cffd": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 0
       },
-      "board.candidates": {
-        "statements": 2,
-        "rowsRead": 6,
+      "sql.d9bcfbab": {
+        "statements": 1,
+        "rowsRead": 54,
         "rowsWritten": 0
       },
-      "receipt.claim": {
+      "sql.a23911cf": {
         "statements": 1,
-        "rowsRead": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.ec845764": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 0
+      },
+      "sql.15ee24ed": {
+        "statements": 1,
+        "rowsRead": 4,
+        "rowsWritten": 0
+      },
+      "sql.a9ac17fc": {
+        "statements": 1,
+        "rowsRead": 2,
         "rowsWritten": 2
       },
-      "receipt.load": {
-        "statements": 1,
-        "rowsRead": 1,
-        "rowsWritten": 0
-      },
-      "receipt.lease": {
+      "sql.f3d18b1f": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "receipt.reply-status": {
+      "sql.29b2e9cb": {
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
       }
     },
     "100000:discord.board.refresh": {
-      "board.state": {
+      "sql.d6d32c35": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.ceb3b83b": {
         "statements": 1,
         "rowsRead": 1,
         "rowsWritten": 0
       },
-      "board.candidates": {
+      "sql.261d5b0a": {
         "statements": 1,
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "board.raid-hydration": {
+      "sql.c021e885": {
         "statements": 1,
-        "rowsRead": 145,
+        "rowsRead": 174,
         "rowsWritten": 0
       },
-      "board.raid-validation": {
+      "sql.4e61647f": {
         "statements": 1,
-        "rowsRead": 7,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.74d3ce76": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      }
+    },
+    "100000:operator.status": {
+      "sql.7ff2d7a5": {
+        "statements": 1,
+        "rowsRead": 56,
+        "rowsWritten": 0
+      },
+      "sql.91816b53": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.cc23e3f3": {
+        "statements": 1,
+        "rowsRead": 1,
         "rowsWritten": 0
       }
     }

@@ -26,6 +26,7 @@ import committedBaseline from "../../benchmark/d1-cost-baseline.json";
 const measurement = (wallMs: number): OperationMeasurement => ({
   wallMs,
   d1DurationMs: wallMs / 2,
+  bindingCalls: 4,
   statements: 5,
   rowsRead: 20,
   rowsWritten: 3,
@@ -71,6 +72,7 @@ describe("local user-facing benchmark contract", () => {
       "discord:stats",
       "discord:users-page",
       "discord:users-complete",
+      "operator:status",
     ]) {
       expect(families.has(family as (typeof BENCHMARK_OPERATION_FAMILIES)[number])).toBe(true);
     }
@@ -94,7 +96,7 @@ describe("local user-facing benchmark contract", () => {
   });
 
   it("commits one exact counter baseline entry for every scale and operation", () => {
-    const baseline = committedBaseline as D1CostBaseline;
+    const baseline = committedBaseline as unknown as D1CostBaseline;
     const expected = USER_OPERATION_IDS.flatMap((operationId) =>
       (BENCHMARK_SCALES_BY_OPERATION[operationId] ?? BENCHMARK_SCALES).map((scale) =>
         baselineKey(scale, operationId),
@@ -119,17 +121,23 @@ describe("local user-facing benchmark contract", () => {
     const baseline = createD1CostBaseline(report);
     expect(() => assertExactD1Baseline(report, baseline)).not.toThrow();
     const changed: D1CostBaseline = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       databaseBytes: baseline.databaseBytes,
       focusedOperations: baseline.focusedOperations,
       operations: {
         ...baseline.operations,
         [baselineKey(BENCHMARK_SCALES[0], USER_OPERATION_IDS[0])]: {
           statements: 6,
+          bindingCalls: 4,
           rowsRead: 20,
           rowsWritten: 3,
         },
-        "100:extra.operation": { statements: 1, rowsRead: 1, rowsWritten: 0 },
+        "100:extra.operation": {
+          bindingCalls: 1,
+          statements: 1,
+          rowsRead: 1,
+          rowsWritten: 0,
+        },
       },
     };
     expect(() => assertExactD1Baseline(report, changed)).toThrow(

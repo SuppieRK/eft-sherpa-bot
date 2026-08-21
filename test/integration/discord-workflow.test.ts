@@ -344,6 +344,28 @@ describe("Discord progressive raid workflow", () => {
         content: "Your help request for PvE · Customs is in the queue. Use `/queue` to check it.",
       },
     });
+    const duplicate = await worker.fetch(
+      await signedRequest(requestModal("create-request")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    expect(await duplicate.json()).toMatchObject({
+      data: {
+        content: "Your help request for PvE · Customs is in the queue. Use `/queue` to check it.",
+      },
+    });
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count FROM event_receipts
+         WHERE platform = 0 AND delivery_id = 'create-request'`,
+      ).first(),
+    ).resolves.toEqual({ count: 0 });
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count FROM help_requests
+         WHERE source_platform = 0 AND source_delivery_id = 'create-request'`,
+      ).first(),
+    ).resolves.toEqual({ count: 1 });
   });
 
   it("accepts a legacy request modal as PvE", async () => {

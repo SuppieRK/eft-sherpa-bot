@@ -1,6 +1,7 @@
 import type { UserOperationId } from "./contract";
 
 interface DeterministicD1Counters {
+  bindingCalls: number;
   statements: number;
   rowsRead: number;
   rowsWritten: number;
@@ -11,6 +12,7 @@ interface BenchmarkResultLike {
   scale: number;
   aggregate: {
     statements: { median: number };
+    bindingCalls: { median: number };
     rowsRead: { median: number };
     rowsWritten: { median: number };
   };
@@ -18,7 +20,7 @@ interface BenchmarkResultLike {
 }
 
 export interface D1CostBaseline {
-  schemaVersion: 3;
+  schemaVersion: 4;
   databaseBytes: Record<string, number>;
   operations: Record<string, DeterministicD1Counters>;
   focusedOperations: Record<string, Record<string, DeterministicD1Counters>>;
@@ -36,6 +38,7 @@ export function createD1CostBaseline(report: {
   for (const result of report.results) {
     operations[baselineKey(result.scale, result.id)] = {
       statements: result.aggregate.statements.median,
+      bindingCalls: result.aggregate.bindingCalls.median,
       rowsRead: result.aggregate.rowsRead.median,
       rowsWritten: result.aggregate.rowsWritten.median,
     };
@@ -50,7 +53,7 @@ export function createD1CostBaseline(report: {
         : [[baselineKey(result.scale, result.id), result.statementGroups]],
     ),
   );
-  return { schemaVersion: 3, databaseBytes, operations, focusedOperations };
+  return { schemaVersion: 4, databaseBytes, operations, focusedOperations };
 }
 
 export function assertExactD1Baseline(
@@ -85,7 +88,7 @@ export function assertExactD1Baseline(
   for (const key of actualKeys.filter((key) => key in baseline.operations)) {
     const expected = baseline.operations[key] as DeterministicD1Counters;
     const measured = actual.operations[key] as DeterministicD1Counters;
-    for (const counter of ["statements", "rowsRead", "rowsWritten"] as const) {
+    for (const counter of ["bindingCalls", "statements", "rowsRead", "rowsWritten"] as const) {
       if (expected[counter] !== measured[counter]) {
         differences.push(
           `${key} ${counter}: expected ${expected[counter]}, measured ${measured[counter]}`,

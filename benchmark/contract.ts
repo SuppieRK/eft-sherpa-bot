@@ -7,6 +7,7 @@ export const USER_OPERATION_IDS = [
   "discord.request.form.prefilled",
   "discord.request.submit.created",
   "discord.request.submit.already-active",
+  "discord.request.submit.exact-replay",
   "discord.queue.p10",
   "discord.queue.p50",
   "discord.queue.p90",
@@ -15,6 +16,7 @@ export const USER_OPERATION_IDS = [
   "twitch.request.already-active",
   "twitch.request.invalid",
   "twitch.request.invalid.expired-receipts",
+  "twitch.request.exact-replay",
   "twitch.queue.p10",
   "twitch.queue.p50",
   "twitch.queue.p90",
@@ -37,15 +39,18 @@ export const USER_OPERATION_IDS = [
   "discord.users.middle",
   "discord.users.last",
   "discord.users.complete-discord",
+  "operator.status",
 ] as const;
 
 export type UserOperationId = (typeof USER_OPERATION_IDS)[number];
 
 export const FOCUSED_D1_OPERATION_IDS = [
   "discord.request.submit.created",
+  "discord.request.submit.exact-replay",
   "twitch.request.created",
   "twitch.request.invalid",
   "twitch.request.invalid.expired-receipts",
+  "twitch.request.exact-replay",
   "discord.queue.p10",
   "discord.queue.p50",
   "discord.queue.p90",
@@ -53,13 +58,20 @@ export const FOCUSED_D1_OPERATION_IDS = [
   "twitch.queue.p50",
   "twitch.queue.p90",
   "discord.board.refresh",
+  "operator.status",
 ] as const satisfies readonly UserOperationId[];
 
 export const BENCHMARK_SCALES_BY_OPERATION: Readonly<
   Partial<Record<UserOperationId, readonly number[]>>
 > = {
   "twitch.request.invalid.expired-receipts": [1_000],
-  "discord.board.refresh.removed-history": [1_000, 10_000],
+  "discord.board.refresh.removed-history": [1_000, 10_000, 100_000],
+};
+
+export const BENCHMARK_SAMPLE_OVERRIDE: Readonly<
+  Partial<Record<UserOperationId, { warmups: number; samples: number }>>
+> = {
+  "discord.board.refresh.removed-history": { warmups: 0, samples: 1 },
 };
 
 export const BENCHMARK_OPERATION_FAMILIES = [
@@ -81,6 +93,7 @@ export const BENCHMARK_OPERATION_FAMILIES = [
   "discord:stats",
   "discord:users-page",
   "discord:users-complete",
+  "operator:status",
 ] as const;
 
 export type BenchmarkOperationFamily = (typeof BENCHMARK_OPERATION_FAMILIES)[number];
@@ -89,6 +102,7 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "discord.request.form.prefilled": "discord:request",
   "discord.request.submit.created": "discord:request",
   "discord.request.submit.already-active": "discord:request",
+  "discord.request.submit.exact-replay": "discord:request",
   "discord.queue.p10": "discord:queue",
   "discord.queue.p50": "discord:queue",
   "discord.queue.p90": "discord:queue",
@@ -97,6 +111,7 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "twitch.request.already-active": "twitch:request",
   "twitch.request.invalid": "twitch:request",
   "twitch.request.invalid.expired-receipts": "twitch:request",
+  "twitch.request.exact-replay": "twitch:request",
   "twitch.queue.p10": "twitch:queue",
   "twitch.queue.p50": "twitch:queue",
   "twitch.queue.p90": "twitch:queue",
@@ -119,4 +134,5 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "discord.users.middle": "discord:users-page",
   "discord.users.last": "discord:users-page",
   "discord.users.complete-discord": "discord:users-complete",
+  "operator.status": "operator:status",
 };

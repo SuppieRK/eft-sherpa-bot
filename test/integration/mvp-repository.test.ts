@@ -239,6 +239,42 @@ describe("schedule-independent dual queues", () => {
     ]);
   });
 
+  it("commits one board dirty version with a new intake membership", async () => {
+    const repo = repository();
+    const input = {
+      sourcePlatform: "twitch" as const,
+      sourceDeliveryId: "atomic-board-dirty",
+      twitchUserId: "atomic-board-dirty-user",
+      twitchLogin: "atomic_board_dirty",
+      gameMode: "pve" as const,
+      inGameName: "Atomic Dirty PMC",
+      mapId: "customs",
+      objective: "Mark the board in the intake batch",
+      recipientLimit: 4,
+      observedAt: now,
+    };
+
+    await expect(repo.createRequest(input)).resolves.toMatchObject({
+      outcome: "created",
+      queueChanged: true,
+    });
+    await expect(
+      env.DB.prepare(
+        "SELECT board_dirty_version AS dirtyVersion FROM community_state WHERE community_id = 'butcoffee'",
+      ).first(),
+    ).resolves.toEqual({ dirtyVersion: 1 });
+
+    await expect(repo.createRequest(input)).resolves.toMatchObject({
+      outcome: "duplicate_delivery",
+      queueChanged: false,
+    });
+    await expect(
+      env.DB.prepare(
+        "SELECT board_dirty_version AS dirtyVersion FROM community_state WHERE community_id = 'butcoffee'",
+      ).first(),
+    ).resolves.toEqual({ dirtyVersion: 1 });
+  });
+
   it("assigns requests without schedule data and bounds ordinary display at seven", async () => {
     const repo = repository();
     for (let index = 1; index <= 25; index += 1) await createRequest(repo, index);
@@ -1282,9 +1318,9 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     await createRequest(repo, 1);
     const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
-    await seedWaitingRequests(1_000, { offset: 1 });
+    await seedWaitingRequests(10_000, { offset: 1 });
     await env.DB.prepare(`UPDATE help_requests SET state = 3 WHERE id > 1`).run();
-    const history = Array.from({ length: 1_000 }, (_, index) => ({
+    const history = Array.from({ length: 10_000 }, (_, index) => ({
       requestId: index + 2,
       position: index + 2,
     }));
@@ -1303,6 +1339,9 @@ describe("schedule-independent dual queues", () => {
 
     expect(snapshot.ordinaryRaids[0]?.members).toHaveLength(1);
     expect(metrics.snapshot().rowsRead).toBeLessThan(100);
+    const raidMetrics = new D1Metrics();
+    await new D1MvpRepository(instrumentD1Database(env.DB, raidMetrics)).getRaid(raid.id);
+    expect(raidMetrics.snapshot().rowsRead).toBeLessThan(20);
   });
 
   it("captures statement details only when explicitly enabled", async () => {
@@ -1312,8 +1351,10 @@ describe("schedule-independent dual queues", () => {
 
     const detailed = new D1Metrics(true);
     await new D1MvpRepository(instrumentD1Database(env.DB, detailed)).getDiagnostics();
-    expect(detailed.statementDetails()).toHaveLength(4);
-    expect(detailed.statementDetails().every((statement) => statement.query.length > 0)).toBe(true);
+    expect(detailed.statementDetails()).toHaveLength(3);
+    expect(detailed.statementDetails().every((statement) => statement.queryId.length > 0)).toBe(
+      true,
+    );
     expect(
       detailed.statementDetails().reduce((sum, statement) => sum + statement.statements, 0),
     ).toBe(detailed.snapshot().statements);
@@ -1377,7 +1418,7 @@ describe("schedule-independent dual queues", () => {
     await expect(
       measured.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
     ).resolves.toEqual({ repaired: 60, hasMore: false });
-    expect(metrics.snapshot().statements).toBe(6);
+    expect(metrics.snapshot().statements).toBe(7);
     const stored = await env.DB.prepare(
       `SELECT count(*) AS requestCount,
               (SELECT count(*) FROM raid_groups WHERE state = 0) AS raidCount,
@@ -1422,6 +1463,28 @@ describe("schedule-independent dual queues", () => {
         `SELECT sum(state = 0) AS waiting, sum(state = 1) AS planned FROM help_requests`,
       ).first(),
     ).resolves.toEqual({ waiting: 9_920, planned: 80 });
+  }, 20_000);
+
+  it("ignores a large unrelated partial-raid population during bounded repair", async () => {
+    await ensureCommunityState();
+    await seedWaitingRequests(80);
+    const unrelated = JSON.stringify(Array.from({ length: 10_000 }, (_, index) => index + 1));
+    await env.DB.prepare(
+      `INSERT INTO raid_groups
+         (is_priority, game_mode, sort_key, map_id, requester_capacity,
+          automatic_fill, state, created_at, updated_at)
+       SELECT 0, 1, value * 1000000, 'factory', 4, 1, 0, ?, ?
+       FROM json_each(?)`,
+    )
+      .bind(now.getTime(), now.getTime(), unrelated)
+      .run();
+    const metrics = new D1Metrics();
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+
+    await expect(
+      measured.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toEqual({ repaired: 80, hasMore: false });
+    expect(metrics.snapshot().rowsRead).toBeLessThan(2_500);
   }, 20_000);
 
   it("reserves every non-empty queue-kind and mode pair outside the FIFO batch", async () => {
@@ -1500,6 +1563,71 @@ describe("schedule-independent dual queues", () => {
       `SELECT delivery_id AS deliveryId FROM event_receipts ORDER BY delivery_id`,
     ).all<{ deliveryId: string }>();
     expect(receipts.results).toEqual([{ deliveryId: "recent" }]);
+  });
+
+  it("serializes board drains and preserves changes that arrive during rendering", async () => {
+    await ensureCommunityState();
+    const repo = repository();
+    for (let index = 0; index < 10; index += 1) {
+      await repo.markBoardDirty(new Date(now.getTime() + index));
+    }
+    const claims = await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        repo.acquireBoardDrainLease({ token: `lease-${index}`, changedAt: now }),
+      ),
+    );
+    const winner = claims.find((claim) => claim !== undefined);
+    expect(claims.filter((claim) => claim !== undefined)).toHaveLength(1);
+    expect(winner).toMatchObject({ dirtyVersion: 10, renderedVersion: 0 });
+
+    await repo.markBoardDirty(new Date(now.getTime() + 20));
+    await expect(
+      repo.completeBoardDrain({
+        token: winner?.token ?? "missing",
+        renderedVersion: winner?.dirtyVersion ?? 0,
+        changedAt: new Date(now.getTime() + 21),
+      }),
+    ).resolves.toEqual({ current: false, hasMore: true });
+    const followUp = await repo.acquireBoardDrainLease({
+      token: "follow-up",
+      changedAt: new Date(now.getTime() + 22),
+    });
+    expect(followUp).toMatchObject({ dirtyVersion: 11, renderedVersion: 10 });
+    await expect(
+      repo.completeBoardDrain({
+        token: "follow-up",
+        renderedVersion: followUp?.dirtyVersion ?? 0,
+        changedAt: new Date(now.getTime() + 23),
+      }),
+    ).resolves.toEqual({ current: true, hasMore: false });
+    await expect(
+      repo.acquireBoardDrainLease({ token: "none", changedAt: new Date(now.getTime() + 24) }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("reclaims only incomplete expired Discord mutation receipts", async () => {
+    const repo = repository();
+    await expect(repo.claimDiscordMutation("retryable", "component", now)).resolves.toBe(true);
+    await expect(repo.claimDiscordMutation("retryable", "component", now)).resolves.toBe(false);
+    await repo.releaseDiscordMutation("retryable");
+    await expect(repo.claimDiscordMutation("retryable", "component", now)).resolves.toBe(true);
+    await expect(
+      repo.claimDiscordMutation("retryable", "component", new Date(now.getTime() + 5 * 60 * 1_000)),
+    ).resolves.toBe(true);
+    await repo.completeDiscordMutation("retryable");
+    await expect(
+      repo.claimDiscordMutation(
+        "retryable",
+        "component",
+        new Date(now.getTime() + 10 * 60 * 1_000),
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      env.DB.prepare(
+        `SELECT discord_mutation_status AS status, discord_claim_until AS claimUntil
+         FROM event_receipts WHERE platform = 0 AND delivery_id = 'retryable'`,
+      ).first(),
+    ).resolves.toEqual({ status: 1, claimUntil: null });
   });
 
   it("deletes expired Discord receipts in oldest-first leased batches of 100", async () => {
@@ -1661,8 +1789,169 @@ describe("schedule-independent dual queues", () => {
     ).all<{ twitchLogin: string; twitchUserId: string | null }>();
     expect(mappings.results).toEqual([
       { twitchLogin: "new_login", twitchUserId: "shared-twitch-id" },
-      { twitchLogin: "old_login", twitchUserId: null },
     ]);
+  });
+
+  it("keeps queue access and active uniqueness after a Twitch login rename", async () => {
+    const repo = repository();
+    await repo.upsertUserMapping({
+      twitchLogin: "before_rename",
+      twitchUserId: "stable-rename-id",
+      discordUserId: "rename-discord",
+      discordDisplayName: "Rename Discord",
+      inGameName: "Rename PMC",
+      observedAt: now,
+    });
+    const created = await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "before-rename-request",
+      twitchUserId: "stable-rename-id",
+      twitchLogin: "before_rename",
+      gameMode: "pve",
+      inGameName: "Rename PMC",
+      mapId: "customs",
+      objective: "Keep this request",
+      recipientLimit: 4,
+      observedAt: now,
+    });
+
+    await repo.observeTwitchIdentity({
+      twitchLogin: "after_rename",
+      twitchUserId: "stable-rename-id",
+      observedAt: new Date(now.getTime() + 1),
+    });
+
+    await expect(
+      repo.getQueueFacts({ platform: "twitch", userId: "stable-rename-id" }),
+    ).resolves.toMatchObject({ caller: { mapName: "Customs", gameMode: "pve" } });
+    await expect(
+      repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: "after-rename-duplicate",
+        twitchUserId: "stable-rename-id",
+        twitchLogin: "after_rename",
+        gameMode: "pve",
+        inGameName: "Rename PMC",
+        mapId: "customs",
+        objective: "Do not duplicate",
+        recipientLimit: 4,
+        observedAt: new Date(now.getTime() + 2),
+      }),
+    ).resolves.toMatchObject({ outcome: "already_active", request: { id: created.request.id } });
+    const mapping = await env.DB.prepare(
+      `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+              discord_user_id AS discordUserId, in_game_name AS inGameName
+       FROM user_mappings WHERE twitch_user_id = 'stable-rename-id'`,
+    ).first();
+    expect(mapping).toEqual({
+      twitchLogin: "after_rename",
+      twitchUserId: "stable-rename-id",
+      discordUserId: "rename-discord",
+      inGameName: "Rename PMC",
+    });
+    const raid = await repo.getRaid(
+      Number(
+        (
+          await env.DB.prepare(
+            `SELECT group_id AS groupId FROM raid_group_members WHERE request_id = ? AND state = 0`,
+          )
+            .bind(created.request.id)
+            .first<{ groupId: number }>()
+        )?.groupId,
+      ),
+    );
+    expect(raid?.members[0]?.twitchLogin).toBe("after_rename");
+  });
+
+  it("merges optional identity details when the renamed login already exists", async () => {
+    const repo = repository();
+    await repo.upsertUserMapping({
+      twitchLogin: "old_identity",
+      twitchUserId: "merge-stable-id",
+      discordUserId: "merge-discord",
+      discordDisplayName: "Merge Discord",
+      inGameName: "Merge PMC",
+      observedAt: now,
+    });
+    await env.DB.prepare(
+      `INSERT INTO user_mappings (twitch_login, created_at, updated_at)
+       VALUES ('new_identity', ?, ?)`,
+    )
+      .bind(now.getTime(), now.getTime())
+      .run();
+
+    await repo.observeTwitchIdentity({
+      twitchLogin: "new_identity",
+      twitchUserId: "merge-stable-id",
+      observedAt: new Date(now.getTime() + 1),
+    });
+
+    await expect(
+      env.DB.prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+                discord_user_id AS discordUserId, discord_display_name AS discordDisplayName,
+                in_game_name AS inGameName
+         FROM user_mappings ORDER BY twitch_login`,
+      ).all(),
+    ).resolves.toMatchObject({
+      results: [
+        {
+          twitchLogin: "new_identity",
+          twitchUserId: "merge-stable-id",
+          discordUserId: "merge-discord",
+          discordDisplayName: "Merge Discord",
+          inGameName: "Merge PMC",
+        },
+      ],
+    });
+  });
+
+  it("uses a known stable Twitch ID for Discord request uniqueness", async () => {
+    const repo = repository();
+    await repo.upsertUserMapping({
+      twitchLogin: "discord_stable_viewer",
+      twitchUserId: "discord-stable-id",
+      discordUserId: "discord-stable-user",
+      observedAt: now,
+    });
+    const discordRequest = await repo.createRequest({
+      sourcePlatform: "discord",
+      sourceDeliveryId: "discord-stable-request",
+      discordUserId: "discord-stable-user",
+      twitchLogin: "discord_stable_viewer",
+      gameMode: "pvp",
+      inGameName: "Discord Stable PMC",
+      mapId: "woods",
+      objective: "Discord request",
+      recipientLimit: 4,
+      observedAt: now,
+    });
+
+    await expect(
+      repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: "discord-stable-duplicate",
+        twitchUserId: "discord-stable-id",
+        twitchLogin: "discord_stable_viewer",
+        gameMode: "pvp",
+        inGameName: "Discord Stable PMC",
+        mapId: "woods",
+        objective: "Twitch duplicate",
+        recipientLimit: 4,
+        observedAt: new Date(now.getTime() + 1),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "already_active",
+      request: { id: discordRequest.request.id },
+    });
+    await expect(
+      env.DB.prepare(
+        `SELECT twitch_user_id AS twitchUserId
+         FROM help_requests WHERE id = ?`,
+      )
+        .bind(discordRequest.request.id)
+        .first(),
+    ).resolves.toEqual({ twitchUserId: "discord-stable-id" });
   });
 
   it("updates changed generic identity details but skips an unchanged rewrite", async () => {

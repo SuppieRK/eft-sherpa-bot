@@ -51,6 +51,9 @@ if (status.authorization?.ok !== true) throw new Error("Twitch authorization is 
 if (status.database?.hasLegacyUnassignedRequests !== false) {
   throw new Error("D1 still contains legacy unassigned requests");
 }
+if (!Number.isInteger(status.database?.stableIdentityRepairCount)) {
+  throw new TypeError("D1 did not report the stable identity repair count");
+}
 if (discord.ok !== true) throw new Error("Discord validation did not complete");
 if (!["created", "reused"].includes(twitch.action)) {
   throw new Error("Twitch subscription validation did not complete");
@@ -67,6 +70,7 @@ const evidence = {
   databaseName: required("D1_DATABASE_NAME"),
   migrations: migrationFiles.filter((file) => /^\d{4}_[a-z0-9_]+\.sql$/.test(file)).sort(),
   recoveryBookmark: bookmark,
+  stableIdentityRepairCount: status.database.stableIdentityRepairCount,
   discord: { ok: true },
   twitch: { ok: true, subscriptionAction: twitch.action },
   health: { ok: true },
@@ -89,6 +93,7 @@ if (summary !== undefined) {
       `- Worker: ${evidence.workerUrl}`,
       `- Database: \`${evidence.databaseName}\``,
       `- Migrations: ${migrations}`,
+      `- Stable identity repairs: ${evidence.stableIdentityRepairCount}`,
       "- Discord: ready",
       "- Twitch: ready",
       "- Worker health: ready",
