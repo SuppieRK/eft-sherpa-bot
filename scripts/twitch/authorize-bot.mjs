@@ -4,6 +4,7 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 const OPERATOR_FILE = ".dev.vars.operator";
 const WORKER_FILE = ".dev.vars";
 const REQUIRED_SCOPES = ["user:read:chat", "user:write:chat", "user:bot"];
+const TWITCH_DEVICE_ACTIVATION_URL = "https://www.twitch.tv/activate";
 
 function parseEnvironmentFile(contents) {
   const values = new Map();
@@ -77,6 +78,13 @@ async function startDeviceAuthorization(clientId) {
   ) {
     throw new TypeError("Twitch returned an invalid device authorization response");
   }
+  if (!/^[a-z0-9-]{4,32}$/i.test(payload.user_code)) {
+    throw new TypeError("Twitch returned an invalid device authorization code");
+  }
+  const verificationUrl = new URL(payload.verification_uri);
+  if (`${verificationUrl.origin}${verificationUrl.pathname}` !== TWITCH_DEVICE_ACTIVATION_URL) {
+    throw new TypeError("Twitch returned an unexpected device authorization URL");
+  }
   return payload;
 }
 
@@ -129,7 +137,7 @@ async function validateUserToken(accessToken, expectedLogin, expectedClientId) {
   if (missingScopes.length > 0) {
     throw new Error(`The Twitch token is missing scopes: ${missingScopes.join(", ")}`);
   }
-  if (typeof payload.user_id !== "string") {
+  if (typeof payload.user_id !== "string" || !/^\d+$/.test(payload.user_id)) {
     throw new TypeError("Twitch token validation did not return a bot user ID");
   }
   return payload;
@@ -161,7 +169,7 @@ async function getTwitchUser(clientId, accessToken, login) {
     throw new Error(`Twitch user lookup failed with status ${response.status}`);
   }
   const user = Array.isArray(payload.data) ? payload.data[0] : undefined;
-  if (typeof user?.id !== "string") {
+  if (typeof user?.id !== "string" || !/^\d+$/.test(user.id)) {
     throw new TypeError(`Twitch user was not found: ${login}`);
   }
   return user;
@@ -171,22 +179,22 @@ const operatorValues = await readEnvironmentFile(OPERATOR_FILE);
 const clientId = requireValue(operatorValues, "TWITCH_CLIENT_ID");
 const clientSecret = requireValue(operatorValues, "TWITCH_CLIENT_SECRET");
 const appTokenOnly = process.argv.includes("--app-token-only");
-let userAuthorization;
 
 if (!appTokenOnly) {
   const botLogin = requireValue(operatorValues, "TWITCH_BOT_LOGIN").toLowerCase();
   const broadcasterLogin = requireValue(operatorValues, "TWITCH_BROADCASTER_LOGIN").toLowerCase();
   const device = await startDeviceAuthorization(clientId);
   console.log("Authorize with the BOT Twitch account:");
-  console.log(device.verification_uri);
-  console.log(`Code: ${device.user_code}`);
+  console.log(TWITCH_DEVICE_ACTIVATION_URL);
+  console.log(`Code: ${device.user_code}`); // NOSONAR -- Strict validation prevents log injection.
   console.log("Waiting for authorization...");
 
   const userToken = await waitForDeviceAuthorization(clientId, device);
   const validation = await validateUserToken(userToken.access_token, botLogin, clientId);
   const broadcaster = await getTwitchUser(clientId, userToken.access_token, broadcasterLogin);
   operatorValues.set("TWITCH_REFRESH_TOKEN", userToken.refresh_token);
-  userAuthorization = { broadcaster, validation };
+  operatorValues.set("TWITCH_BOT_USER_ID", validation.user_id);
+  operatorValues.set("TWITCH_BROADCASTER_USER_ID", broadcaster.id);
 }
 
 const appToken = await createAppAccessToken(clientId, clientSecret);
@@ -218,18 +226,13 @@ if (appTokenOnly) {
     ),
   );
 } else {
-  const { broadcaster, validation } = userAuthorization;
   console.log(
     JSON.stringify(
       {
-        authorizedBotLogin: validation.login,
-        botUserId: validation.user_id,
-        broadcasterLogin: broadcaster.login,
-        broadcasterUserId: broadcaster.id,
+        authorizationReady: true,
         clientId,
-        scopes: validation.scopes,
-        userGrantExpiresInSeconds: validation.expires_in,
-        appTokenExpiresInSeconds: appToken.expires_in,
+        scopes: REQUIRED_SCOPES,
+        identityValuesUpdated: ["TWITCH_BOT_USER_ID", "TWITCH_BROADCASTER_USER_ID"],
         secretFilesUpdated: [WORKER_FILE, OPERATOR_FILE],
       },
       null,

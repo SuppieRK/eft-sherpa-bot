@@ -45,7 +45,7 @@ Use the official Cloudflare instructions to [find the account ID](https://develo
 6. Sign in with the Twitch bot account.
 7. Approve the requested scopes.
 8. Ask the streamer to make the bot account a moderator.
-9. Record `broadcasterUserId`, `botUserId`, and `clientId` from the command output.
+9. Keep the Twitch IDs that the command adds to `.dev.vars.operator`.
 10. Keep `.dev.vars` and `.dev.vars.operator` on the installer computer.
 
 The user approval is a one-time action. GitHub creates a new application token during each deployment.
@@ -116,9 +116,9 @@ Run `npm run twitch:authorize` before you add these values. The command creates 
 
 | Name | GitHub type | Enter this value | Get it here | Format/check |
 |---|---|---|---|---|
-| `TWITCH_BROADCASTER_USER_ID` | `Variable` | The value of `broadcasterUserId` | JSON output from `npm run twitch:authorize` | Digits only; do not use `broadcasterLogin` |
-| `TWITCH_BOT_USER_ID` | `Variable` | The value of `botUserId` | JSON output from `npm run twitch:authorize` | Digits only; do not use `authorizedBotLogin` |
-| `TWITCH_CLIENT_ID` | `Variable` | The value of `clientId` | JSON output from `npm run twitch:authorize` | Letters and digits; do not use a user ID |
+| `TWITCH_BROADCASTER_USER_ID` | `Variable` | The value after `TWITCH_BROADCASTER_USER_ID=` | `.dev.vars.operator` on the installer computer | Digits only; do not use the broadcaster login |
+| `TWITCH_BOT_USER_ID` | `Variable` | The value after `TWITCH_BOT_USER_ID=` | `.dev.vars.operator` on the installer computer | Digits only; do not use the bot login |
+| `TWITCH_CLIENT_ID` | `Variable` | The value after `TWITCH_CLIENT_ID=` | `.dev.vars.operator` on the installer computer | Letters and digits; do not use a user ID |
 | `TWITCH_CLIENT_SECRET` | `Secret` | The value after `TWITCH_CLIENT_SECRET=` | `.dev.vars.operator` on the installer computer | Use the application client secret; do not use an access token or refresh token |
 | `TWITCH_EVENTSUB_SECRET` | `Secret` | The value after `TWITCH_EVENTSUB_SECRET=` | `.dev.vars` on the installer computer | The authorization command generates 64 hexadecimal characters |
 | `SPIKE_DIAGNOSTICS_TOKEN` | `Secret` | The value after `SPIKE_DIAGNOSTICS_TOKEN=` | `.dev.vars` on the installer computer | The authorization command generates a different 64-character value |

@@ -133,5 +133,6 @@ export async function ensureTwitchSubscription({
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  console.log(JSON.stringify(await ensureTwitchSubscription(), null, 2));
+  const subscription = await ensureTwitchSubscription();
+  console.log(JSON.stringify({ action: subscription.action }, null, 2));
 }
