@@ -4,19 +4,25 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [
-    cloudflareTest(async () => ({
-      wrangler: { configPath: "./wrangler.jsonc" },
-      miniflare: {
-        bindings: {
-          TEST_MIGRATIONS: await readD1Migrations(path.join(import.meta.dirname, "migrations")),
-          TWITCH_APP_ACCESS_TOKEN: "test-app-access-token",
-          TWITCH_EVENTSUB_SECRET: "test-eventsub-secret-is-long-enough",
-          SPIKE_DIAGNOSTICS_TOKEN: "test-diagnostics-token",
-          DISCORD_BOT_TOKEN: "test-discord-bot-token",
-          DISCORD_API_BASE_URL: "https://discord.test/api/v10",
+    cloudflareTest(async () => {
+      const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
+      return {
+        wrangler: { configPath: "./wrangler.jsonc" },
+        miniflare: {
+          d1Databases: { MIGRATION_DB: "coffee-bot-migration-test" },
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            PRE_0006_MIGRATIONS: migrations.slice(0, -1),
+            MIGRATION_0006: migrations.slice(-1),
+            TWITCH_APP_ACCESS_TOKEN: "test-app-access-token",
+            TWITCH_EVENTSUB_SECRET: "test-eventsub-secret-is-long-enough",
+            SPIKE_DIAGNOSTICS_TOKEN: "test-diagnostics-token",
+            DISCORD_BOT_TOKEN: "test-discord-bot-token",
+            DISCORD_API_BASE_URL: "https://discord.test/api/v10",
+          },
         },
-      },
-    })),
+      };
+    }),
   ],
   test: {
     coverage: {

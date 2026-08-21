@@ -29,6 +29,8 @@ jobs:
         run: npm run install:runtime-binaries
       - name: Verify source
         run: npm run verify
+      - name: Verify fully local D1 cost contract
+        run: npm run benchmark:d1
 
   deploy:
     name: Deploy and verify

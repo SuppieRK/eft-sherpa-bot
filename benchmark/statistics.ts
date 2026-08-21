@@ -1,6 +1,7 @@
 export interface OperationMeasurement {
   wallMs: number;
   d1DurationMs: number;
+  bindingCalls: number;
   statements: number;
   rowsRead: number;
   rowsWritten: number;
@@ -23,6 +24,7 @@ interface Distribution {
 export interface AggregatedMeasurement {
   wallMs: Distribution;
   d1DurationMs: Distribution;
+  bindingCalls: Distribution;
   statements: Distribution;
   rowsRead: Distribution;
   rowsWritten: Distribution;
@@ -50,6 +52,7 @@ export function aggregateMeasurements(
   return {
     wallMs: distribution(measurements.map((measurement) => measurement.wallMs)),
     d1DurationMs: distribution(measurements.map((measurement) => measurement.d1DurationMs)),
+    bindingCalls: distribution(measurements.map((measurement) => measurement.bindingCalls)),
     statements: distribution(measurements.map((measurement) => measurement.statements)),
     rowsRead: distribution(measurements.map((measurement) => measurement.rowsRead)),
     rowsWritten: distribution(measurements.map((measurement) => measurement.rowsWritten)),
@@ -58,7 +61,7 @@ export function aggregateMeasurements(
 
 export function assertStableCost(measurements: readonly OperationMeasurement[]): void {
   if (measurements.length === 0) throw new Error("No measured samples were produced.");
-  for (const key of ["statements", "rowsRead", "rowsWritten"] as const) {
+  for (const key of ["bindingCalls", "statements", "rowsRead", "rowsWritten"] as const) {
     const values = new Set(measurements.map((measurement) => measurement[key]));
     if (values.size !== 1) {
       throw new Error(

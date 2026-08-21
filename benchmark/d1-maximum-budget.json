@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "operation": {
+    "bindingCalls": 50,
+    "statements": 50,
+    "rowsRead": 1000,
+    "rowsWritten": 200
+  },
+  "databaseBytes": {
+    "100": 300000,
+    "1000": 1200000,
+    "10000": 9000000,
+    "100000": 80000000
+  }
+}

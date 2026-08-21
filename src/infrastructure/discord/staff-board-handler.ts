@@ -6,6 +6,7 @@ import { RepositoryInvariantError } from "../../domain/sherpa-repository";
 import { isStaffBoardMember, type StaffBoardRaid } from "../../domain/staff-board";
 import { D1MvpRepository } from "../cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../cloudflare/environment";
+import type { TrackedExecutionContext } from "../cloudflare/telemetry";
 import { sendTwitchChatMessage } from "../twitch/twitch-api";
 import {
   DISCORD_EPHEMERAL_MESSAGE_FLAG,
@@ -40,7 +41,21 @@ export interface StaffBoardHandlerDependencies {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
-  context?: ExecutionContext;
+  context?: ExecutionContext | TrackedExecutionContext;
+}
+
+function scheduleBackground(
+  context: ExecutionContext | TrackedExecutionContext | undefined,
+  name: string,
+  environment: CloudflareEnvironment,
+  task: (measured: CloudflareEnvironment) => Promise<unknown>,
+): void {
+  if (context === undefined) return;
+  if ("waitUntilTask" in context) {
+    context.waitUntilTask(name, task);
+  } else {
+    context.waitUntil(task(environment));
+  }
 }
 
 function ephemeral(content: string): Response {
@@ -95,16 +110,22 @@ async function raidDetailMessage(input: {
   repository: D1MvpRepository;
   communityConfig: CommunityConfig;
   notificationUserId?: string;
+  pullCandidateSource?: StaffBoardRaid;
+  candidatesPreloaded?: boolean;
 }): Promise<DiscordBotMessage> {
   const canPull =
     input.raid.state === "planned" &&
     !input.raid.automaticFill &&
     input.raid.members.length < input.raid.requesterCapacity;
-  const candidates = canPull
-    ? await input.repository.getPullRequesterCandidates(input.raid.id, {
-        requireStaffMessage: false,
-      })
-    : undefined;
+  const candidates = input.candidatesPreloaded
+    ? input.pullCandidateSource === undefined
+      ? undefined
+      : { source: input.pullCandidateSource }
+    : canPull
+      ? await input.repository.getPullRequesterCandidates(input.raid.id, {
+          requireStaffMessage: false,
+        })
+      : undefined;
   return renderRaidMessage(
     input.raid,
     input.communityConfig.policies.attemptLimit,
@@ -122,35 +143,73 @@ export async function synchronizeCanonicalBoard(input: {
   message?: DiscordBotMessage;
 }): Promise<string | undefined> {
   const repository = new D1MvpRepository(input.environment.DB);
-  const snapshot = input.snapshot ?? (await repository.getBoardSnapshot(input.changedAt));
-  const message = input.message ?? boardMessage(snapshot, input.communityConfig);
-  if (snapshot.canonicalMessageId !== undefined) {
+  const initial = input.snapshot ?? (await repository.getBoardSnapshot(input.changedAt));
+  if (initial.canonicalMessageId === undefined && input.createIfMissing) {
+    const created = await createDiscordMessage(
+      input.environment,
+      input.communityConfig.discord.staffChannelId,
+      input.message ?? boardMessage(initial, input.communityConfig),
+    );
+    await repository.setCanonicalBoardMessage({
+      messageId: created.id,
+      changedAt: input.changedAt,
+    });
+    return created.id;
+  }
+  if (initial.canonicalMessageId === undefined) return undefined;
+
+  const token = crypto.randomUUID();
+  let canonicalMessageId = initial.canonicalMessageId;
+  let reusableSnapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>> | undefined =
+    initial;
+  // oxlint-disable no-await-in-loop -- Each lease/CAS step must finish before the next board version.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const lease = await repository.acquireBoardDrainLease({ token, changedAt: new Date() });
+    if (lease === undefined) return canonicalMessageId;
+    const snapshot =
+      reusableSnapshot?.boardVersion === lease.dirtyVersion
+        ? reusableSnapshot
+        : await repository.getBoardSnapshot(input.changedAt);
+    reusableSnapshot = undefined;
+    const message = boardMessage(snapshot, input.communityConfig);
     try {
       await updateDiscordMessage(
         input.environment,
         input.communityConfig.discord.staffChannelId,
-        snapshot.canonicalMessageId,
+        canonicalMessageId,
         message,
       );
-      return snapshot.canonicalMessageId;
+      const completed = await repository.completeBoardDrain({
+        token,
+        renderedVersion: lease.dirtyVersion,
+        changedAt: new Date(),
+      });
+      if (!completed.hasMore) return canonicalMessageId;
     } catch (error) {
       if (!(error instanceof DiscordApiError) || error.status !== 404 || !input.createIfMissing) {
+        await repository.releaseBoardDrainLease(token);
         throw error;
       }
+      const created = await createDiscordMessage(
+        input.environment,
+        input.communityConfig.discord.staffChannelId,
+        message,
+      );
+      canonicalMessageId = created.id;
+      await repository.setCanonicalBoardMessage({
+        messageId: created.id,
+        changedAt: input.changedAt,
+      });
+      await repository.completeBoardDrain({
+        token,
+        renderedVersion: lease.dirtyVersion,
+        changedAt: new Date(),
+      });
     }
-  } else if (!input.createIfMissing) {
-    return undefined;
   }
-  const created = await createDiscordMessage(
-    input.environment,
-    input.communityConfig.discord.staffChannelId,
-    message,
-  );
-  await repository.setCanonicalBoardMessage({
-    messageId: created.id,
-    changedAt: input.changedAt,
-  });
-  return created.id;
+  // oxlint-enable no-await-in-loop
+  await repository.releaseBoardDrainLease(token);
+  return canonicalMessageId;
 }
 
 async function deleteDuplicateRaidMessage(input: {
@@ -171,15 +230,23 @@ async function reconcileRaidMessage(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
+  pullCandidateSource?: StaffBoardRaid;
+  candidatesPreloaded?: boolean;
 }): Promise<string | null | undefined> {
-  const current = await input.repository.getRaid(input.raid.id);
+  const current = input.raid;
   const isReviewedPlanned = current?.state === "planned" && !current.automaticFill;
-  if (current === undefined || (current.state !== "active" && !isReviewedPlanned)) return undefined;
+  if (current.state !== "active" && !isReviewedPlanned) return undefined;
   const channelId = input.communityConfig.discord.staffChannelId;
   const message = await raidDetailMessage({
     raid: current,
     repository: input.repository,
     communityConfig: input.communityConfig,
+    ...(input.pullCandidateSource === undefined
+      ? {}
+      : { pullCandidateSource: input.pullCandidateSource }),
+    ...(input.candidatesPreloaded === undefined
+      ? {}
+      : { candidatesPreloaded: input.candidatesPreloaded }),
   });
   if (current.staffMessageId !== undefined) {
     try {
@@ -237,14 +304,26 @@ async function reconcileVisibleRaidMessages(input: {
   const visibleRaids = [...input.snapshot.priorityRaids, ...input.snapshot.ordinaryRaids].filter(
     (raid) => raid.state === "active" || raid.staffMessageId !== undefined,
   );
+  const reviewedIds = visibleRaids
+    .filter(
+      (raid) =>
+        raid.state === "planned" &&
+        !raid.automaticFill &&
+        raid.members.length < raid.requesterCapacity,
+    )
+    .map((raid) => raid.id);
+  const pullCandidates = await repository.getPullRequesterCandidatesForRaids(reviewedIds);
   const reconciled = await Promise.allSettled(
-    visibleRaids.map((raid) =>
-      reconcileRaidMessage({
+    visibleRaids.map((raid) => {
+      const pullCandidateSource = pullCandidates.get(raid.id);
+      return reconcileRaidMessage({
         ...input,
         raid,
         repository,
-      }),
-    ),
+        candidatesPreloaded: true,
+        ...(pullCandidateSource === undefined ? {} : { pullCandidateSource }),
+      });
+    }),
   );
   for (const [index, result] of reconciled.entries()) {
     if (result.status !== "fulfilled" || result.value === undefined) continue;
@@ -255,7 +334,6 @@ async function reconcileVisibleRaidMessages(input: {
   }
   await synchronizeCanonicalBoard({
     ...input,
-    message: boardMessage(input.snapshot, input.communityConfig),
     createIfMissing: false,
   });
 }
@@ -320,39 +398,60 @@ class StaffBoardHandler {
   }
 
   private async claimMutation(deliveryId: string, eventType: string): Promise<boolean> {
-    const claimed = await this.repository.claimDiscordMutation(
-      deliveryId,
-      eventType,
-      this.dependencies.changedAt,
+    return this.repository.claimDiscordMutation(deliveryId, eventType, this.dependencies.changedAt);
+  }
+
+  private async completeMutation(deliveryId: string): Promise<void> {
+    await this.repository.completeDiscordMutation(deliveryId);
+    scheduleBackground(
+      this.dependencies.context,
+      "discord.receipt_cleanup",
+      this.dependencies.environment,
+      async (environment) => {
+        await new D1MvpRepository(environment.DB).maintainExpiredReceipts(
+          this.dependencies.changedAt,
+        );
+      },
     );
-    if (claimed) {
-      this.dependencies.context?.waitUntil(
-        this.repository.maintainExpiredReceipts(this.dependencies.changedAt).catch(() => undefined),
-      );
-    }
-    return claimed;
+  }
+
+  private releaseMutation(deliveryId: string): Promise<void> {
+    return this.repository.releaseDiscordMutation(deliveryId);
   }
 
   private refreshBoardLater(): void {
-    const work = synchronizeCanonicalBoard({
-      environment: this.dependencies.environment,
-      communityConfig: this.dependencies.communityConfig,
-      changedAt: this.dependencies.changedAt,
-      createIfMissing: false,
-    }).catch(() => undefined);
-    this.dependencies.context?.waitUntil(work);
+    scheduleBackground(
+      this.dependencies.context,
+      "discord.board_drain",
+      this.dependencies.environment,
+      async (environment) => {
+        await synchronizeCanonicalBoard({
+          environment,
+          communityConfig: this.dependencies.communityConfig,
+          changedAt: this.dependencies.changedAt,
+          createIfMissing: false,
+        });
+      },
+    );
   }
 
   private reconcileBoardLater(
     snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>,
     message: DiscordBotMessage,
   ): void {
-    const work = reconcileVisibleRaidMessages({
-      ...this.dependencies,
-      snapshot,
-      message,
-    }).catch(() => undefined);
-    this.dependencies.context?.waitUntil(work);
+    scheduleBackground(
+      this.dependencies.context,
+      "discord.board_reconciliation",
+      this.dependencies.environment,
+      async (environment) => {
+        await reconcileVisibleRaidMessages({
+          ...this.dependencies,
+          environment,
+          snapshot,
+          message,
+        });
+      },
+    );
   }
 
   private async ensureReviewMessage(
@@ -763,6 +862,7 @@ class StaffBoardHandler {
       return ephemeral("This board is out of date. Use Refresh, then review the raid again.");
     }
     if (boardAction?.action === "refresh") {
+      await this.repository.markBoardDirty(changedAt);
       const snapshot = await this.repository.getBoardSnapshot(changedAt);
       const message = boardMessage(snapshot, communityConfig);
       this.reconcileBoardLater(snapshot, message);
@@ -777,15 +877,24 @@ class StaffBoardHandler {
       return ephemeral("That action was already received.");
     }
     try {
+      let response: Response;
       if (boardAction?.action === "review") {
-        return await this.reviewRaid(interaction);
+        response = await this.reviewRaid(interaction);
+      } else {
+        if (raidAction === undefined) {
+          await this.completeMutation(interaction.interactionId);
+          return new Response("Unsupported component", { status: 400 });
+        }
+        response = await this.handleRaidAction(interaction, raidAction);
       }
-      if (raidAction === undefined) {
-        return new Response("Unsupported component", { status: 400 });
-      }
-      return await this.handleRaidAction(interaction, raidAction);
+      await this.completeMutation(interaction.interactionId);
+      return response;
     } catch (error) {
-      if (error instanceof RepositoryInvariantError) return ephemeral(error.message);
+      if (error instanceof RepositoryInvariantError) {
+        await this.completeMutation(interaction.interactionId);
+        return ephemeral(error.message);
+      }
+      await this.releaseMutation(interaction.interactionId);
       throw error;
     }
   }

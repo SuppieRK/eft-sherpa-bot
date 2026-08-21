@@ -4,6 +4,10 @@ import type { CloudflareEnvironment } from "./environment";
 
 type InvocationOutcome = "ok" | "client_error" | "server_error" | "exception";
 
+export interface TrackedExecutionContext extends ExecutionContext {
+  waitUntilTask(name: string, task: (environment: CloudflareEnvironment) => Promise<unknown>): void;
+}
+
 function requestClass(request: Request): { route: string; requestClass: string } {
   const { pathname } = new URL(request.url);
   if (request.method === "GET" && pathname === "/health") {
@@ -29,6 +33,7 @@ function usageDetails(metrics: D1Metrics, startedAt: number) {
   const usage = metrics.snapshot();
   return {
     wallTimeMs: Date.now() - startedAt,
+    d1BindingCalls: usage.bindingCalls,
     d1Statements: usage.statements,
     d1DurationMs: Number(usage.durationMs.toFixed(3)),
     d1RowsRead: usage.rowsRead,
@@ -43,16 +48,101 @@ function safeErrorCode(error: unknown): string {
   return "unexpected_error";
 }
 
+function addUsage(target: D1Metrics, usage: ReturnType<D1Metrics["snapshot"]>): void {
+  target.add(usage);
+}
+
+function trackedExecutionContext(input: {
+  context: ExecutionContext;
+  environment: CloudflareEnvironment;
+  correlationId: string;
+  classification: { route: string; requestClass: string };
+  tasks: Promise<void>[];
+  taskMetrics: D1Metrics[];
+}): TrackedExecutionContext {
+  const waitUntilTask = (
+    name: string,
+    task: (environment: CloudflareEnvironment) => Promise<unknown>,
+  ) => {
+    const startedAt = Date.now();
+    const metrics = new D1Metrics();
+    input.taskMetrics.push(metrics);
+    const work = task(measuredEnvironment(input.environment, metrics)).then(
+      () => {
+        logDiagnostic("info", "worker_background_task", {
+          ...input.classification,
+          correlationId: input.correlationId,
+          task: name,
+          outcome: "ok",
+          ...usageDetails(metrics, startedAt),
+        });
+      },
+      (error: unknown) => {
+        logDiagnostic("error", "worker_background_task", {
+          ...input.classification,
+          correlationId: input.correlationId,
+          task: name,
+          outcome: "exception",
+          errorClass: error instanceof Error ? error.name : "unknown",
+          errorCode: safeErrorCode(error),
+          ...usageDetails(metrics, startedAt),
+        });
+      },
+    );
+    input.tasks.push(work);
+    input.context.waitUntil(work);
+  };
+  return new Proxy(input.context as TrackedExecutionContext, {
+    get(target, property) {
+      if (property === "waitUntilTask") return waitUntilTask;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 export async function observeWorkerRequest(
   request: Request,
   environment: CloudflareEnvironment,
-  handler: (measured: CloudflareEnvironment) => Promise<Response>,
+  context: ExecutionContext,
+  handler: (
+    measured: CloudflareEnvironment,
+    trackedContext: TrackedExecutionContext,
+  ) => Promise<Response>,
 ): Promise<Response> {
   const startedAt = Date.now();
   const metrics = new D1Metrics();
   const classification = requestClass(request);
+  const correlationId = crypto.randomUUID();
+  const tasks: Promise<void>[] = [];
+  const taskMetrics: D1Metrics[] = [];
+  const trackedContext = trackedExecutionContext({
+    context,
+    environment,
+    correlationId,
+    classification,
+    tasks,
+    taskMetrics,
+  });
+  const scheduleFinalUsage = (outcome: InvocationOutcome) => {
+    const foreground = metrics.snapshot();
+    context.waitUntil(
+      Promise.allSettled(tasks).then(() => {
+        const aggregate = new D1Metrics();
+        addUsage(aggregate, foreground);
+        for (const taskMetric of taskMetrics) addUsage(aggregate, taskMetric.snapshot());
+        logDiagnostic("info", "worker_invocation_final", {
+          ...classification,
+          correlationId,
+          outcome,
+          trackedTaskCount: tasks.length,
+          ...usageDetails(aggregate, startedAt),
+        });
+      }),
+    );
+  };
   try {
-    const response = await handler(measuredEnvironment(environment, metrics));
+    const response = await handler(measuredEnvironment(environment, metrics), trackedContext);
     let outcome: InvocationOutcome = "ok";
     if (response.status >= 500) {
       outcome = "server_error";
@@ -61,19 +151,25 @@ export async function observeWorkerRequest(
     }
     logDiagnostic(outcome === "server_error" ? "error" : "info", "worker_invocation", {
       ...classification,
+      correlationId,
+      scope: "foreground",
       outcome,
       status: response.status,
       ...usageDetails(metrics, startedAt),
     });
+    scheduleFinalUsage(outcome);
     return response;
   } catch (error) {
     logDiagnostic("error", "worker_invocation", {
       ...classification,
+      correlationId,
+      scope: "foreground",
       outcome: "exception",
       errorClass: error instanceof Error ? error.name : "unknown",
       errorCode: safeErrorCode(error),
       ...usageDetails(metrics, startedAt),
     });
+    scheduleFinalUsage("exception");
     throw error;
   }
 }

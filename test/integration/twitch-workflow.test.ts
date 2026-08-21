@@ -179,6 +179,58 @@ describe("Twitch private-pilot commands", () => {
     expect(reply).not.toContain("C1");
   });
 
+  it("keeps one request visible after Twitch authenticates a renamed login", async () => {
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }));
+    const requestContext = createExecutionContext();
+    await worker.fetch(
+      await eventSubRequest("!request pve customs renamed task", "rename-request", {
+        chatterUserId: "stable-rename-viewer",
+        chatterUserLogin: "old_viewer_name",
+        messageId: "rename-chat-request",
+      }),
+      testEnvironment,
+      requestContext,
+    );
+    await waitOnExecutionContext(requestContext);
+
+    const queueContext = createExecutionContext();
+    await worker.fetch(
+      await eventSubRequest("!queue", "rename-queue", {
+        chatterUserId: "stable-rename-viewer",
+        chatterUserLogin: "new_viewer_name",
+        messageId: "rename-chat-queue",
+      }),
+      testEnvironment,
+      queueContext,
+    );
+    await waitOnExecutionContext(queueContext);
+
+    const duplicateContext = createExecutionContext();
+    await worker.fetch(
+      await eventSubRequest("!request pve customs duplicate", "rename-duplicate", {
+        chatterUserId: "stable-rename-viewer",
+        chatterUserLogin: "new_viewer_name",
+        messageId: "rename-chat-duplicate",
+      }),
+      testEnvironment,
+      duplicateContext,
+    );
+    await waitOnExecutionContext(duplicateContext);
+
+    expect(requestBody(twitchFetch.mock.calls[1]?.[1]?.body)).toContain("1st in the PvE queue");
+    expect(requestBody(twitchFetch.mock.calls[2]?.[1]?.body)).toContain(
+      "already queued for PvE · Customs",
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count, min(twitch_login) AS twitchLogin
+         FROM help_requests WHERE state IN (0, 1)`,
+      ).first(),
+    ).resolves.toEqual({ count: 1, twitchLogin: "new_viewer_name" });
+  });
+
   it("updates Twitch identity before a queue lookup", async () => {
     const repo = new D1MvpRepository(testEnvironment.DB);
     await repo.observeTwitchIdentity({

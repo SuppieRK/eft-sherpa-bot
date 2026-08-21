@@ -43,6 +43,8 @@ const SORT_STEP = 1_000_000;
 const RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
 const RECEIPT_CLEANUP_BATCH_SIZE = 100;
 const RECEIPT_CLEANUP_INTERVAL_MS = 15 * 60 * 1_000;
+const DISCORD_MUTATION_CLAIM_MS = 5 * 60 * 1_000;
+const BOARD_DRAIN_LEASE_MS = 30 * 1_000;
 const BOARD_PRIORITY_RAID_LIMIT = 3;
 const BOARD_ORDINARY_RAID_LIMIT = 7;
 const MAX_REQUESTERS_PER_RAID = 4;
@@ -95,6 +97,13 @@ interface CommunityStateRow {
   staffBoardMessageId: string | null;
   priorityRaidCount: number;
   ordinaryRaidCount: number;
+  boardDirtyVersion: number;
+}
+
+export interface BoardDrainLease {
+  dirtyVersion: number;
+  renderedVersion: number;
+  token: string;
 }
 
 interface UserMappingRow {
@@ -103,6 +112,17 @@ interface UserMappingRow {
   discordUserId: string | null;
   discordDisplayName: string | null;
   inGameName: string | null;
+}
+
+function directoryEntry(row: UserMappingRow): StaffUserDirectoryEntry {
+  return {
+    twitchLogin: row.twitchLogin,
+    twitchIdentityObserved: row.twitchUserId !== null,
+    ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
+    ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+    ...(row.discordDisplayName === null ? {} : { discordDisplayName: row.discordDisplayName }),
+    ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
+  };
 }
 
 interface StatisticsSummaryRow {
@@ -319,7 +339,7 @@ function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
   return [...raids.values()];
 }
 
-function raidSelectSql(where: string, currentMembersOnly = false): string {
+function raidSelectSql(where: string, memberState?: number): string {
   return `SELECT raid.id,
                  CASE raid.game_mode WHEN 0 THEN 'pvp-seasonal'
                       WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
@@ -339,14 +359,21 @@ function raidSelectSql(where: string, currentMembersOnly = false): string {
                    WHEN 2 THEN 'failed' ELSE 'not_requested' END AS twitchCallStatus,
                  raid.staff_message_id AS staffMessageId,
                  member.id AS memberId, member.state AS memberState,
-                 member.request_id AS requestId, request.twitch_login AS twitchLogin,
+                 member.request_id AS requestId,
+                 coalesce(stable_mapping.twitch_login, request.twitch_login) AS twitchLogin,
                  request.in_game_name AS inGameName,
-                 coalesce(request.discord_user_id, mapping.discord_user_id) AS discordUserId,
+                 coalesce(request.discord_user_id, stable_mapping.discord_user_id,
+                          login_mapping.discord_user_id) AS discordUserId,
                  request.objective, request.notes, member.position AS memberPosition
           FROM raid_groups AS raid
-          LEFT JOIN raid_group_members AS member ON member.group_id = raid.id${currentMembersOnly ? " AND member.state = 0" : ""}
+          LEFT JOIN raid_group_members AS member
+            ON member.group_id = raid.id
+           ${memberState === undefined ? "" : `AND member.state = ${memberState}`}
           LEFT JOIN help_requests AS request ON request.id = member.request_id
-          LEFT JOIN user_mappings AS mapping ON mapping.twitch_login = request.twitch_login
+          LEFT JOIN user_mappings AS stable_mapping
+            ON stable_mapping.twitch_user_id = request.twitch_user_id
+          LEFT JOIN user_mappings AS login_mapping
+            ON login_mapping.twitch_login = request.twitch_login
           ${where}
           ORDER BY raid.is_priority DESC, raid.sort_key, member.position`;
 }
@@ -522,6 +549,25 @@ export class D1MvpRepository
 {
   constructor(private readonly database: D1Database) {}
 
+  private boardDirtyStatement(
+    timestamp: number,
+    onlyIfPreviousStatementChanged = false,
+  ): D1PreparedStatement {
+    const values = onlyIfPreviousStatementChanged
+      ? "SELECT 'butcoffee', 1, ?, ? WHERE changes() > 0"
+      : "VALUES ('butcoffee', 1, ?, ?)";
+    return this.database
+      .prepare(
+        `INSERT INTO community_state
+           (community_id, board_dirty_version, created_at, updated_at)
+         ${values}
+         ON CONFLICT(community_id) DO UPDATE SET
+           board_dirty_version = community_state.board_dirty_version + 1,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(timestamp, timestamp);
+  }
+
   private userMappingStatements(input: {
     twitchLogin: string;
     twitchUserId?: string;
@@ -533,6 +579,22 @@ export class D1MvpRepository
     const statements: D1PreparedStatement[] = [];
     if (input.twitchUserId !== undefined) {
       statements.push(
+        this.database
+          .prepare(
+            `UPDATE user_mappings
+             SET twitch_login = ?, updated_at = ?
+             WHERE twitch_user_id = ? AND twitch_login <> ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM user_mappings AS target WHERE target.twitch_login = ?
+               )`,
+          )
+          .bind(
+            input.twitchLogin,
+            input.timestamp,
+            input.twitchUserId,
+            input.twitchLogin,
+            input.twitchLogin,
+          ),
         this.database
           .prepare(
             `UPDATE user_mappings SET twitch_user_id = NULL, updated_at = ?
@@ -597,12 +659,14 @@ export class D1MvpRepository
     exactAheadLimit: number,
   ): Promise<QueueRaidOrderRow[]> {
     const globalLimit = exactAheadLimit + 4;
-    const [modeHeads, fifoRows] = await Promise.all([
-      this.database.prepare(boundedModeRaidSql(isPriority, 1)).all<QueueRaidOrderRow>(),
-      this.database.prepare(boundedGlobalRaidSql(isPriority, globalLimit)).all<QueueRaidOrderRow>(),
+    const [modeHeads, fifoRows] = await this.database.batch<QueueRaidOrderRow>([
+      this.database.prepare(boundedModeRaidSql(isPriority, 1)),
+      this.database.prepare(boundedGlobalRaidSql(isPriority, globalLimit)),
     ]);
     const unique = new Map<number, QueueRaidOrderRow>();
-    for (const raid of [...modeHeads.results, ...fifoRows.results]) unique.set(raid.groupId, raid);
+    for (const raid of [...(modeHeads?.results ?? []), ...(fifoRows?.results ?? [])]) {
+      unique.set(raid.groupId, raid);
+    }
     return orderByModePresence([...unique.values()]).slice(0, exactAheadLimit + 1);
   }
 
@@ -735,18 +799,7 @@ export class D1MvpRepository
         )
         .bind(timestamp, timestamp, platform, input.sourceDeliveryId),
     );
-    statements.push(
-      this.database
-        .prepare(
-          `UPDATE help_requests SET state = 1, updated_at = ?
-           WHERE source_platform = ? AND source_delivery_id = ? AND state = 0
-             AND EXISTS (
-               SELECT 1 FROM raid_group_members AS member
-               WHERE member.request_id = help_requests.id AND member.state = 0
-             )`,
-        )
-        .bind(timestamp, platform, input.sourceDeliveryId),
-    );
+    statements.push(this.boardDirtyStatement(timestamp, true));
     statements.push(
       this.database
         .prepare(
@@ -763,31 +816,48 @@ export class D1MvpRepository
         )
         .bind(timestamp, timestamp, platform, input.sourceDeliveryId),
     );
-    const selectedIndex = statements.length;
+    const deliverySelectedIndex = statements.length;
     statements.push(
       this.database
         .prepare(
           `SELECT ${requestProjection()}, source_platform AS sourcePlatform,
                   source_delivery_id AS sourceDeliveryId
            FROM help_requests
-           WHERE (source_platform = ? AND source_delivery_id = ?)
-              OR (twitch_login = ? AND game_mode = ? AND map_id = ? AND state IN (0, 1))
-           ORDER BY (source_platform = ? AND source_delivery_id = ?) DESC,
-                    is_priority DESC, id
-           LIMIT 1`,
+           WHERE source_platform = ? AND source_delivery_id = ?`,
         )
-        .bind(
-          platform,
-          input.sourceDeliveryId,
-          twitchLogin,
-          gameModeCode(input.gameMode),
-          input.mapId,
-          platform,
-          input.sourceDeliveryId,
-        ),
+        .bind(platform, input.sourceDeliveryId),
+    );
+    const stableSelectedIndex = statements.length;
+    statements.push(
+      this.database
+        .prepare(
+          `SELECT ${requestProjection()}, source_platform AS sourcePlatform,
+                  source_delivery_id AS sourceDeliveryId
+           FROM help_requests
+           WHERE twitch_user_id = coalesce(?, (
+                   SELECT twitch_user_id FROM user_mappings WHERE twitch_login = ?
+                 ))
+             AND game_mode = ? AND map_id = ? AND state IN (0, 1)
+           ORDER BY is_priority DESC, id LIMIT 1`,
+        )
+        .bind(input.twitchUserId ?? null, twitchLogin, gameModeCode(input.gameMode), input.mapId),
+    );
+    const loginSelectedIndex = statements.length;
+    statements.push(
+      this.database
+        .prepare(
+          `SELECT ${requestProjection()}, source_platform AS sourcePlatform,
+                  source_delivery_id AS sourceDeliveryId
+           FROM help_requests
+           WHERE twitch_login = ? AND game_mode = ? AND map_id = ? AND state IN (0, 1)
+           ORDER BY is_priority DESC, id LIMIT 1`,
+        )
+        .bind(twitchLogin, gameModeCode(input.gameMode), input.mapId),
     );
     const results = await this.database.batch(statements);
-    const request = results[selectedIndex]?.results[0] as SelectedRequestRow | undefined;
+    const request = (results[deliverySelectedIndex]?.results[0] ??
+      results[stableSelectedIndex]?.results[0] ??
+      results[loginSelectedIndex]?.results[0]) as SelectedRequestRow | undefined;
     if (request === undefined) throw new RepositoryInvariantError("request was not stored");
     const inserted = (results[requestInsertIndex]?.results.length ?? 0) > 0;
     const queueChanged = (results[membershipInsertIndex]?.results.length ?? 0) > 0;
@@ -807,18 +877,31 @@ export class D1MvpRepository
     return { outcome: "already_active", queueChanged: false, request: record };
   }
 
-  private async resolveCallerLogin(caller: QueueCaller): Promise<string | undefined> {
+  private async resolveCallerIdentity(
+    caller: QueueCaller,
+  ): Promise<{ twitchLogin: string; twitchUserId?: string } | undefined> {
     const column = caller.platform === "discord" ? "discord_user_id" : "twitch_user_id";
     const row = await this.database
-      .prepare(`SELECT twitch_login AS twitchLogin FROM user_mappings WHERE ${column} = ?`)
+      .prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId
+         FROM user_mappings WHERE ${column} = ?`,
+      )
       .bind(caller.userId)
-      .first<{ twitchLogin: string }>();
-    return row?.twitchLogin;
+      .first<{ twitchLogin: string; twitchUserId: string | null }>();
+    if (row === null) return undefined;
+    return {
+      twitchLogin: row.twitchLogin,
+      ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
+    };
   }
 
   async getQueueFacts(caller: QueueCaller): Promise<QueueFacts> {
-    const twitchLogin = await this.resolveCallerLogin(caller);
-    if (twitchLogin === undefined) return {};
+    const identity = await this.resolveCallerIdentity(caller);
+    if (identity === undefined) return {};
+    const identityPredicate =
+      identity.twitchUserId === undefined
+        ? { sql: "request.twitch_login = ?", value: identity.twitchLogin }
+        : { sql: "request.twitch_user_id = ?", value: identity.twitchUserId };
     const selected = await this.database
       .prepare(
         `SELECT request.id AS requestId, request.map_id AS mapId,
@@ -829,10 +912,10 @@ export class D1MvpRepository
          LEFT JOIN raid_group_members AS member
            ON member.request_id = request.id AND member.state = 0
          LEFT JOIN raid_groups AS raid ON raid.id = member.group_id AND raid.state IN (0, 1)
-         WHERE request.twitch_login = ? AND request.state IN (0, 1)
+         WHERE ${identityPredicate.sql} AND request.state IN (0, 1)
          ORDER BY request.is_priority DESC, request.id LIMIT 1`,
       )
-      .bind(twitchLogin)
+      .bind(identityPredicate.value)
       .first<QueueSelectionRow>();
     if (selected === null) return {};
     const selectedModeCode = gameModeCode(selected.gameMode);
@@ -875,10 +958,10 @@ export class D1MvpRepository
                        WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
                   map_id AS mapId
            FROM help_requests
-           WHERE twitch_login = ? AND state IN (0, 1) AND id <> ?
+           WHERE ${identityPredicate.sql.replaceAll("request.", "")} AND state IN (0, 1) AND id <> ?
            GROUP BY game_mode, map_id ORDER BY min(id)`,
         )
-        .bind(twitchLogin, selected.requestId)
+        .bind(identityPredicate.value, selected.requestId)
         .all<{ gameMode: GameMode; mapId: string }>(),
     ]);
     const requestPrefixCount = Number(requestPrefixRow?.count ?? 0);
@@ -1004,18 +1087,59 @@ export class D1MvpRepository
       );
     }
 
+    const demand = [
+      ...waiting
+        .reduce((counts, row) => {
+          const key = `${row.isPriority}:${row.gameMode}:${row.mapId}`;
+          const current = counts.get(key);
+          if (current === undefined) {
+            counts.set(key, {
+              isPriority: row.isPriority,
+              gameMode: row.gameMode,
+              mapId: row.mapId,
+              requestCount: 1,
+            });
+          } else {
+            current.requestCount += 1;
+          }
+          return counts;
+        }, new Map<
+          string,
+          { isPriority: number; gameMode: number; mapId: string; requestCount: number }
+        >())
+        .values(),
+    ];
     const [existing, maxima] = await Promise.all([
       this.database
         .prepare(
-          `SELECT raid.id AS groupId, raid.game_mode AS gameMode, raid.map_id AS mapId,
-                  raid.is_priority AS isPriority,
-                  raid.sort_key AS sortKey, raid.requester_capacity AS requesterCapacity,
-                  raid.current_member_count AS memberCount
-           FROM raid_groups AS raid
-           WHERE raid.state = 0 AND raid.automatic_fill = 1
-             AND raid.current_member_count < raid.requester_capacity
-           ORDER BY raid.is_priority, raid.game_mode, raid.map_id, raid.sort_key`,
+          `WITH demand AS (
+             SELECT cast(json_extract(value, '$.isPriority') AS INTEGER) AS is_priority,
+                    cast(json_extract(value, '$.gameMode') AS INTEGER) AS game_mode,
+                    json_extract(value, '$.mapId') AS map_id,
+                    cast(json_extract(value, '$.requestCount') AS INTEGER) AS request_count
+             FROM json_each(?)
+           ), compatible AS (
+             SELECT raid.id AS groupId, raid.game_mode AS gameMode, raid.map_id AS mapId,
+                    raid.is_priority AS isPriority, raid.sort_key AS sortKey,
+                    raid.requester_capacity AS requesterCapacity,
+                    raid.current_member_count AS memberCount,
+                    demand.request_count AS requestCount,
+                    row_number() OVER (
+                      PARTITION BY raid.is_priority, raid.game_mode, raid.map_id
+                      ORDER BY raid.sort_key
+                    ) AS bucketRank
+             FROM demand
+             JOIN raid_groups AS raid
+               ON raid.is_priority = demand.is_priority
+              AND raid.game_mode = demand.game_mode AND raid.map_id = demand.map_id
+             WHERE raid.state = 0 AND raid.automatic_fill = 1
+               AND raid.current_member_count < raid.requester_capacity
+           )
+           SELECT groupId, gameMode, mapId, isPriority, sortKey, requesterCapacity, memberCount
+           FROM compatible WHERE bucketRank <= requestCount
+           ORDER BY isPriority, gameMode, mapId, sortKey`,
         )
+        .bind(JSON.stringify(demand))
         .all<OpenGroupRow>(),
       this.database
         .prepare(
@@ -1087,25 +1211,29 @@ export class D1MvpRepository
            RETURNING request_id`,
         )
         .bind(assignmentJson, timestamp, timestamp),
+      this.boardDirtyStatement(timestamp, true),
     ]);
     const materialized = results[1]?.results.length ?? 0;
     return { materialized, shouldRetry: materialized < assignments.length };
   }
 
   async getBoardSnapshot(_now?: Date): Promise<StaffBoardSnapshot> {
-    const [state, candidateRows] = await Promise.all([
-      this.database
-        .prepare(
-          `SELECT staff_board_message_id AS staffBoardMessageId,
+    const [stateResult, candidateRows] = await this.database.batch<
+      CommunityStateRow | QueueRaidOrderRow
+    >([
+      this.database.prepare(
+        `SELECT staff_board_message_id AS staffBoardMessageId,
                 priority_open_raid_count AS priorityRaidCount,
-                ordinary_open_raid_count AS ordinaryRaidCount
+                ordinary_open_raid_count AS ordinaryRaidCount,
+                board_dirty_version AS boardDirtyVersion
          FROM community_state WHERE community_id = 'butcoffee'`,
-        )
-        .first<CommunityStateRow>(),
-      this.database.prepare(boundedBoardRaidSql()).all<QueueRaidOrderRow>(),
+      ),
+      this.database.prepare(boundedBoardRaidSql()),
     ]);
+    const state = stateResult?.results[0] as CommunityStateRow | undefined;
+    const candidates = (candidateRows?.results ?? []) as QueueRaidOrderRow[];
     const fallbackCounts =
-      state === null
+      state === undefined
         ? await this.database
             .prepare(
               `SELECT
@@ -1117,10 +1245,10 @@ export class D1MvpRepository
             .first<{ priorityRaidCount: number; ordinaryRaidCount: number }>()
         : undefined;
     const priorityCandidates = orderByModePresence(
-      candidateRows.results.filter((raid) => raid.isPriority === 1),
+      candidates.filter((raid) => raid.isPriority === 1),
     ).slice(0, 3);
     const ordinaryCandidates = orderByModePresence(
-      candidateRows.results.filter((raid) => raid.isPriority === 0),
+      candidates.filter((raid) => raid.isPriority === 0),
     ).slice(0, 7);
     const visibleIds = [...priorityCandidates, ...ordinaryCandidates].map(
       (candidate) => candidate.groupId,
@@ -1129,9 +1257,7 @@ export class D1MvpRepository
       visibleIds.length === 0
         ? { results: [] as RaidRow[] }
         : await this.database
-            .prepare(
-              raidSelectSql(`WHERE raid.id IN (${visibleIds.map(() => "?").join(", ")})`, true),
-            )
+            .prepare(raidSelectSql(`WHERE raid.id IN (${visibleIds.map(() => "?").join(", ")})`, 0))
             .bind(...visibleIds)
             .all<RaidRow>();
     const raidsById = new Map(mapRaidRows(detailRows.results).map((raid) => [raid.id, raid]));
@@ -1141,6 +1267,7 @@ export class D1MvpRepository
         return raid === undefined ? [] : [raid];
       });
     return {
+      boardVersion: Number(state?.boardDirtyVersion ?? 0),
       priorityRaidCount: Number(state?.priorityRaidCount ?? fallbackCounts?.priorityRaidCount ?? 0),
       ordinaryRaidCount: Number(state?.ordinaryRaidCount ?? fallbackCounts?.ordinaryRaidCount ?? 0),
       ...(state?.staffBoardMessageId == null
@@ -1152,8 +1279,14 @@ export class D1MvpRepository
   }
 
   async getRaid(groupId: number): Promise<StaffBoardRaid | undefined> {
+    const state = await this.database
+      .prepare(`SELECT state, outcome FROM raid_groups WHERE id = ?`)
+      .bind(groupId)
+      .first<{ state: number; outcome: number | null }>();
+    if (state === null) return undefined;
+    const memberState = state.state === 0 || state.state === 1 ? 0 : state.outcome === 0 ? 1 : -1;
     const rows = await this.database
-      .prepare(raidSelectSql("WHERE raid.id = ?"))
+      .prepare(raidSelectSql("WHERE raid.id = ?", memberState))
       .bind(groupId)
       .all<RaidRow>();
     return mapRaidRows(rows.results)[0];
@@ -1166,21 +1299,26 @@ export class D1MvpRepository
         `INSERT INTO community_state (community_id, staff_board_message_id, created_at, updated_at)
        VALUES ('butcoffee', ?, ?, ?)
        ON CONFLICT(community_id) DO UPDATE SET
-         staff_board_message_id = excluded.staff_board_message_id, updated_at = excluded.updated_at`,
+         staff_board_message_id = excluded.staff_board_message_id,
+         board_rendered_version = community_state.board_dirty_version,
+         updated_at = excluded.updated_at`,
       )
       .bind(input.messageId, timestamp, timestamp)
       .run();
   }
 
   async reviewRaid(input: { groupId: number; changedAt: Date }): Promise<StaffBoardRaid> {
-    const result = await this.database
-      .prepare(
-        `UPDATE raid_groups SET automatic_fill = 0, updated_at = ?
-         WHERE id = ? AND state = 0 AND current_member_count > 0`,
-      )
-      .bind(epoch(input.changedAt), input.groupId)
-      .run();
-    if (Number(result.meta.changes) !== 1) {
+    const timestamp = epoch(input.changedAt);
+    const [result] = await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE raid_groups SET automatic_fill = 0, updated_at = ?
+           WHERE id = ? AND state = 0 AND current_member_count > 0`,
+        )
+        .bind(timestamp, input.groupId),
+      this.boardDirtyStatement(timestamp),
+    ]);
+    if (Number(result?.meta.changes ?? 0) !== 1) {
       throw new RepositoryInvariantError("That raid is no longer available to review.");
     }
     const raid = await this.getRaid(input.groupId);
@@ -1200,6 +1338,34 @@ export class D1MvpRepository
     const source = await this.getRaid(selected.groupId);
     if (source === undefined || source.members.length === 0) return undefined;
     return { source };
+  }
+
+  async getPullRequesterCandidatesForRaids(
+    destinationGroupIds: readonly number[],
+  ): Promise<ReadonlyMap<number, StaffBoardRaid>> {
+    if (destinationGroupIds.length === 0) return new Map();
+    const selected = await this.database.batch<{ groupId: number }>(
+      destinationGroupIds.map((groupId) =>
+        this.database.prepare(pullSourceIdSql(false)).bind(groupId),
+      ),
+    );
+    const pairs = destinationGroupIds.flatMap((destinationGroupId, index) => {
+      const sourceGroupId = selected[index]?.results[0]?.groupId;
+      return sourceGroupId === undefined ? [] : [{ destinationGroupId, sourceGroupId }];
+    });
+    const sourceIds = [...new Set(pairs.map((pair) => pair.sourceGroupId))];
+    if (sourceIds.length === 0) return new Map();
+    const rows = await this.database
+      .prepare(raidSelectSql(`WHERE raid.id IN (${sourceIds.map(() => "?").join(", ")})`, 0))
+      .bind(...sourceIds)
+      .all<RaidRow>();
+    const sources = new Map(mapRaidRows(rows.results).map((raid) => [raid.id, raid]));
+    return new Map(
+      pairs.flatMap((pair) => {
+        const source = sources.get(pair.sourceGroupId);
+        return source === undefined ? [] : [[pair.destinationGroupId, source] as const];
+      }),
+    );
   }
 
   private async pullBoundary(source: StaffBoardRaid): Promise<PullBoundaryRow | null> {
@@ -1521,6 +1687,7 @@ export class D1MvpRepository
         .prepare(`UPDATE raid_groups SET updated_at = ? WHERE id = ?`)
         .bind(timestamp, input.destinationGroupId),
       this.pullDestinationMembershipStatement(input, plan),
+      this.boardDirtyStatement(timestamp),
     ];
 
     try {
@@ -1555,26 +1722,28 @@ export class D1MvpRepository
     changedAt: Date;
   }): Promise<StaffBoardRaid> {
     const timestamp = epoch(input.changedAt);
-    const result = await this.database
-      .prepare(
-        `UPDATE raid_groups SET state = 1, leader_discord_user_id = ?, leader_type = ?,
-         attempt_count = 1, discord_call_status = 0, twitch_call_status = ?,
-         started_at = ?, updated_at = ?
-         WHERE id = ? AND state = 0 AND automatic_fill = 0 AND staff_message_id IS NOT NULL
-           AND (leader_discord_user_id IS NULL OR leader_discord_user_id = ? OR ? = 1)`,
-      )
-      .bind(
-        input.leaderDiscordUserId,
-        LEADER_TYPE[input.leaderType],
-        input.requestTwitchCall ? CALL_STATUS.pending : CALL_STATUS.not_requested,
-        timestamp,
-        timestamp,
-        input.groupId,
-        input.leaderDiscordUserId,
-        input.canOverrideReservedLeader === true ? 1 : 0,
-      )
-      .run();
-    if (Number(result.meta.changes) !== 1)
+    const [result] = await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE raid_groups SET state = 1, leader_discord_user_id = ?, leader_type = ?,
+           attempt_count = 1, discord_call_status = 0, twitch_call_status = ?,
+           started_at = ?, updated_at = ?
+           WHERE id = ? AND state = 0 AND automatic_fill = 0 AND staff_message_id IS NOT NULL
+             AND (leader_discord_user_id IS NULL OR leader_discord_user_id = ? OR ? = 1)`,
+        )
+        .bind(
+          input.leaderDiscordUserId,
+          LEADER_TYPE[input.leaderType],
+          input.requestTwitchCall ? CALL_STATUS.pending : CALL_STATUS.not_requested,
+          timestamp,
+          timestamp,
+          input.groupId,
+          input.leaderDiscordUserId,
+          input.canOverrideReservedLeader === true ? 1 : 0,
+        ),
+      this.boardDirtyStatement(timestamp),
+    ]);
+    if (Number(result?.meta.changes ?? 0) !== 1)
       throw new RepositoryInvariantError("That raid is no longer available to start.");
     const raid = await this.getRaid(input.groupId);
     if (raid === undefined) throw new RepositoryInvariantError("The started raid was not found.");
@@ -1620,7 +1789,7 @@ export class D1MvpRepository
         input.expectedMessageId ?? null,
       )
       .run();
-    return Number(result.meta.changes) === 1;
+    return Number(result?.meta.changes ?? 0) === 1;
   }
 
   async dismissRaidReview(input: {
@@ -1628,14 +1797,17 @@ export class D1MvpRepository
     expectedMessageId: string;
     changedAt: Date;
   }): Promise<boolean> {
-    const result = await this.database
-      .prepare(
-        `UPDATE raid_groups SET staff_message_id = NULL, updated_at = ?
-         WHERE id = ? AND state = 0 AND automatic_fill = 0 AND staff_message_id = ?`,
-      )
-      .bind(epoch(input.changedAt), input.groupId, input.expectedMessageId)
-      .run();
-    return Number(result.meta.changes) === 1;
+    const timestamp = epoch(input.changedAt);
+    const [result] = await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE raid_groups SET staff_message_id = NULL, updated_at = ?
+           WHERE id = ? AND state = 0 AND automatic_fill = 0 AND staff_message_id = ?`,
+        )
+        .bind(timestamp, input.groupId, input.expectedMessageId),
+      this.boardDirtyStatement(timestamp),
+    ]);
+    return Number(result?.meta.changes ?? 0) === 1;
   }
 
   async recordRaidResult(input: {
@@ -1652,14 +1824,16 @@ export class D1MvpRepository
     if (input.outcome === "unsuccessful") {
       if (raid.attemptCount >= input.attemptLimit)
         throw new RepositoryInvariantError("Choose Helped or Postpone raid for the final attempt.");
-      const result = await this.database
-        .prepare(
-          `UPDATE raid_groups SET attempt_count = attempt_count + 1, last_action_key = ?, updated_at = ?
-         WHERE id = ? AND state = 1 AND attempt_count < ?`,
-        )
-        .bind(input.actionKey, timestamp, input.groupId, input.attemptLimit)
-        .run();
-      if (result.meta.changes !== 1)
+      const [result] = await this.database.batch([
+        this.database
+          .prepare(
+            `UPDATE raid_groups SET attempt_count = attempt_count + 1, last_action_key = ?, updated_at = ?
+             WHERE id = ? AND state = 1 AND attempt_count < ?`,
+          )
+          .bind(input.actionKey, timestamp, input.groupId, input.attemptLimit),
+        this.boardDirtyStatement(timestamp),
+      ]);
+      if (Number(result?.meta.changes ?? 0) !== 1)
         throw new RepositoryInvariantError("That attempt was already recorded.");
     } else {
       const results = await this.database.batch([
@@ -1683,6 +1857,7 @@ export class D1MvpRepository
            WHERE id = ? AND state = 1`,
           )
           .bind(input.actionKey, timestamp, timestamp, input.groupId),
+        this.boardDirtyStatement(timestamp),
       ]);
       if (Number(results[2]?.meta.changes ?? 0) < 1)
         throw new RepositoryInvariantError("That raid result was already recorded.");
@@ -1836,6 +2011,7 @@ export class D1MvpRepository
            )`,
         )
         .bind(destinationKey, input.requestId, destinationKey, timestamp, timestamp),
+      this.boardDirtyStatement(timestamp),
     );
     const results = await this.database.batch(statements);
     if (results.some((result) => Number(result.meta.changes) < 1)) {
@@ -1894,6 +2070,7 @@ export class D1MvpRepository
           `UPDATE raid_groups SET last_action_key = ?, updated_at = ? WHERE id = ? AND state IN (0, 1)`,
         )
         .bind(input.actionKey, timestamp, input.groupId),
+      this.boardDirtyStatement(timestamp),
     ]);
     const updated = await this.getRaid(input.groupId);
     if (updated === undefined)
@@ -1932,6 +2109,7 @@ export class D1MvpRepository
          WHERE id = ? AND state = 1`,
         )
         .bind(SORT_STEP, input.actionKey, timestamp, input.groupId),
+      this.boardDirtyStatement(timestamp),
     ]);
     if (Number(results[1]?.meta.changes ?? 0) < 1)
       throw new RepositoryInvariantError("That raid is no longer active.");
@@ -2127,18 +2305,7 @@ export class D1MvpRepository
       )
       .bind(normalized)
       .first<UserMappingRow>();
-    return row === null
-      ? undefined
-      : {
-          twitchLogin: row.twitchLogin,
-          twitchIdentityObserved: row.twitchUserId !== null,
-          ...(row.twitchUserId === null ? {} : { twitchUserId: row.twitchUserId }),
-          ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
-          ...(row.discordDisplayName === null
-            ? {}
-            : { discordDisplayName: row.discordDisplayName }),
-          ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
-        };
+    return row === null ? undefined : directoryEntry(row);
   }
 
   async completeMissingDiscord(input: {
@@ -2183,6 +2350,68 @@ export class D1MvpRepository
     return result.meta.changes === 1 ? "updated" : "stale";
   }
 
+  async completeMissingDiscordAndGet(input: {
+    twitchLogin: string;
+    discordUserId: string;
+    discordDisplayName?: string;
+    changedAt: Date;
+  }): Promise<{ outcome: "updated" | "stale"; entry?: StaffUserDirectoryEntry }> {
+    const normalized = normalizeTwitchLogin(input.twitchLogin);
+    if (normalized === undefined) return { outcome: "stale" };
+    const row = await this.database
+      .prepare(
+        `UPDATE user_mappings
+         SET discord_user_id = ?, discord_display_name = ?, updated_at = ?
+         WHERE twitch_login = ? AND discord_user_id IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM user_mappings AS conflict
+             WHERE conflict.discord_user_id = ? AND conflict.twitch_login <> ?
+           )
+         RETURNING twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+                   discord_user_id AS discordUserId,
+                   discord_display_name AS discordDisplayName,
+                   in_game_name AS inGameName`,
+      )
+      .bind(
+        input.discordUserId,
+        input.discordDisplayName ?? null,
+        epoch(input.changedAt),
+        normalized,
+        input.discordUserId,
+        normalized,
+      )
+      .first<UserMappingRow>();
+    if (row !== null) return { outcome: "updated", entry: directoryEntry(row) };
+    const entry = await this.findUserMappingByTwitchLogin(normalized);
+    return { outcome: "stale", ...(entry === undefined ? {} : { entry }) };
+  }
+
+  async completeMissingInGameNameAndGet(input: {
+    twitchLogin: string;
+    inGameName: string;
+    changedAt: Date;
+  }): Promise<{ outcome: "updated" | "stale"; entry?: StaffUserDirectoryEntry }> {
+    const normalized = normalizeTwitchLogin(input.twitchLogin);
+    const inGameName = input.inGameName.trim();
+    if (normalized === undefined || inGameName.length < 1 || inGameName.length > 64) {
+      return { outcome: "stale" };
+    }
+    const row = await this.database
+      .prepare(
+        `UPDATE user_mappings SET in_game_name = ?, updated_at = ?
+         WHERE twitch_login = ? AND in_game_name IS NULL
+         RETURNING twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+                   discord_user_id AS discordUserId,
+                   discord_display_name AS discordDisplayName,
+                   in_game_name AS inGameName`,
+      )
+      .bind(inGameName, epoch(input.changedAt), normalized)
+      .first<UserMappingRow>();
+    if (row !== null) return { outcome: "updated", entry: directoryEntry(row) };
+    const entry = await this.findUserMappingByTwitchLogin(normalized);
+    return { outcome: "stale", ...(entry === undefined ? {} : { entry }) };
+  }
+
   async observeTwitchIdentity(input: {
     twitchLogin: string;
     twitchUserId: string;
@@ -2191,25 +2420,183 @@ export class D1MvpRepository
     const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
     if (twitchLogin === undefined) throw new RepositoryInvariantError("Enter a valid Twitch name.");
     const timestamp = epoch(input.observedAt);
-    await this.database.batch([
+    const [stableResult, targetResult] = await this.database.batch<UserMappingRow>([
       this.database
         .prepare(
-          `UPDATE user_mappings SET twitch_user_id = NULL, updated_at = ?
-           WHERE twitch_user_id = ? AND twitch_login <> ?`,
+          `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+                  discord_user_id AS discordUserId,
+                  discord_display_name AS discordDisplayName, in_game_name AS inGameName
+           FROM user_mappings WHERE twitch_user_id = ?`,
         )
-        .bind(timestamp, input.twitchUserId, twitchLogin),
+        .bind(input.twitchUserId),
       this.database
         .prepare(
-          `INSERT INTO user_mappings
-             (twitch_login, twitch_user_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(twitch_login) DO UPDATE SET
-             twitch_user_id = excluded.twitch_user_id,
-             updated_at = excluded.updated_at
-           WHERE user_mappings.twitch_user_id IS NOT excluded.twitch_user_id`,
+          `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+                  discord_user_id AS discordUserId,
+                  discord_display_name AS discordDisplayName, in_game_name AS inGameName
+           FROM user_mappings WHERE twitch_login = ?`,
         )
-        .bind(twitchLogin, input.twitchUserId, timestamp, timestamp),
+        .bind(twitchLogin),
     ]);
+    const stable = stableResult?.results[0];
+    const target = targetResult?.results[0];
+    if (
+      stable?.twitchLogin === twitchLogin &&
+      stable.twitchUserId === input.twitchUserId &&
+      target?.twitchUserId === input.twitchUserId
+    ) {
+      return;
+    }
+    if (stable !== undefined && stable.twitchLogin !== twitchLogin && target === undefined) {
+      await this.database
+        .prepare(
+          `UPDATE user_mappings SET twitch_login = ?, updated_at = ?
+           WHERE twitch_user_id = ? AND twitch_login = ?`,
+        )
+        .bind(twitchLogin, timestamp, input.twitchUserId, stable.twitchLogin)
+        .run();
+      return;
+    }
+    if (stable !== undefined && stable.twitchLogin !== twitchLogin && target !== undefined) {
+      const discordUserId = target.discordUserId ?? stable.discordUserId;
+      const discordDisplayName = target.discordDisplayName ?? stable.discordDisplayName;
+      const inGameName = target.inGameName ?? stable.inGameName;
+      await this.database.batch([
+        this.database
+          .prepare(
+            `UPDATE user_mappings
+             SET twitch_user_id = NULL, discord_user_id = NULL,
+                 discord_display_name = NULL, in_game_name = NULL, updated_at = ?
+             WHERE twitch_login = ? AND twitch_user_id = ?`,
+          )
+          .bind(timestamp, stable.twitchLogin, input.twitchUserId),
+        this.database
+          .prepare(
+            `UPDATE user_mappings
+             SET twitch_user_id = ?, discord_user_id = ?, discord_display_name = ?,
+                 in_game_name = ?, updated_at = ?
+             WHERE twitch_login = ?`,
+          )
+          .bind(
+            input.twitchUserId,
+            discordUserId,
+            discordDisplayName,
+            inGameName,
+            timestamp,
+            twitchLogin,
+          ),
+        this.database
+          .prepare(
+            `UPDATE help_requests AS request
+             SET twitch_login = ?, updated_at = ?
+             WHERE request.twitch_user_id = ? AND request.twitch_login <> ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM help_requests AS conflict
+                 WHERE conflict.id <> request.id
+                   AND conflict.twitch_login = ?
+                   AND conflict.game_mode = request.game_mode
+                   AND conflict.map_id = request.map_id
+                   AND conflict.state IN (0, 1)
+               )`,
+          )
+          .bind(twitchLogin, timestamp, input.twitchUserId, twitchLogin, twitchLogin),
+        this.database
+          .prepare(
+            `DELETE FROM user_mappings
+             WHERE twitch_login = ? AND twitch_user_id IS NULL
+               AND discord_user_id IS NULL AND in_game_name IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM help_requests
+                 WHERE help_requests.twitch_login = user_mappings.twitch_login
+               )`,
+          )
+          .bind(stable.twitchLogin),
+      ]);
+      return;
+    }
+    await this.database.batch(
+      this.userMappingStatements({
+        twitchLogin,
+        twitchUserId: input.twitchUserId,
+        timestamp,
+      }),
+    );
+  }
+
+  async markBoardDirty(changedAt: Date): Promise<number> {
+    const row = await this.database
+      .prepare(
+        `INSERT INTO community_state
+           (community_id, board_dirty_version, created_at, updated_at)
+         VALUES ('butcoffee', 1, ?, ?)
+         ON CONFLICT(community_id) DO UPDATE SET
+           board_dirty_version = community_state.board_dirty_version + 1,
+           updated_at = excluded.updated_at
+         RETURNING board_dirty_version AS dirtyVersion`,
+      )
+      .bind(epoch(changedAt), epoch(changedAt))
+      .first<{ dirtyVersion: number }>();
+    if (row === null) throw new RepositoryInvariantError("the board state is unavailable");
+    return Number(row.dirtyVersion);
+  }
+
+  async acquireBoardDrainLease(input: {
+    token: string;
+    changedAt: Date;
+  }): Promise<BoardDrainLease | undefined> {
+    const timestamp = epoch(input.changedAt);
+    const row = await this.database
+      .prepare(
+        `UPDATE community_state
+         SET board_lease_token = ?, board_lease_until = ?, updated_at = ?
+         WHERE community_id = 'butcoffee'
+           AND board_dirty_version > board_rendered_version
+           AND (board_lease_until <= ? OR board_lease_token = ?)
+         RETURNING board_dirty_version AS dirtyVersion,
+                   board_rendered_version AS renderedVersion,
+                   board_lease_token AS token`,
+      )
+      .bind(input.token, timestamp + BOARD_DRAIN_LEASE_MS, timestamp, timestamp, input.token)
+      .first<{ dirtyVersion: number; renderedVersion: number; token: string }>();
+    return row === null
+      ? undefined
+      : {
+          dirtyVersion: Number(row.dirtyVersion),
+          renderedVersion: Number(row.renderedVersion),
+          token: row.token,
+        };
+  }
+
+  async completeBoardDrain(input: {
+    token: string;
+    renderedVersion: number;
+    changedAt: Date;
+  }): Promise<{ current: boolean; hasMore: boolean }> {
+    const row = await this.database
+      .prepare(
+        `UPDATE community_state
+         SET board_rendered_version = max(board_rendered_version, ?),
+             board_lease_until = 0, board_lease_token = NULL, updated_at = ?
+         WHERE community_id = 'butcoffee' AND board_lease_token = ?
+         RETURNING board_dirty_version = ? AS current,
+                   board_dirty_version > board_rendered_version AS hasMore`,
+      )
+      .bind(input.renderedVersion, epoch(input.changedAt), input.token, input.renderedVersion)
+      .first<{ current: number; hasMore: number }>();
+    return {
+      current: Number(row?.current ?? 0) === 1,
+      hasMore: Number(row?.hasMore ?? 0) === 1,
+    };
+  }
+
+  async releaseBoardDrainLease(token: string): Promise<void> {
+    await this.database
+      .prepare(
+        `UPDATE community_state SET board_lease_until = 0, board_lease_token = NULL
+         WHERE community_id = 'butcoffee' AND board_lease_token = ?`,
+      )
+      .bind(token)
+      .run();
   }
 
   linkDiscordToTwitch(input: {
@@ -2218,16 +2605,22 @@ export class D1MvpRepository
     discordDisplayName?: string;
     inGameName?: string;
     linkedAt: Date;
-  }): Promise<UserMapping> {
-    return this.upsertUserMapping({
-      twitchLogin: input.twitchLogin,
-      discordUserId: input.discordUserId,
-      ...(input.discordDisplayName === undefined
-        ? {}
-        : { discordDisplayName: input.discordDisplayName }),
-      ...(input.inGameName === undefined ? {} : { inGameName: input.inGameName }),
-      observedAt: input.linkedAt,
-    });
+  }): Promise<void> {
+    const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
+    if (twitchLogin === undefined) throw new RepositoryInvariantError("Enter a valid Twitch name.");
+    return this.database
+      .batch(
+        this.userMappingStatements({
+          twitchLogin,
+          discordUserId: input.discordUserId,
+          ...(input.discordDisplayName === undefined
+            ? {}
+            : { discordDisplayName: input.discordDisplayName }),
+          ...(input.inGameName === undefined ? {} : { inGameName: input.inGameName }),
+          timestamp: epoch(input.linkedAt),
+        }),
+      )
+      .then(() => undefined);
   }
 
   async recordTwitchReply(input: {
@@ -2238,12 +2631,16 @@ export class D1MvpRepository
     receivedAt: Date;
   }): Promise<TwitchReplyReceipt> {
     const receivedAt = epoch(input.receivedAt);
-    const result = await this.database
+    const inserted = await this.database
       .prepare(
-        `INSERT OR IGNORE INTO event_receipts
+        `INSERT INTO event_receipts
          (platform, delivery_id, event_type, received_at, twitch_reply_text,
           twitch_reply_to_message_id, reply_status)
-       VALUES (1, ?, ?, ?, ?, ?, 0)`,
+         VALUES (1, ?, ?, ?, ?, ?, 0)
+         ON CONFLICT(platform, delivery_id) DO NOTHING
+         RETURNING twitch_reply_text AS replyText,
+                   twitch_reply_to_message_id AS replyToMessageId,
+                   'pending' AS replyStatus`,
       )
       .bind(
         input.deliveryId,
@@ -2252,7 +2649,24 @@ export class D1MvpRepository
         input.replyText,
         input.replyToMessageId ?? null,
       )
-      .run();
+      .first<TwitchReceiptRow>();
+    if (inserted?.replyText != null && inserted.replyStatus !== null) {
+      return {
+        duplicate: false,
+        replyText: inserted.replyText,
+        replyStatus: inserted.replyStatus,
+        ...(inserted.replyToMessageId === null
+          ? {}
+          : { replyToMessageId: inserted.replyToMessageId }),
+      };
+    }
+    const existing = await this.findTwitchReply(input.deliveryId);
+    if (existing === undefined)
+      throw new RepositoryInvariantError("Twitch command receipt was not stored");
+    return existing;
+  }
+
+  async findTwitchReply(deliveryId: string): Promise<TwitchReplyReceipt | undefined> {
     const row = await this.database
       .prepare(
         `SELECT twitch_reply_text AS replyText, twitch_reply_to_message_id AS replyToMessageId,
@@ -2260,12 +2674,11 @@ export class D1MvpRepository
                                 WHEN 2 THEN 'failed' END AS replyStatus
        FROM event_receipts WHERE platform = 1 AND delivery_id = ?`,
       )
-      .bind(input.deliveryId)
+      .bind(deliveryId)
       .first<TwitchReceiptRow>();
-    if (row?.replyText == null || row.replyStatus === null)
-      throw new RepositoryInvariantError("Twitch command receipt was not stored");
+    if (row?.replyText == null || row.replyStatus === null) return undefined;
     return {
-      duplicate: result.meta.changes === 0,
+      duplicate: true,
       replyText: row.replyText,
       replyStatus: row.replyStatus,
       ...(row.replyToMessageId === null ? {} : { replyToMessageId: row.replyToMessageId }),
@@ -2309,14 +2722,44 @@ export class D1MvpRepository
     receivedAt: Date,
   ): Promise<boolean> {
     const timestamp = epoch(receivedAt);
-    const result = await this.database
+    const row = await this.database
       .prepare(
-        `INSERT OR IGNORE INTO event_receipts (platform, delivery_id, event_type, received_at)
-         VALUES (0, ?, ?, ?)`,
+        `INSERT INTO event_receipts
+           (platform, delivery_id, event_type, received_at,
+            discord_mutation_status, discord_claim_until)
+         VALUES (0, ?, ?, ?, 0, ?)
+         ON CONFLICT(platform, delivery_id) DO UPDATE SET
+           event_type = excluded.event_type,
+           discord_mutation_status = 0,
+           discord_claim_until = excluded.discord_claim_until
+         WHERE event_receipts.discord_mutation_status = 0
+           AND event_receipts.discord_claim_until <= excluded.received_at
+         RETURNING delivery_id AS deliveryId`,
       )
-      .bind(deliveryId, eventType, timestamp)
+      .bind(deliveryId, eventType, timestamp, timestamp + DISCORD_MUTATION_CLAIM_MS)
+      .first<{ deliveryId: string }>();
+    return row !== null;
+  }
+
+  async completeDiscordMutation(deliveryId: string): Promise<void> {
+    await this.database
+      .prepare(
+        `UPDATE event_receipts
+         SET discord_mutation_status = 1, discord_claim_until = NULL
+         WHERE platform = 0 AND delivery_id = ? AND discord_mutation_status = 0`,
+      )
+      .bind(deliveryId)
       .run();
-    return result.meta.changes === 1;
+  }
+
+  async releaseDiscordMutation(deliveryId: string): Promise<void> {
+    await this.database
+      .prepare(
+        `DELETE FROM event_receipts
+         WHERE platform = 0 AND delivery_id = ? AND discord_mutation_status = 0`,
+      )
+      .bind(deliveryId)
+      .run();
   }
 
   async maintainExpiredReceipts(now: Date): Promise<{ ran: boolean; deleted: number }> {
@@ -2347,15 +2790,20 @@ export class D1MvpRepository
     hasLegacyUnassignedRequests: boolean;
     tableCount: number;
     requestCount: number;
-    receiptCount: number;
+    stableIdentityRepairCount: number;
   }> {
     const results = await this.database.batch([
       this.database.prepare(
         `SELECT count(*) AS count FROM sqlite_schema WHERE type = 'table'
          AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'`,
       ),
-      this.database.prepare(`SELECT count(*) AS count FROM help_requests`),
-      this.database.prepare(`SELECT count(*) AS count FROM event_receipts`),
+      this.database.prepare(
+        `SELECT statistics.submitted_requests AS count,
+                state.stable_identity_repair_count AS stableIdentityRepairCount
+         FROM staff_statistics_summary AS statistics
+         JOIN community_state AS state ON state.community_id = 'butcoffee'
+         WHERE statistics.singleton = 1`,
+      ),
       this.database.prepare(`SELECT EXISTS(SELECT 1 FROM help_requests WHERE state = 0) AS count`),
     ]);
     const count = (index: number) =>
@@ -2363,8 +2811,11 @@ export class D1MvpRepository
     return {
       tableCount: count(0),
       requestCount: count(1),
-      receiptCount: count(2),
-      hasLegacyUnassignedRequests: count(3) === 1,
+      stableIdentityRepairCount: Number(
+        (results[1]?.results[0] as { stableIdentityRepairCount?: number } | undefined)
+          ?.stableIdentityRepairCount ?? 0,
+      ),
+      hasLegacyUnassignedRequests: count(2) === 1,
     };
   }
 }

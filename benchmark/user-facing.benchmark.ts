@@ -11,6 +11,7 @@ import type { CloudflareEnvironment } from "../src/infrastructure/cloudflare/env
 import { testCommunityConfig } from "../test/fixtures/community";
 import {
   BENCHMARK_SAMPLES,
+  BENCHMARK_SAMPLE_OVERRIDE,
   BENCHMARK_SCALES,
   BENCHMARK_SCALES_BY_OPERATION,
   BENCHMARK_WARMUPS,
@@ -49,31 +50,12 @@ interface PreparedOperation {
   verify(response: Response): Promise<void> | void;
 }
 
-function statementGroup(query: string): string {
-  const sql = query.replaceAll(/\s+/g, " ").trim().toLowerCase();
-  if (sql.startsWith("update community_state set receipt_cleanup_after")) return "receipt.lease";
-  if (sql.startsWith("delete from event_receipts")) return "receipt.delete";
-  if (sql.startsWith("insert or ignore into event_receipts")) return "receipt.claim";
-  if (sql.includes("from event_receipts where platform = 1")) return "receipt.load";
-  if (sql.startsWith("update event_receipts set reply_status")) return "receipt.reply-status";
-  if (sql.includes("insert or ignore into raid_group_members")) {
-    return "assignment.membership-insert";
-  }
-  if (sql.startsWith("insert or ignore into raid_groups")) return "assignment.raid-insert";
-  if (sql.includes("from community_state where community_id")) return "board.state";
-  if (sql.includes("join raid_group_members as member")) {
-    return sql.includes("where raid.id = ?") ? "board.raid-validation" : "board.raid-hydration";
-  }
-  if (sql.includes("from raid_groups") && sql.includes("union all")) return "board.candidates";
-  return "other";
-}
-
 function groupStatementUsage(
   statements: readonly Readonly<D1StatementUsage>[],
 ): NonNullable<OperationMeasurement["statementGroups"]> {
   const groups: NonNullable<OperationMeasurement["statementGroups"]> = {};
   for (const statement of statements) {
-    const key = statementGroup(statement.query);
+    const key = statement.queryId;
     const group = groups[key] ?? { statements: 0, rowsRead: 0, rowsWritten: 0 };
     group.statements += statement.statements;
     group.rowsRead += statement.rowsRead;
@@ -87,6 +69,7 @@ function withoutStatementGroups(measurement: OperationMeasurement): OperationMea
   return {
     wallMs: measurement.wallMs,
     d1DurationMs: measurement.d1DurationMs,
+    bindingCalls: measurement.bindingCalls,
     statements: measurement.statements,
     rowsRead: measurement.rowsRead,
     rowsWritten: measurement.rowsWritten,
@@ -365,6 +348,33 @@ function operationDefinitions(input: {
         };
       },
     },
+    {
+      id: "discord.request.submit.exact-replay",
+      label: "Discord request submission (exact delivery replay)",
+      async prepare(seed) {
+        await seedOperationRaid({
+          seed,
+          suffix: "discord_replay",
+          memberCount: 1,
+          state: "planned",
+          streamerDiscordUserId: streamerId,
+        });
+        return {
+          request: await signedDiscordRequest(
+            privateKey,
+            discordRequestModal(config, {
+              id: "bench-op-seed-discord_replay-1",
+              userId: `${OPERATION_PREFIX}discord-discord_replay-1`,
+              twitchLogin: "op_discord_replay_1",
+            }),
+          ),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("is in the queue");
+          },
+        };
+      },
+    },
     ...queueDefinitions("discord"),
     {
       id: "discord.link.self",
@@ -415,6 +425,33 @@ function operationDefinitions(input: {
                GROUP BY request.id`,
             ).first<{ state: number; memberships: number }>();
             expect(row).toEqual({ state: 1, memberships: 1 });
+          },
+        };
+      },
+    },
+    {
+      id: "twitch.request.exact-replay",
+      label: "Twitch !request (exact completed delivery replay)",
+      async prepare(_seed, sample) {
+        const deliveryId = `${OPERATION_PREFIX}twitch-replay-${sample}`;
+        await env.DB.prepare(
+          `INSERT INTO event_receipts
+             (platform, delivery_id, event_type, received_at, twitch_reply_text,
+              twitch_reply_to_message_id, reply_status, reply_attempts)
+           VALUES (1, ?, 'command:request', ?, 'Stored reply', NULL, 1, 1)`,
+        )
+          .bind(deliveryId, Date.now())
+          .run();
+        return {
+          request: await twitch({
+            text: "!request pve customs benchmark objective",
+            deliveryId,
+            twitchUserId: `${OPERATION_PREFIX}twitch-replay`,
+            twitchLogin: "op_twitch_replay",
+          }),
+          verify(response) {
+            expect(response.status).toBe(204);
+            expect(twitchCalls).toHaveLength(0);
           },
         };
       },
@@ -525,7 +562,7 @@ function operationDefinitions(input: {
           }),
           verify(response) {
             expect(response.status).toBe(200);
-            expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(true);
+            expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(false);
           },
         };
       },
@@ -959,6 +996,23 @@ function operationDefinitions(input: {
         };
       },
     },
+    {
+      id: "operator.status",
+      label: "Operator /internal/status",
+      prepare() {
+        return Promise.resolve({
+          request: new Request("https://benchmark.invalid/internal/status", {
+            headers: {
+              Authorization: `Bearer ${String((env as CloudflareEnvironment).SPIKE_DIAGNOSTICS_TOKEN)}`,
+            },
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await responseText(response)).toContain("hasLegacyUnassignedRequests");
+          },
+        });
+      },
+    },
   ];
 }
 
@@ -1002,6 +1056,13 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
       throw new Error(`Unexpected network request: ${request.url}`);
     }
     twitchCalls.push({ method: request.method, url: request.url, body: await request.text() });
+    if (url.pathname.endsWith("/validate")) {
+      return Response.json({
+        client_id: testCommunityConfig.twitch.clientId,
+        user_id: testCommunityConfig.twitch.botUserId,
+        expires_in: 3600,
+      });
+    }
     return Response.json({
       data: [{ message_id: `${OPERATION_PREFIX}twitch-message`, is_sent: true }],
     });
@@ -1048,7 +1109,11 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
         const selectedScales = BENCHMARK_SCALES_BY_OPERATION[definition.id];
         if (selectedScales !== undefined && !selectedScales.includes(scale)) continue;
         const measurements: OperationMeasurement[] = [];
-        for (let sample = 0; sample < BENCHMARK_WARMUPS + BENCHMARK_SAMPLES; sample += 1) {
+        const sampling = BENCHMARK_SAMPLE_OVERRIDE[definition.id] ?? {
+          warmups: BENCHMARK_WARMUPS,
+          samples: BENCHMARK_SAMPLES,
+        };
+        for (let sample = 0; sample < sampling.warmups + sampling.samples; sample += 1) {
           await resetOperationFixture(seed);
           discordMock.reset();
           twitchCalls.length = 0;
@@ -1067,11 +1132,12 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
           } satisfies CloudflareEnvironment;
           const execution = await runWorkerRequest(worker, environment, prepared.request);
           await prepared.verify(execution.response);
-          if (sample >= BENCHMARK_WARMUPS) {
+          if (sample >= sampling.warmups) {
             const usage = metrics.snapshot();
             measurements.push({
               wallMs: execution.wallMs,
               d1DurationMs: Number(usage.durationMs.toFixed(3)),
+              bindingCalls: usage.bindingCalls,
               statements: usage.statements,
               rowsRead: usage.rowsRead,
               rowsWritten: usage.rowsWritten,

@@ -4,46 +4,24 @@
 
 Define automatic grouping, stable queues, staff-board operation, raid attempts, and requester transitions.
 ## Requirements
-### Requirement: Unlimited queue-specific automatic grouping
-The system SHALL materialize every waiting request immediately into planned draft raid groups with the same game mode, map, and queue kind. It SHALL fill the earliest eligible compatible unreviewed raid with capacity, append another raid when needed, preserve existing memberships, and persist no separate grouping state. Concurrent materialization SHALL use current request state, current destination capacity, and current membership positions inside the committing D1 batch, then perform a bounded replan when another invocation wins an expected uniqueness or capacity race. D1 SHALL reject an open membership whose request and raid differ in game mode, map, or queue kind.
+### Requirement: New requests are assigned atomically
+Every accepted new help request SHALL commit as a planned request with exactly one open membership. The transaction SHALL fill the earliest eligible compatible unreviewed planned raid with capacity or create one new raid at the correct queue tail. Compatibility SHALL require the same game mode, map, and queue kind. The transaction SHALL enforce configured requester capacity and SHALL leave no committed active request without an open membership.
 
-Opening a raid for review SHALL atomically disable further automatic filling for that raid before its reviewed membership is displayed. A later compatible request SHALL enter another eligible raid and SHALL NOT change a reviewed party silently. Existing requester-capacity and map-capacity limits SHALL remain unchanged.
+#### Scenario: A compatible raid has capacity
+- **WHEN** a valid request matches an automatically fillable planned raid
+- **THEN** the transaction adds the requester to that earliest raid at the next contiguous position
 
-#### Scenario: Twitch schedule has no segments
-- **WHEN** a request is accepted at any time
-- **THEN** it is materialized into a visible ordinary raid without schedule data
+#### Scenario: No compatible raid has capacity
+- **WHEN** a valid request has no eligible destination
+- **THEN** the transaction creates one compatible queue-tail raid and adds the requester to it
 
-#### Scenario: A waiting backlog is materialized
-- **WHEN** many waiting requests are ready together
-- **THEN** the system reads assignments once and commits mode-compatible raid creation, memberships, and planned request state in one fixed-size D1 batch rather than one database cycle per request
+#### Scenario: A reviewed or active raid has capacity
+- **WHEN** a valid request matches a raid that is reviewed, reserved, or active
+- **THEN** automatic intake does not modify that raid and uses another eligible raid or creates one
 
-#### Scenario: No request is waiting
-- **WHEN** materialization runs in steady state
-- **THEN** it checks the waiting-only index and does not read raid groups or memberships
-
-#### Scenario: Full raids have accumulated
-- **WHEN** a waiting request needs an existing same-mode and same-map raid
-- **THEN** materialization reads only compatible unreviewed raids whose trigger-maintained current membership count is below requester capacity
-
-#### Scenario: Another mode has spare capacity
-- **WHEN** a waiting request has the same map and queue kind as an open raid but a different game mode
-- **THEN** the request does not join that raid and is assigned to a mode-compatible raid
-
-#### Scenario: Concurrent requests need the same capacity
-- **WHEN** several valid requests are created concurrently for compatible raids
-- **THEN** every accepted request obtains one membership, no empty or duplicate raid remains, and no raid exceeds requester capacity
-
-#### Scenario: Incompatible membership is written directly
-- **WHEN** a database write attempts to add an active request to a raid with another mode, map, or queue kind
-- **THEN** D1 rejects the write without changing membership state
-
-#### Scenario: An open raid cannot accept automatic members
-- **WHEN** an active or reviewed raid owns the last order key and another request needs a new compatible raid
-- **THEN** the new raid appends after every open raid without an order-key collision
-
-#### Scenario: Matching request arrives after review opens
-- **WHEN** staff open a planned raid for review and a later request has the same queue kind, mode, and map
-- **THEN** the reviewed raid keeps its displayed membership and the later request enters another compatible planned raid
+#### Scenario: Compatible requests arrive concurrently
+- **WHEN** concurrent requests target the same mode, map, and queue kind
+- **THEN** each request receives one unique contiguous membership without exceeding requester capacity
 
 ### Requirement: Stable ordinary and priority queues
 New requests SHALL enter the ordinary queue. Whole-raid postponement SHALL move the same raid to the end of the priority queue. Each queue SHALL preserve FIFO raid order, and automatic filling SHALL NOT move members between queue kinds.
@@ -394,3 +372,18 @@ When `Call and start raid` requests a platform call for a restricted location, t
 #### Scenario: Longest Twitch call remains valid
 - **WHEN** the maximum supported requester party has maximum-length valid Twitch logins and the longest entry reminder
 - **THEN** the complete Twitch call remains within the platform message-length limit
+
+### Requirement: Board Refresh reuses one consistent snapshot
+The Discord board Refresh action SHALL read one complete board snapshot and use that snapshot for the interaction response, visible raid-detail reconciliation, and canonical-board update. It SHALL NOT assign or repair help requests. Reconciliation MAY re-read an individual visible raid to validate its current detail-message state, but SHALL NOT reload the complete board during the same Refresh action.
+
+#### Scenario: Staff refresh the current board
+- **WHEN** eligible staff select `Refresh`
+- **THEN** the interaction and canonical message receive the same current board payload and current-version controls from one D1 snapshot
+
+#### Scenario: A visible raid detail needs reconciliation
+- **WHEN** the snapshot contains a reviewed or active raid with stored details
+- **THEN** the bot validates that raid independently without loading another complete board snapshot
+
+#### Scenario: A detail message changes during reconciliation
+- **WHEN** detail reconciliation clears or replaces a stored Discord message identity
+- **THEN** the queue contents and controls rendered from the Refresh snapshot remain valid because detail identity does not change raid eligibility or membership

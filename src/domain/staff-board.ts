@@ -33,6 +33,7 @@ export interface StaffBoardRaid {
 }
 
 export interface StaffBoardSnapshot {
+  boardVersion?: number;
   priorityRaidCount: number;
   ordinaryRaidCount: number;
   canonicalMessageId?: string;

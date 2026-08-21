@@ -241,48 +241,43 @@ export async function seedExpiredReceiptBacklog(count: number): Promise<void> {
 }
 
 export async function seedRemovedMembershipHistory(seed: SeedState, count: number): Promise<void> {
+  const timestamp = Date.now();
+  const requestId = seed.scale + 1;
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO user_mappings
+         (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
+       VALUES ('op_history', 'op-history-twitch', 'History PMC', ?, ?)`,
+    ).bind(timestamp, timestamp),
+    env.DB.prepare(
+      `INSERT INTO help_requests
+         (id, source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+          game_mode, map_id, objective, state, created_at, updated_at)
+       VALUES (?, 1, 'bench-op-history', 'op-history-twitch', 'op_history', 'History PMC',
+               2, 'customs', 'Removed history', 3, ?, ?)`,
+    ).bind(requestId, timestamp, timestamp),
+  ]);
   for (let start = 0; start < count; start += SEED_CHUNK_SIZE) {
     const end = Math.min(count, start + SEED_CHUNK_SIZE);
     const rows = Array.from({ length: end - start }, (_, offset) => {
       const ordinal = start + offset;
       return {
         ordinal,
-        requestId: seed.scale + ordinal + 1,
         memberId: seed.membershipCount + ordinal + 1,
         position: ordinal + 10,
       };
     });
     const json = JSON.stringify(rows);
     // Benchmark setup is intentionally ordered and excluded from the measured request window.
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO user_mappings
-           (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
-         SELECT printf('op_history_%d', json_extract(value, '$.ordinal')),
-                printf('op-history-twitch-%d', json_extract(value, '$.ordinal')),
-                printf('History PMC %d', json_extract(value, '$.ordinal')), ?, ?
-         FROM json_each(?)`,
-      ).bind(Date.now(), Date.now(), json),
-      env.DB.prepare(
-        `INSERT INTO help_requests
-           (id, source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
-            game_mode, map_id, objective, state, created_at, updated_at)
-         SELECT json_extract(value, '$.requestId'), 1,
-                printf('bench-op-history-%d', json_extract(value, '$.ordinal')),
-                printf('op-history-twitch-%d', json_extract(value, '$.ordinal')),
-                printf('op_history_%d', json_extract(value, '$.ordinal')),
-                printf('History PMC %d', json_extract(value, '$.ordinal')),
-                2, 'customs', 'Removed history', 3, ?, ?
-         FROM json_each(?)`,
-      ).bind(Date.now(), Date.now(), json),
-      env.DB.prepare(
-        `INSERT INTO raid_group_members
-           (id, group_id, request_id, position, state, created_at, updated_at)
-         SELECT json_extract(value, '$.memberId'), 1,
-                json_extract(value, '$.requestId'), json_extract(value, '$.position'), 2, ?, ?
-         FROM json_each(?)`,
-      ).bind(Date.now(), Date.now(), json),
-    ]);
+    await env.DB.prepare(
+      `INSERT INTO raid_group_members
+         (id, group_id, request_id, position, state, created_at, updated_at)
+       SELECT json_extract(value, '$.memberId'), 1, ?,
+              json_extract(value, '$.position'), 2, ?, ?
+       FROM json_each(?)`,
+    )
+      .bind(requestId, timestamp, timestamp, json)
+      .run();
   }
 }
 

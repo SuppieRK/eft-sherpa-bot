@@ -13,7 +13,10 @@ import { D1MvpRepository } from "./infrastructure/cloudflare/d1-mvp-repository";
 import { logDiagnostic } from "./infrastructure/cloudflare/diagnostics";
 import type { CloudflareEnvironment } from "./infrastructure/cloudflare/environment";
 import { requireEnvironmentValue } from "./infrastructure/cloudflare/environment";
-import { observeWorkerRequest } from "./infrastructure/cloudflare/telemetry";
+import {
+  observeWorkerRequest,
+  type TrackedExecutionContext,
+} from "./infrastructure/cloudflare/telemetry";
 import {
   DISCORD_EPHEMERAL_MESSAGE_FLAG,
   DISCORD_INTERACTION_RESPONSE_CHANNEL_MESSAGE,
@@ -144,7 +147,7 @@ type UserDirectoryEditAction = Extract<UserDirectoryAction, { twitchLogin: strin
 interface DiscordInteractionDependencies {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
-  context: ExecutionContext;
+  context: TrackedExecutionContext;
   changedAt: Date;
   repository: D1MvpRepository;
 }
@@ -154,19 +157,28 @@ async function claimDiscordMutation(
   deliveryId: string,
   eventType: string,
 ): Promise<boolean> {
-  const claimed = await dependencies.repository.claimDiscordMutation(
+  return dependencies.repository.claimDiscordMutation(
     deliveryId,
     eventType,
     dependencies.changedAt,
   );
-  if (claimed) {
-    dependencies.context.waitUntil(
-      dependencies.repository
-        .maintainExpiredReceipts(dependencies.changedAt)
-        .catch(() => undefined),
-    );
-  }
-  return claimed;
+}
+
+async function completeDiscordMutation(
+  dependencies: DiscordInteractionDependencies,
+  deliveryId: string,
+): Promise<void> {
+  await dependencies.repository.completeDiscordMutation(deliveryId);
+  dependencies.context.waitUntilTask("discord.receipt_cleanup", async (environment) => {
+    await new D1MvpRepository(environment.DB).maintainExpiredReceipts(dependencies.changedAt);
+  });
+}
+
+async function releaseDiscordMutation(
+  dependencies: DiscordInteractionDependencies,
+  deliveryId: string,
+): Promise<void> {
+  await dependencies.repository.releaseDiscordMutation(deliveryId);
 }
 
 async function handleStaffInsightsCommand(
@@ -239,20 +251,26 @@ async function handleDiscordLinkCommand(
     "identity:link-twitch",
   );
   if (!claimed) return discordEphemeralMessage("That link command was already received.");
-  const discordDisplayName =
-    targetDiscordUserId === interaction.discordUserId
-      ? interaction.discordDisplayName
-      : interaction.resolvedUserDisplayNames[targetDiscordUserId];
-  await repository.linkDiscordToTwitch({
-    twitchLogin,
-    discordUserId: targetDiscordUserId,
-    ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
-    ...(inGameName === undefined ? {} : { inGameName }),
-    linkedAt: changedAt,
-  });
-  return discordEphemeralMessage(
-    buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
-  );
+  try {
+    const discordDisplayName =
+      targetDiscordUserId === interaction.discordUserId
+        ? interaction.discordDisplayName
+        : interaction.resolvedUserDisplayNames[targetDiscordUserId];
+    await repository.linkDiscordToTwitch({
+      twitchLogin,
+      discordUserId: targetDiscordUserId,
+      ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
+      ...(inGameName === undefined ? {} : { inGameName }),
+      linkedAt: changedAt,
+    });
+    await completeDiscordMutation(dependencies, interaction.interactionId);
+    return discordEphemeralMessage(
+      buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
+    );
+  } catch (error) {
+    await releaseDiscordMutation(dependencies, interaction.interactionId);
+    throw error;
+  }
 }
 
 async function handleDiscordQueueCommand(
@@ -327,18 +345,17 @@ async function completeMissingDiscord(
   }
   try {
     const discordDisplayName = interaction.resolvedUserDisplayNames[discordUserId];
-    const outcome = await repository.completeMissingDiscord({
+    const result = await repository.completeMissingDiscordAndGet({
       twitchLogin: action.twitchLogin,
       discordUserId,
       ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
       changedAt,
     });
-    const entry = await repository.findUserMappingByTwitchLogin(action.twitchLogin);
-    return updatedUserDetail(outcome, entry, action.pageFirst);
-  } catch {
-    return discordEphemeralMessage(
-      "That Discord member is already linked. Use `/link-twitch` to correct the association.",
-    );
+    await completeDiscordMutation(dependencies, interaction.interactionId);
+    return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
+  } catch (error) {
+    await releaseDiscordMutation(dependencies, interaction.interactionId);
+    throw error;
   }
 }
 
@@ -418,20 +435,25 @@ async function handleUserDirectoryEftModal(
   if (!claimed) {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
   }
-  const outcome = await repository.completeMissingInGameName({
-    twitchLogin: action.twitchLogin,
-    inGameName,
-    changedAt,
-  });
-  const entry = await repository.findUserMappingByTwitchLogin(action.twitchLogin);
-  return updatedUserDetail(outcome, entry, action.pageFirst);
+  const result = await repository
+    .completeMissingInGameNameAndGet({
+      twitchLogin: action.twitchLogin,
+      inGameName,
+      changedAt,
+    })
+    .catch(async (error: unknown) => {
+      await releaseDiscordMutation(dependencies, interaction.interactionId);
+      throw error;
+    });
+  await completeDiscordMutation(dependencies, interaction.interactionId);
+  return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
 }
 
 async function handleDiscordRequestModal(
   interaction: DiscordModalSubmitInteraction,
   dependencies: DiscordInteractionDependencies,
 ): Promise<Response> {
-  const { environment, communityConfig, context, changedAt, repository } = dependencies;
+  const { communityConfig, context, changedAt, repository } = dependencies;
   const gameMode = requestModalGameMode(interaction.customId);
   if (gameMode === undefined) {
     if (interaction.customId.startsWith(DISCORD_REQUEST_MODAL_V2_PREFIX)) {
@@ -443,7 +465,6 @@ async function handleDiscordRequestModal(
   if (!validation.valid) {
     return discordEphemeralMessage(buildDiscordRequestValidationReply(validation));
   }
-  await claimDiscordMutation(dependencies, interaction.interactionId, "request:create");
   const created = await repository.createRequest({
     sourcePlatform: "discord",
     sourceDeliveryId: interaction.interactionId,
@@ -461,14 +482,14 @@ async function handleDiscordRequestModal(
     observedAt: changedAt,
   });
   if (created.queueChanged) {
-    context.waitUntil(
-      synchronizeCanonicalBoard({
-        environment,
+    context.waitUntilTask("discord.board_drain", async (backgroundEnvironment) => {
+      await synchronizeCanonicalBoard({
+        environment: backgroundEnvironment,
         communityConfig,
         changedAt,
         createIfMissing: false,
-      }).catch(() => undefined),
-    );
+      });
+    });
   }
   const mapName = resolveTarkovMap(validation.value.mapId)?.name ?? validation.value.mapId;
   return discordEphemeralMessage(
@@ -494,7 +515,7 @@ async function handleDiscordInteraction(
   request: Request,
   environment: CloudflareEnvironment,
   communityConfig: CommunityConfig,
-  context: ExecutionContext,
+  context: TrackedExecutionContext,
 ): Promise<Response> {
   const rawBody = await request.text();
   const verified = await verifyDiscordInteractionRequest(
@@ -690,7 +711,7 @@ async function handleTwitchEventSub(
   request: Request,
   environment: CloudflareEnvironment,
   communityConfig: CommunityConfig,
-  context: ExecutionContext,
+  context: TrackedExecutionContext,
   replyToMessage = true,
 ): Promise<Response> {
   const rawBody = await request.text();
@@ -723,6 +744,27 @@ async function handleTwitchEventSub(
   }
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);
+  const existingReceipt = await repository.findTwitchReply(verification.headers.messageId);
+  if (existingReceipt !== undefined) {
+    const shouldRetry =
+      existingReceipt.replyStatus === "failed" &&
+      (await repository.claimFailedTwitchReplyRetry(verification.headers.messageId));
+    if (shouldRetry) {
+      context.waitUntilTask("twitch.reply_retry", async (backgroundEnvironment) => {
+        await deliverTwitchReply({
+          environment: backgroundEnvironment,
+          communityConfig,
+          repository: new D1MvpRepository(backgroundEnvironment.DB),
+          deliveryId: verification.headers.messageId,
+          replyText: existingReceipt.replyText,
+          ...(existingReceipt.replyToMessageId === undefined
+            ? {}
+            : { replyToMessageId: existingReceipt.replyToMessageId }),
+        });
+      });
+    }
+    return new Response(null, { status: 204 });
+  }
   const commandResult = await buildTwitchPublicReply(
     command,
     event.chatterUserId,
@@ -740,7 +782,9 @@ async function handleTwitchEventSub(
     receivedAt: observedAt,
   });
   if (!receipt.duplicate) {
-    context.waitUntil(repository.maintainExpiredReceipts(observedAt).catch(() => undefined));
+    context.waitUntilTask("twitch.receipt_cleanup", async (backgroundEnvironment) => {
+      await new D1MvpRepository(backgroundEnvironment.DB).maintainExpiredReceipts(observedAt);
+    });
   }
   const shouldDeliver =
     (!receipt.duplicate && receipt.replyStatus === "pending") ||
@@ -748,28 +792,28 @@ async function handleTwitchEventSub(
       receipt.replyStatus === "failed" &&
       (await repository.claimFailedTwitchReplyRetry(verification.headers.messageId)));
   if (shouldDeliver) {
-    context.waitUntil(
-      deliverTwitchReply({
-        environment,
+    context.waitUntilTask("twitch.reply_delivery", async (backgroundEnvironment) => {
+      await deliverTwitchReply({
+        environment: backgroundEnvironment,
         communityConfig,
-        repository,
+        repository: new D1MvpRepository(backgroundEnvironment.DB),
         deliveryId: verification.headers.messageId,
         replyText: receipt.replyText,
         ...(receipt.replyToMessageId === undefined
           ? {}
           : { replyToMessageId: receipt.replyToMessageId }),
-      }),
-    );
+      });
+    });
   }
-  if (commandResult.boardChanged) {
-    context.waitUntil(
-      synchronizeCanonicalBoard({
-        environment,
+  if (!receipt.duplicate && commandResult.boardChanged) {
+    context.waitUntilTask("twitch.board_drain", async (backgroundEnvironment) => {
+      await synchronizeCanonicalBoard({
+        environment: backgroundEnvironment,
         communityConfig,
         changedAt: observedAt,
         createIfMissing: false,
-      }).catch(() => undefined),
-    );
+      });
+    });
   }
   return new Response(null, { status: 204 });
 }
@@ -794,7 +838,7 @@ export function createWorker(communityConfigOverride?: CommunityConfig) {
       environment: CloudflareEnvironment,
       context: ExecutionContext,
     ): Promise<Response> {
-      return observeWorkerRequest(request, environment, async (measured) => {
+      return observeWorkerRequest(request, environment, context, async (measured, tracked) => {
         const communityConfig = communityConfigOverride ?? communityConfigFromEnvironment(measured);
         const configurationErrors = validateCommunityConfig(communityConfig);
         const url = new URL(request.url);
@@ -818,10 +862,10 @@ export function createWorker(communityConfigOverride?: CommunityConfig) {
           return new Response("Community configuration is incomplete", { status: 503 });
         }
         if (isTwitch) {
-          return handleTwitchEventSub(request, measured, communityConfig, context);
+          return handleTwitchEventSub(request, measured, communityConfig, tracked);
         }
         if (isDiscord) {
-          return handleDiscordInteraction(request, measured, communityConfig, context);
+          return handleDiscordInteraction(request, measured, communityConfig, tracked);
         }
         if (isStatus || isLegacyRepair) {
           if (!hasDiagnosticsAccess(request, measured)) {
