@@ -12,7 +12,33 @@
     "denyWarnings": true,
     "typeAware": true
   },
+  "categories": {
+    "correctness": "error",
+    "perf": "error"
+  },
   "rules": {
-    "typescript/no-misused-promises": "error"
-  }
+    "typescript/no-misused-promises": "error",
+    "typescript/require-await": "error",
+    "no-await-in-loop": "error",
+    "oxc/no-accumulating-spread": "error",
+    "unicorn/prefer-set-has": "error",
+    "unicorn/prefer-set-size": "error",
+    "unicorn/no-useless-spread": "error"
+  },
+  "overrides": [
+    {
+      "files": ["test/**", "benchmark/**"],
+      "rules": { "no-await-in-loop": "off" }
+    },
+    {
+      "files": [
+        "scripts/deployment/wait-for-worker.mjs",
+        "scripts/profile-worker.mjs",
+        "scripts/run-d1-benchmark.mjs",
+        "scripts/twitch/authorize-bot.mjs",
+        "scripts/twitch/create-chat-subscription.mjs"
+      ],
+      "rules": { "no-await-in-loop": "off" }
+    }
+  ]
 }

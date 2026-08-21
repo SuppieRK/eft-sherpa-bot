@@ -5,7 +5,7 @@
 Define automatic grouping, stable queues, staff-board operation, raid attempts, and requester transitions.
 ## Requirements
 ### Requirement: Unlimited queue-specific automatic grouping
-The system SHALL materialize every waiting request immediately into planned draft raid groups with the same game mode, map, and queue kind. It SHALL fill the earliest eligible compatible unreviewed raid with capacity, append another raid when needed, preserve existing memberships, and persist no separate grouping state. D1 SHALL reject an open membership whose request and raid differ in game mode, map, or queue kind.
+The system SHALL materialize every waiting request immediately into planned draft raid groups with the same game mode, map, and queue kind. It SHALL fill the earliest eligible compatible unreviewed raid with capacity, append another raid when needed, preserve existing memberships, and persist no separate grouping state. Concurrent materialization SHALL use current request state, current destination capacity, and current membership positions inside the committing D1 batch, then perform a bounded replan when another invocation wins an expected uniqueness or capacity race. D1 SHALL reject an open membership whose request and raid differ in game mode, map, or queue kind.
 
 Opening a raid for review SHALL atomically disable further automatic filling for that raid before its reviewed membership is displayed. A later compatible request SHALL enter another eligible raid and SHALL NOT change a reviewed party silently. Existing requester-capacity and map-capacity limits SHALL remain unchanged.
 
@@ -28,6 +28,10 @@ Opening a raid for review SHALL atomically disable further automatic filling for
 #### Scenario: Another mode has spare capacity
 - **WHEN** a waiting request has the same map and queue kind as an open raid but a different game mode
 - **THEN** the request does not join that raid and is assigned to a mode-compatible raid
+
+#### Scenario: Concurrent requests need the same capacity
+- **WHEN** several valid requests are created concurrently for compatible raids
+- **THEN** every accepted request obtains one membership, no empty or duplicate raid remains, and no raid exceeds requester capacity
 
 #### Scenario: Incompatible membership is written directly
 - **WHEN** a database write attempts to add an active request to a raid with another mode, map, or queue kind

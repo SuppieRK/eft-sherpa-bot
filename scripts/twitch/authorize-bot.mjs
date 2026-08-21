@@ -217,7 +217,6 @@ if (appTokenOnly) {
   console.log(
     JSON.stringify(
       {
-        clientId,
         appTokenExpiresInSeconds: appToken.expires_in,
         secretFilesUpdated: [WORKER_FILE, OPERATOR_FILE],
       },
@@ -230,7 +229,6 @@ if (appTokenOnly) {
     JSON.stringify(
       {
         authorizationReady: true,
-        clientId,
         scopes: REQUIRED_SCOPES,
         identityValuesUpdated: ["TWITCH_BOT_USER_ID", "TWITCH_BROADCASTER_USER_ID"],
         secretFilesUpdated: [WORKER_FILE, OPERATOR_FILE],

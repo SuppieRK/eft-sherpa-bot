@@ -112,10 +112,9 @@ describe("split staff board", () => {
       {
         priorityRaidCount: 3,
         ordinaryRaidCount: 7,
-        priorityRaids: raids.slice(0, 3).map((item) => ({
-          ...item,
-          queueKind: "priority" as const,
-        })),
+        priorityRaids: raids
+          .slice(0, 3)
+          .map((item) => Object.assign({}, item, { queueKind: "priority" as const })),
         ordinaryRaids: raids.slice(3),
       },
       { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },

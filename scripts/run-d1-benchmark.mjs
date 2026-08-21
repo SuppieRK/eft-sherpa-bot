@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { assertExactD1Baseline, createD1CostBaseline } from "../benchmark/baseline.ts";
 import { trustedGitExecutable } from "./trusted-git.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -10,6 +11,8 @@ const CONFIG_PATH = path.join(ROOT, "benchmark", "wrangler.local.jsonc");
 const ZERO_DATABASE_ID = "00000000-0000-0000-0000-000000000000";
 const RESULT_MARKER = "USER_FACING_BENCHMARK_RESULT=";
 const SCALES = [100, 1_000, 10_000, 100_000];
+const BASELINE_PATH = path.join(ROOT, "benchmark", "d1-cost-baseline.json");
+const updateBaseline = process.argv.includes("--update-baseline");
 
 function fail(message) {
   throw new Error(`Local benchmark guard: ${message}`);
@@ -218,14 +221,26 @@ const report = {
 const jsonReportPath = path.join(ROOT, "reports", "d1-user-facing-benchmark.json");
 writeFileSync(jsonReportPath, `${JSON.stringify(report, null, 2)}\n`);
 writeFileSync(path.join(ROOT, "reports", "d1-user-facing-benchmark.md"), markdown(report));
+if (updateBaseline) {
+  writeFileSync(BASELINE_PATH, `${JSON.stringify(createD1CostBaseline(report), null, 2)}\n`);
+}
 const biomePath = path.join(ROOT, "node_modules", "@biomejs", "biome", "bin", "biome");
-const formatting = spawnSync(process.execPath, [biomePath, "format", "--write", jsonReportPath], {
-  cwd: ROOT,
-  encoding: "utf8",
-});
+const formattedPaths = updateBaseline ? [jsonReportPath, BASELINE_PATH] : [jsonReportPath];
+const formatting = spawnSync(
+  process.execPath,
+  [biomePath, "format", "--write", ...formattedPaths],
+  { cwd: ROOT, encoding: "utf8" },
+);
 if (formatting.status !== 0) {
   process.stdout.write(formatting.stdout ?? "");
   process.stderr.write(formatting.stderr ?? "");
   fail("Biome could not format the JSON report");
+}
+if (updateBaseline) {
+  console.log("Updated benchmark/d1-cost-baseline.json from fully local D1.");
+} else {
+  const baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8"));
+  assertExactD1Baseline(report, baseline);
+  console.log("Exact D1 statement, row-read, and row-write counters match the baseline.");
 }
 console.log("Generated reports/d1-user-facing-benchmark.json and .md from fully local D1.");

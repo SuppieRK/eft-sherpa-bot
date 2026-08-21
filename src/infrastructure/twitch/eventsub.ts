@@ -5,6 +5,16 @@ const MESSAGE_TYPE_HEADER = "Twitch-Eventsub-Message-Type";
 const SUBSCRIPTION_TYPE_HEADER = "Twitch-Eventsub-Subscription-Type";
 const MAX_MESSAGE_AGE_MS = 10 * 60 * 1000;
 
+const hmacKeyCache = createLastValueAsyncCache((secret: string) =>
+  crypto.subtle.importKey(
+    "raw",
+    sharedTextEncoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  ),
+);
+
 interface TwitchEventSubHeaders {
   messageId: string;
   messageTimestamp: string;
@@ -63,18 +73,11 @@ export async function createTwitchEventSubSignature(
   timestamp: string,
   rawBody: string,
 ): Promise<string> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
+  const key = await hmacKeyCache.get(secret);
   const signature = await crypto.subtle.sign(
     "HMAC",
     key,
-    encoder.encode(`${messageId}${timestamp}${rawBody}`),
+    sharedTextEncoder.encode(`${messageId}${timestamp}${rawBody}`),
   );
   const hex = [...new Uint8Array(signature)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -83,8 +86,8 @@ export async function createTwitchEventSubSignature(
 }
 
 function constantTimeEqual(left: string, right: string): boolean {
-  const leftBytes = new TextEncoder().encode(left);
-  const rightBytes = new TextEncoder().encode(right);
+  const leftBytes = sharedTextEncoder.encode(left);
+  const rightBytes = sharedTextEncoder.encode(right);
   const length = Math.max(leftBytes.length, rightBytes.length);
   let mismatch = leftBytes.length ^ rightBytes.length;
 
@@ -154,3 +157,4 @@ export function parseTwitchChatMessageEvent(payload: unknown): TwitchChatMessage
 export function parseEventSubChallenge(payload: unknown): string | undefined {
   return isRecord(payload) ? requiredString(payload, "challenge") : undefined;
 }
+import { createLastValueAsyncCache, sharedTextEncoder } from "../crypto-key-cache";

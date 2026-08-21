@@ -556,6 +556,7 @@ async function buildTwitchPublicReply(
       ? `You are already queued for ${raidName}. Use !queue to check it.`
       : `You are queued for ${raidName}. Use !queue to check it.`;
   }
+  await materializeRaidBoard(repository, communityConfig, observedAt);
   const queryService = new QueueQueryService(repository);
   return renderQueueFacts(
     await queryService.queue({ platform: "twitch", userId: twitchUserId }),
@@ -701,10 +702,6 @@ async function handleTwitchEventSub(
   }
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);
-  await repository.materializeWaitingRequests({
-    changedAt: observedAt,
-    recipientLimit: communityConfig.policies.recipientLimit,
-  });
   await repository.observeTwitchIdentity({
     twitchUserId: event.chatterUserId,
     twitchLogin: event.chatterUserLogin,
@@ -725,7 +722,12 @@ async function handleTwitchEventSub(
     ...(replyToMessage ? { replyToMessageId: event.messageId } : {}),
     receivedAt: observedAt,
   });
-  if (receipt.replyStatus !== "sent") {
+  const shouldDeliver =
+    (!receipt.duplicate && receipt.replyStatus === "pending") ||
+    (receipt.duplicate &&
+      receipt.replyStatus === "failed" &&
+      (await repository.claimFailedTwitchReplyRetry(verification.headers.messageId)));
+  if (shouldDeliver) {
     context.waitUntil(
       deliverTwitchReply({
         environment,
@@ -739,7 +741,7 @@ async function handleTwitchEventSub(
       }),
     );
   }
-  if (command.name === "request") {
+  if (command.name === "request" && !receipt.duplicate) {
     context.waitUntil(
       synchronizeCanonicalBoard({
         environment,

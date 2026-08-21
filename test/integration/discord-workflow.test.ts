@@ -285,7 +285,7 @@ beforeAll(async () => {
   worker = createWorker(config);
 });
 
-beforeEach(async () => {
+beforeEach(() => {
   vi.restoreAllMocks();
   outbound = [];
   messageSequence = 0;
