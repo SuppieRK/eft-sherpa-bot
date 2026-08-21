@@ -231,7 +231,7 @@ describe("Twitch private-pilot commands", () => {
     ).resolves.toEqual({ count: 1, twitchLogin: "new_viewer_name" });
   });
 
-  it("updates Twitch identity before a queue lookup", async () => {
+  it("does not replace another verified identity before a queue lookup", async () => {
     const repo = new D1MvpRepository(testEnvironment.DB);
     await repo.observeTwitchIdentity({
       twitchLogin: "viewer",
@@ -246,11 +246,14 @@ describe("Twitch private-pilot commands", () => {
     await waitOnExecutionContext(context);
 
     expect(twitchFetch).toHaveBeenCalledTimes(1);
+    expect(requestBody(twitchFetch.mock.calls[0]?.[1]?.body)).toContain(
+      "could not verify that Twitch login",
+    );
     await expect(
       env.DB.prepare(
         `SELECT twitch_user_id AS twitchUserId FROM user_mappings WHERE twitch_login = 'viewer'`,
       ).first(),
-    ).resolves.toEqual({ twitchUserId: "twitch-viewer" });
+    ).resolves.toEqual({ twitchUserId: "old-twitch-id" });
   });
 
   it("recovers a duplicate request that committed before materialization", async () => {
@@ -489,7 +492,7 @@ describe("Twitch private-pilot commands", () => {
   it("claims one retry after an overlapping Twitch reply failure", async () => {
     const twitchFetch = vi
       .spyOn(globalThis, "fetch")
-      .mockRejectedValueOnce(new Error("Twitch unavailable"));
+      .mockResolvedValueOnce(new Response("Unavailable", { status: 503 }));
     const request = await eventSubRequest("!queue", "failed-retry");
     const firstContext = createExecutionContext();
     await worker.fetch(request.clone(), testEnvironment, firstContext);
@@ -511,6 +514,65 @@ describe("Twitch private-pilot commands", () => {
          FROM event_receipts WHERE platform = 1 AND delivery_id = 'failed-retry'`,
       ).first(),
     ).resolves.toEqual({ replyStatus: 1, attempts: 2 });
+  });
+
+  it("does not resend after an ambiguous Twitch transport failure", async () => {
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("The connection closed after the request was sent"));
+    const request = await eventSubRequest("!queue", "ambiguous-send");
+    const firstContext = createExecutionContext();
+    await worker.fetch(request.clone(), testEnvironment, firstContext);
+    await waitOnExecutionContext(firstContext);
+    const replayContext = createExecutionContext();
+    await worker.fetch(request.clone(), testEnvironment, replayContext);
+    await waitOnExecutionContext(replayContext);
+
+    expect(twitchFetch).toHaveBeenCalledTimes(1);
+    await expect(
+      env.DB.prepare(
+        `SELECT reply_status AS replyStatus, reply_attempts AS attempts,
+                twitch_send_token IS NOT NULL AS sendClaimed
+         FROM event_receipts WHERE platform = 1 AND delivery_id = 'ambiguous-send'`,
+      ).first(),
+    ).resolves.toEqual({ replyStatus: 0, attempts: 1, sendClaimed: 1 });
+  });
+
+  it("does not resend when Twitch succeeds but reply acknowledgement storage fails", async () => {
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() =>
+        Promise.resolve(Response.json({ data: [{ message_id: "sent-message", is_sent: true }] })),
+      );
+    await env.DB.prepare(
+      `CREATE TRIGGER test_fail_twitch_reply_ack
+       BEFORE UPDATE OF reply_status ON event_receipts
+       WHEN NEW.reply_status = 1
+       BEGIN
+         SELECT RAISE(ABORT, 'simulated Twitch acknowledgement failure');
+       END`,
+    ).run();
+    const request = await eventSubRequest("!queue", "acknowledgement-failure");
+    try {
+      const firstContext = createExecutionContext();
+      await worker.fetch(request.clone(), testEnvironment, firstContext);
+      await waitOnExecutionContext(firstContext);
+      const replayContext = createExecutionContext();
+      await worker.fetch(request.clone(), testEnvironment, replayContext);
+      await waitOnExecutionContext(replayContext);
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER test_fail_twitch_reply_ack`).run();
+    }
+
+    expect(twitchFetch).toHaveBeenCalledTimes(1);
+    await expect(
+      env.DB.prepare(
+        `SELECT reply_status AS replyStatus, reply_attempts AS attempts,
+                twitch_send_token IS NOT NULL AS sendClaimed
+         FROM event_receipts
+         WHERE platform = 1 AND delivery_id = 'acknowledgement-failure'`,
+      ).first(),
+    ).resolves.toEqual({ replyStatus: 0, attempts: 0, sendClaimed: 1 });
   });
 
   it("keeps public commands available in the MVP environment", async () => {

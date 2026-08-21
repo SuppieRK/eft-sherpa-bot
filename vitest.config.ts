@@ -12,8 +12,10 @@ export default defineConfig({
           d1Databases: { MIGRATION_DB: "coffee-bot-migration-test" },
           bindings: {
             TEST_MIGRATIONS: migrations,
-            PRE_0006_MIGRATIONS: migrations.slice(0, -1),
-            MIGRATION_0006: migrations.slice(-1),
+            PRE_0006_MIGRATIONS: migrations.slice(0, -2),
+            MIGRATION_0006: migrations.slice(-2, -1),
+            PRE_0007_MIGRATIONS: migrations.slice(0, -1),
+            MIGRATION_0007: migrations.slice(-1),
             TWITCH_APP_ACCESS_TOKEN: "test-app-access-token",
             TWITCH_EVENTSUB_SECRET: "test-eventsub-secret-is-long-enough",
             SPIKE_DIAGNOSTICS_TOKEN: "test-diagnostics-token",

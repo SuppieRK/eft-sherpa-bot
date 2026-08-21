@@ -124,10 +124,20 @@ export async function observeWorkerRequest(
     tasks,
     taskMetrics,
   });
+  const settleTrackedTasks = async () => {
+    let settledCount = 0;
+    while (settledCount < tasks.length) {
+      const pending = tasks.slice(settledCount);
+      settledCount = tasks.length;
+      // Later tasks can schedule more tracked work, so each generation must settle in order.
+      // oxlint-disable-next-line no-await-in-loop
+      await Promise.allSettled(pending);
+    }
+  };
   const scheduleFinalUsage = (outcome: InvocationOutcome) => {
     const foreground = metrics.snapshot();
     context.waitUntil(
-      Promise.allSettled(tasks).then(() => {
+      settleTrackedTasks().then(() => {
         const aggregate = new D1Metrics();
         addUsage(aggregate, foreground);
         for (const taskMetric of taskMetrics) addUsage(aggregate, taskMetric.snapshot());

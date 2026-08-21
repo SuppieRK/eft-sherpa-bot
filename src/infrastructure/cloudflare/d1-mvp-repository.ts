@@ -12,6 +12,7 @@ import {
   type CreateHelpRequest,
   type CreateHelpRequestOutcome,
   RepositoryInvariantError,
+  StableTwitchIdentityConflictError,
   type UserMapping,
 } from "../../domain/sherpa-repository";
 import { normalizeTwitchLogin } from "../../domain/user-identity";
@@ -44,6 +45,7 @@ const RECEIPT_TTL_MS = 24 * 60 * 60 * 1_000;
 const RECEIPT_CLEANUP_BATCH_SIZE = 100;
 const RECEIPT_CLEANUP_INTERVAL_MS = 15 * 60 * 1_000;
 const DISCORD_MUTATION_CLAIM_MS = 5 * 60 * 1_000;
+const TWITCH_COMMAND_CLAIM_MS = 2 * 60 * 1_000;
 const BOARD_DRAIN_LEASE_MS = 30 * 1_000;
 const BOARD_PRIORITY_RAID_LIMIT = 3;
 const BOARD_ORDINARY_RAID_LIMIT = 7;
@@ -104,6 +106,7 @@ export interface BoardDrainLease {
   dirtyVersion: number;
   renderedVersion: number;
   token: string;
+  canonicalMessageId?: string;
 }
 
 interface UserMappingRow {
@@ -140,6 +143,21 @@ interface TwitchReceiptRow {
   replyText: string | null;
   replyToMessageId: string | null;
   replyStatus: "pending" | "sent" | "failed" | null;
+  processingUntil: number | null;
+  processingToken: string | null;
+  sendToken: string | null;
+}
+
+function twitchReplyReceipt(row: TwitchReceiptRow): TwitchReplyReceipt {
+  if (row.replyText === null || row.replyStatus === null) {
+    throw new RepositoryInvariantError("The Twitch reply is not ready.");
+  }
+  return {
+    replyText: row.replyText,
+    replyStatus: row.replyStatus,
+    sendClaimed: row.sendToken !== null,
+    ...(row.replyToMessageId === null ? {} : { replyToMessageId: row.replyToMessageId }),
+  };
 }
 
 interface WaitingRow {
@@ -538,16 +556,41 @@ function planMaterialization(
 }
 
 export interface TwitchReplyReceipt {
-  duplicate: boolean;
   replyText: string;
   replyToMessageId?: string;
   replyStatus: "pending" | "sent" | "failed";
+  sendClaimed: boolean;
+}
+
+export type TwitchCommandClaim =
+  | { outcome: "claimed"; claimToken: string }
+  | { outcome: "processing" }
+  | { outcome: "ready"; receipt: TwitchReplyReceipt };
+
+export interface TwitchReplyDeliveryClaim {
+  sendToken: string;
+  receipt: TwitchReplyReceipt;
 }
 
 export class D1MvpRepository
   implements QueueQueryRepository, StaffStatisticsRepository, StaffUserDirectoryRepository
 {
   constructor(private readonly database: D1Database) {}
+
+  private async assertNoStableIdentityCollision(
+    twitchLogin: string,
+    twitchUserId: string,
+  ): Promise<void> {
+    const target = await this.database
+      .prepare(`SELECT twitch_user_id AS twitchUserId FROM user_mappings WHERE twitch_login = ?`)
+      .bind(twitchLogin)
+      .first<{ twitchUserId: string | null }>();
+    if (target?.twitchUserId != null && target.twitchUserId !== twitchUserId) {
+      throw new StableTwitchIdentityConflictError(
+        "That Twitch login belongs to another verified Twitch identity. Staff must resolve it.",
+      );
+    }
+  }
 
   private boardDirtyStatement(
     timestamp: number,
@@ -692,6 +735,9 @@ export class D1MvpRepository
     const timestamp = epoch(input.observedAt);
     const platform = PLATFORM[input.sourcePlatform];
     const actionKey = `intake:${platform}:${input.sourceDeliveryId}`;
+    if (input.twitchUserId !== undefined) {
+      await this.assertNoStableIdentityCollision(twitchLogin, input.twitchUserId);
+    }
     const statements = this.userMappingStatements({
       twitchLogin,
       ...(input.twitchUserId === undefined ? {} : { twitchUserId: input.twitchUserId }),
@@ -777,7 +823,11 @@ export class D1MvpRepository
         .prepare(
           `INSERT OR IGNORE INTO raid_group_members
              (group_id, request_id, position, created_at, updated_at)
-           SELECT raid.id, request.id, raid.current_member_count + 1, ?, ?
+           SELECT raid.id, request.id,
+                  (SELECT coalesce(max(member.position), 0) + 1
+                   FROM raid_group_members AS member
+                   WHERE member.group_id = raid.id AND member.state = 0),
+                  ?, ?
            FROM help_requests AS request
            JOIN raid_groups AS raid
              ON raid.is_priority = request.is_priority
@@ -1190,7 +1240,10 @@ export class D1MvpRepository
              LEFT JOIN raid_groups AS raid
                ON raid.last_action_key = json_extract(item.value, '$.actionKey')
            ), destination AS MATERIALIZED (
-             SELECT raid.id, raid.current_member_count, raid.requester_capacity
+             SELECT raid.id, raid.current_member_count, raid.requester_capacity,
+                    (SELECT coalesce(max(member.position), 0)
+                     FROM raid_group_members AS member
+                     WHERE member.group_id = raid.id AND member.state = 0) AS maximum_position
              FROM raid_groups AS raid
              JOIN (SELECT DISTINCT group_id FROM resolved) AS selected
                ON selected.group_id = raid.id
@@ -1199,7 +1252,7 @@ export class D1MvpRepository
            INSERT OR IGNORE INTO raid_group_members
              (group_id, request_id, position, created_at, updated_at)
            SELECT resolved.group_id, resolved.request_id,
-                  destination.current_member_count + resolved.position_offset, ?, ?
+                  destination.maximum_position + resolved.position_offset, ?, ?
            FROM resolved
            JOIN destination ON destination.id = resolved.group_id
            WHERE resolved.position_offset BETWEEN 1
@@ -1290,18 +1343,23 @@ export class D1MvpRepository
     return mapRaidRows(rows.results)[0];
   }
 
-  async setCanonicalBoardMessage(input: { messageId: string; changedAt: Date }): Promise<void> {
+  async setCanonicalBoardMessage(input: {
+    messageId: string;
+    renderedVersion: number;
+    changedAt: Date;
+  }): Promise<void> {
     const timestamp = epoch(input.changedAt);
     await this.database
       .prepare(
-        `INSERT INTO community_state (community_id, staff_board_message_id, created_at, updated_at)
-       VALUES ('butcoffee', ?, ?, ?)
+        `INSERT INTO community_state
+           (community_id, staff_board_message_id, board_rendered_version, created_at, updated_at)
+       VALUES ('butcoffee', ?, ?, ?, ?)
        ON CONFLICT(community_id) DO UPDATE SET
          staff_board_message_id = excluded.staff_board_message_id,
-         board_rendered_version = community_state.board_dirty_version,
+         board_rendered_version = max(community_state.board_rendered_version, ?),
          updated_at = excluded.updated_at`,
       )
-      .bind(input.messageId, timestamp, timestamp)
+      .bind(input.messageId, input.renderedVersion, timestamp, timestamp, input.renderedVersion)
       .run();
   }
 
@@ -1991,6 +2049,8 @@ export class D1MvpRepository
     }
     statements.push(removeSourceMembership);
     const destinationPredicate = reusableGroupId === null ? "last_action_key = ?" : "id = ?";
+    const qualifiedDestinationPredicate =
+      reusableGroupId === null ? "destination.last_action_key = ?" : "destination.id = ?";
     const destinationKey = reusableGroupId ?? followUpAction;
     statements.push(
       this.database
@@ -2002,9 +2062,13 @@ export class D1MvpRepository
               WHERE ${destinationPredicate} AND state = 0 AND automatic_fill = 1
                 AND current_member_count < requester_capacity),
              (SELECT id FROM help_requests WHERE id = ? AND state = 1),
-             (SELECT current_member_count + 1 FROM raid_groups
-              WHERE ${destinationPredicate} AND state = 0 AND automatic_fill = 1
-                AND current_member_count < requester_capacity),
+             (SELECT coalesce(max(member.position), 0) + 1
+              FROM raid_group_members AS member
+              JOIN raid_groups AS destination ON destination.id = member.group_id
+              WHERE ${qualifiedDestinationPredicate}
+                AND destination.state = 0 AND destination.automatic_fill = 1
+                AND destination.current_member_count < destination.requester_capacity
+                AND member.state = 0),
              ?, ?
            )`,
         )
@@ -2130,6 +2194,9 @@ export class D1MvpRepository
     if (input.twitchUserId === undefined && input.discordUserId === undefined)
       throw new RepositoryInvariantError("A user mapping requires a Twitch or Discord caller ID.");
     const timestamp = epoch(input.observedAt);
+    if (input.twitchUserId !== undefined) {
+      await this.assertNoStableIdentityCollision(twitchLogin, input.twitchUserId);
+    }
     const statements = this.userMappingStatements({
       twitchLogin,
       ...(input.twitchUserId === undefined ? {} : { twitchUserId: input.twitchUserId }),
@@ -2439,6 +2506,15 @@ export class D1MvpRepository
     const stable = stableResult?.results[0];
     const target = targetResult?.results[0];
     if (
+      target?.twitchUserId !== null &&
+      target?.twitchUserId !== undefined &&
+      target.twitchUserId !== input.twitchUserId
+    ) {
+      throw new StableTwitchIdentityConflictError(
+        "That Twitch login belongs to another verified Twitch identity. Staff must resolve it.",
+      );
+    }
+    if (
       stable?.twitchLogin === twitchLogin &&
       stable.twitchUserId === input.twitchUserId &&
       target?.twitchUserId === input.twitchUserId
@@ -2541,50 +2617,117 @@ export class D1MvpRepository
   async acquireBoardDrainLease(input: {
     token: string;
     changedAt: Date;
+    createIfMissing: boolean;
   }): Promise<BoardDrainLease | undefined> {
     const timestamp = epoch(input.changedAt);
-    const row = await this.database
-      .prepare(
-        `UPDATE community_state
-         SET board_lease_token = ?, board_lease_until = ?, updated_at = ?
-         WHERE community_id = 'butcoffee'
-           AND board_dirty_version > board_rendered_version
-           AND (board_lease_until <= ? OR board_lease_token = ?)
-         RETURNING board_dirty_version AS dirtyVersion,
-                   board_rendered_version AS renderedVersion,
-                   board_lease_token AS token`,
-      )
-      .bind(input.token, timestamp + BOARD_DRAIN_LEASE_MS, timestamp, timestamp, input.token)
-      .first<{ dirtyVersion: number; renderedVersion: number; token: string }>();
+    const projection = `RETURNING board_dirty_version AS dirtyVersion,
+                                  board_rendered_version AS renderedVersion,
+                                  board_lease_token AS token,
+                                  staff_board_message_id AS canonicalMessageId`;
+    const statement = input.createIfMissing
+      ? this.database
+          .prepare(
+            `INSERT INTO community_state
+               (community_id, board_lease_token, board_lease_until, created_at, updated_at)
+             VALUES ('butcoffee', ?, ?, ?, ?)
+             ON CONFLICT(community_id) DO UPDATE SET
+               board_lease_token = excluded.board_lease_token,
+               board_lease_until = excluded.board_lease_until,
+               updated_at = excluded.updated_at
+             WHERE (community_state.board_dirty_version > community_state.board_rendered_version
+                    OR community_state.staff_board_message_id IS NULL)
+               AND (community_state.board_lease_until <= ?
+                    OR community_state.board_lease_token = ?)
+             ${projection}`,
+          )
+          .bind(
+            input.token,
+            timestamp + BOARD_DRAIN_LEASE_MS,
+            timestamp,
+            timestamp,
+            timestamp,
+            input.token,
+          )
+      : this.database
+          .prepare(
+            `UPDATE community_state
+             SET board_lease_token = ?, board_lease_until = ?, updated_at = ?
+             WHERE community_id = 'butcoffee'
+               AND board_dirty_version > board_rendered_version
+               AND staff_board_message_id IS NOT NULL
+               AND (board_lease_until <= ? OR board_lease_token = ?)
+             ${projection}`,
+          )
+          .bind(input.token, timestamp + BOARD_DRAIN_LEASE_MS, timestamp, timestamp, input.token);
+    const row = await statement.first<{
+      dirtyVersion: number;
+      renderedVersion: number;
+      token: string;
+      canonicalMessageId: string | null;
+    }>();
     return row === null
       ? undefined
       : {
           dirtyVersion: Number(row.dirtyVersion),
           renderedVersion: Number(row.renderedVersion),
           token: row.token,
+          ...(row.canonicalMessageId === null
+            ? {}
+            : { canonicalMessageId: row.canonicalMessageId }),
         };
   }
 
   async completeBoardDrain(input: {
     token: string;
     renderedVersion: number;
+    expectedMessageId: string | null;
+    messageId?: string;
     changedAt: Date;
-  }): Promise<{ current: boolean; hasMore: boolean }> {
+  }): Promise<{
+    applied: boolean;
+    current: boolean;
+    hasMore: boolean;
+    canonicalMessageId?: string;
+  }> {
     const row = await this.database
       .prepare(
         `UPDATE community_state
          SET board_rendered_version = max(board_rendered_version, ?),
+             staff_board_message_id = coalesce(?, staff_board_message_id),
              board_lease_until = 0, board_lease_token = NULL, updated_at = ?
          WHERE community_id = 'butcoffee' AND board_lease_token = ?
+           AND ((? IS NULL AND staff_board_message_id IS NULL)
+                OR staff_board_message_id = ?)
          RETURNING board_dirty_version = ? AS current,
-                   board_dirty_version > board_rendered_version AS hasMore`,
+                   board_dirty_version > board_rendered_version AS hasMore,
+                   staff_board_message_id AS canonicalMessageId`,
       )
-      .bind(input.renderedVersion, epoch(input.changedAt), input.token, input.renderedVersion)
-      .first<{ current: number; hasMore: number }>();
+      .bind(
+        input.renderedVersion,
+        input.messageId ?? null,
+        epoch(input.changedAt),
+        input.token,
+        input.expectedMessageId,
+        input.expectedMessageId,
+        input.renderedVersion,
+      )
+      .first<{ current: number; hasMore: number; canonicalMessageId: string | null }>();
     return {
+      applied: row !== null,
       current: Number(row?.current ?? 0) === 1,
       hasMore: Number(row?.hasMore ?? 0) === 1,
+      ...(row?.canonicalMessageId == null ? {} : { canonicalMessageId: row.canonicalMessageId }),
     };
+  }
+
+  async getCanonicalBoardMessageId(): Promise<string | undefined> {
+    const row = await this.database
+      .prepare(
+        `SELECT staff_board_message_id AS canonicalMessageId
+         FROM community_state WHERE community_id = 'butcoffee'`,
+      )
+      .first<{ canonicalMessageId: string | null }>();
+    return row?.canonicalMessageId ?? undefined;
   }
 
   async releaseBoardDrainLease(token: string): Promise<void> {
@@ -2621,142 +2764,252 @@ export class D1MvpRepository
       .then(() => undefined);
   }
 
-  async recordTwitchReply(input: {
+  async claimTwitchCommand(input: {
     deliveryId: string;
     eventType: string;
-    replyText: string;
-    replyToMessageId?: string;
     receivedAt: Date;
-  }): Promise<TwitchReplyReceipt> {
-    const receivedAt = epoch(input.receivedAt);
+    claimedAt: Date;
+  }): Promise<TwitchCommandClaim> {
+    const existing = await this.findTwitchCommand(input.deliveryId);
+    const claimTimestamp = epoch(input.claimedAt);
+    if (existing?.outcome === "ready") return existing;
+    if (
+      existing?.outcome === "processing" &&
+      existing.processingUntil !== null &&
+      existing.processingUntil > claimTimestamp
+    ) {
+      return { outcome: "processing" };
+    }
+    const claimToken = crypto.randomUUID();
+    if (existing?.outcome === "processing") {
+      const reclaimed = await this.database
+        .prepare(
+          `UPDATE event_receipts
+           SET twitch_processing_token = ?, twitch_processing_until = ?
+           WHERE platform = 1 AND delivery_id = ? AND reply_status IS NULL
+             AND twitch_processing_until <= ?
+           RETURNING twitch_processing_token AS claimToken`,
+        )
+        .bind(
+          claimToken,
+          claimTimestamp + TWITCH_COMMAND_CLAIM_MS,
+          input.deliveryId,
+          claimTimestamp,
+        )
+        .first<{ claimToken: string }>();
+      return reclaimed === null
+        ? { outcome: "processing" }
+        : { outcome: "claimed", claimToken: reclaimed.claimToken };
+    }
     const inserted = await this.database
       .prepare(
         `INSERT INTO event_receipts
-         (platform, delivery_id, event_type, received_at, twitch_reply_text,
-          twitch_reply_to_message_id, reply_status)
-         VALUES (1, ?, ?, ?, ?, ?, 0)
+         (platform, delivery_id, event_type, received_at,
+          twitch_processing_until, twitch_processing_token)
+         VALUES (1, ?, ?, ?, ?, ?)
          ON CONFLICT(platform, delivery_id) DO NOTHING
-         RETURNING twitch_reply_text AS replyText,
-                   twitch_reply_to_message_id AS replyToMessageId,
-                   'pending' AS replyStatus`,
+         RETURNING twitch_processing_token AS claimToken`,
       )
       .bind(
         input.deliveryId,
         input.eventType,
-        receivedAt,
-        input.replyText,
-        input.replyToMessageId ?? null,
+        epoch(input.receivedAt),
+        claimTimestamp + TWITCH_COMMAND_CLAIM_MS,
+        claimToken,
       )
-      .first<TwitchReceiptRow>();
-    if (inserted?.replyText != null && inserted.replyStatus !== null) {
-      return {
-        duplicate: false,
-        replyText: inserted.replyText,
-        replyStatus: inserted.replyStatus,
-        ...(inserted.replyToMessageId === null
-          ? {}
-          : { replyToMessageId: inserted.replyToMessageId }),
-      };
-    }
-    const existing = await this.findTwitchReply(input.deliveryId);
-    if (existing === undefined)
-      throw new RepositoryInvariantError("Twitch command receipt was not stored");
-    return existing;
+      .first<{ claimToken: string }>();
+    if (inserted !== null) return { outcome: "claimed", claimToken: inserted.claimToken };
+    return (await this.findTwitchCommand(input.deliveryId)) ?? { outcome: "processing" };
   }
 
-  async findTwitchReply(deliveryId: string): Promise<TwitchReplyReceipt | undefined> {
+  async findTwitchCommand(
+    deliveryId: string,
+  ): Promise<
+    | { outcome: "processing"; processingUntil: number | null }
+    | { outcome: "ready"; receipt: TwitchReplyReceipt }
+    | undefined
+  > {
     const row = await this.database
       .prepare(
         `SELECT twitch_reply_text AS replyText, twitch_reply_to_message_id AS replyToMessageId,
               CASE reply_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
-                                WHEN 2 THEN 'failed' END AS replyStatus
+                                WHEN 2 THEN 'failed' END AS replyStatus,
+              twitch_processing_until AS processingUntil,
+              twitch_processing_token AS processingToken,
+              twitch_send_token AS sendToken
        FROM event_receipts WHERE platform = 1 AND delivery_id = ?`,
       )
       .bind(deliveryId)
       .first<TwitchReceiptRow>();
-    if (row?.replyText == null || row.replyStatus === null) return undefined;
-    return {
-      duplicate: true,
-      replyText: row.replyText,
-      replyStatus: row.replyStatus,
-      ...(row.replyToMessageId === null ? {} : { replyToMessageId: row.replyToMessageId }),
-    };
+    if (row === null) return undefined;
+    if (row.replyText === null || row.replyStatus === null) {
+      return { outcome: "processing", processingUntil: row.processingUntil };
+    }
+    return { outcome: "ready", receipt: twitchReplyReceipt(row) };
   }
 
-  async markTwitchReplySent(deliveryId: string, platformMessageId: string): Promise<void> {
+  async completeTwitchCommand(input: {
+    deliveryId: string;
+    claimToken: string;
+    replyText: string;
+    replyToMessageId?: string;
+  }): Promise<TwitchReplyReceipt> {
+    const row = await this.database
+      .prepare(
+        `UPDATE event_receipts
+         SET twitch_reply_text = ?, twitch_reply_to_message_id = ?, reply_status = 0,
+             twitch_processing_until = NULL, twitch_processing_token = NULL
+         WHERE platform = 1 AND delivery_id = ? AND reply_status IS NULL
+           AND twitch_processing_token = ?
+         RETURNING twitch_reply_text AS replyText,
+                   twitch_reply_to_message_id AS replyToMessageId,
+                   'pending' AS replyStatus,
+                   twitch_processing_until AS processingUntil,
+                   twitch_processing_token AS processingToken,
+                   twitch_send_token AS sendToken`,
+      )
+      .bind(input.replyText, input.replyToMessageId ?? null, input.deliveryId, input.claimToken)
+      .first<TwitchReceiptRow>();
+    if (row === null) {
+      throw new RepositoryInvariantError("The Twitch command processing claim expired.");
+    }
+    return twitchReplyReceipt(row);
+  }
+
+  async releaseTwitchCommand(deliveryId: string, claimToken: string): Promise<void> {
+    await this.database
+      .prepare(
+        `DELETE FROM event_receipts
+         WHERE platform = 1 AND delivery_id = ? AND reply_status IS NULL
+           AND twitch_processing_token = ?`,
+      )
+      .bind(deliveryId, claimToken)
+      .run();
+  }
+
+  async claimTwitchReplyDelivery(
+    deliveryId: string,
+  ): Promise<TwitchReplyDeliveryClaim | undefined> {
+    const sendToken = crypto.randomUUID();
+    const row = await this.database
+      .prepare(
+        `UPDATE event_receipts SET twitch_send_token = ?
+         WHERE platform = 1 AND delivery_id = ? AND reply_status IN (0, 2)
+           AND twitch_send_token IS NULL AND twitch_reply_text IS NOT NULL
+         RETURNING twitch_reply_text AS replyText,
+                   twitch_reply_to_message_id AS replyToMessageId,
+                   CASE reply_status WHEN 0 THEN 'pending' ELSE 'failed' END AS replyStatus,
+                   twitch_processing_until AS processingUntil,
+                   twitch_processing_token AS processingToken,
+                   twitch_send_token AS sendToken`,
+      )
+      .bind(sendToken, deliveryId)
+      .first<TwitchReceiptRow>();
+    return row === null ? undefined : { sendToken, receipt: twitchReplyReceipt(row) };
+  }
+
+  async markTwitchReplySent(
+    deliveryId: string,
+    sendToken: string,
+    platformMessageId: string,
+  ): Promise<void> {
     await this.database
       .prepare(
         `UPDATE event_receipts SET reply_status = 1, reply_attempts = reply_attempts + 1,
-         platform_message_id = ?, last_error_code = NULL WHERE platform = 1 AND delivery_id = ?`,
+         platform_message_id = ?, last_error_code = NULL, twitch_send_token = NULL
+         WHERE platform = 1 AND delivery_id = ? AND twitch_send_token = ?`,
       )
-      .bind(platformMessageId, deliveryId)
+      .bind(platformMessageId, deliveryId, sendToken)
       .run();
   }
 
-  async markTwitchReplyFailed(deliveryId: string, errorCode: string): Promise<void> {
+  async markTwitchReplyFailed(
+    deliveryId: string,
+    sendToken: string,
+    errorCode: string,
+  ): Promise<void> {
     await this.database
       .prepare(
         `UPDATE event_receipts SET reply_status = 2, reply_attempts = reply_attempts + 1,
-         last_error_code = ? WHERE platform = 1 AND delivery_id = ?`,
+         last_error_code = ?, twitch_send_token = NULL
+         WHERE platform = 1 AND delivery_id = ? AND twitch_send_token = ?`,
       )
-      .bind(errorCode, deliveryId)
+      .bind(errorCode, deliveryId, sendToken)
       .run();
   }
 
-  async claimFailedTwitchReplyRetry(deliveryId: string): Promise<boolean> {
-    const result = await this.database
+  async markTwitchReplyAmbiguous(
+    deliveryId: string,
+    sendToken: string,
+    errorCode: string,
+  ): Promise<void> {
+    await this.database
       .prepare(
-        `UPDATE event_receipts SET reply_status = 0
-         WHERE platform = 1 AND delivery_id = ? AND reply_status = 2`,
+        `UPDATE event_receipts SET reply_attempts = reply_attempts + 1,
+         last_error_code = ?
+         WHERE platform = 1 AND delivery_id = ? AND twitch_send_token = ?`,
       )
-      .bind(deliveryId)
+      .bind(errorCode, deliveryId, sendToken)
       .run();
-    return Number(result.meta.changes) === 1;
   }
 
   async claimDiscordMutation(
     deliveryId: string,
     eventType: string,
     receivedAt: Date,
-  ): Promise<boolean> {
-    const timestamp = epoch(receivedAt);
+    claimedAt: Date,
+  ): Promise<string | undefined> {
+    const receivedTimestamp = epoch(receivedAt);
+    const claimTimestamp = epoch(claimedAt);
+    const claimToken = crypto.randomUUID();
     const row = await this.database
       .prepare(
         `INSERT INTO event_receipts
            (platform, delivery_id, event_type, received_at,
-            discord_mutation_status, discord_claim_until)
-         VALUES (0, ?, ?, ?, 0, ?)
+            discord_mutation_status, discord_claim_until, discord_claim_token)
+         VALUES (0, ?, ?, ?, 0, ?, ?)
          ON CONFLICT(platform, delivery_id) DO UPDATE SET
            event_type = excluded.event_type,
            discord_mutation_status = 0,
-           discord_claim_until = excluded.discord_claim_until
+           discord_claim_until = excluded.discord_claim_until,
+           discord_claim_token = excluded.discord_claim_token
          WHERE event_receipts.discord_mutation_status = 0
-           AND event_receipts.discord_claim_until <= excluded.received_at
-         RETURNING delivery_id AS deliveryId`,
+           AND event_receipts.discord_claim_until <= ?
+         RETURNING discord_claim_token AS claimToken`,
       )
-      .bind(deliveryId, eventType, timestamp, timestamp + DISCORD_MUTATION_CLAIM_MS)
-      .first<{ deliveryId: string }>();
-    return row !== null;
+      .bind(
+        deliveryId,
+        eventType,
+        receivedTimestamp,
+        claimTimestamp + DISCORD_MUTATION_CLAIM_MS,
+        claimToken,
+        claimTimestamp,
+      )
+      .first<{ claimToken: string }>();
+    return row?.claimToken;
   }
 
-  async completeDiscordMutation(deliveryId: string): Promise<void> {
+  async completeDiscordMutation(deliveryId: string, claimToken: string): Promise<void> {
     await this.database
       .prepare(
         `UPDATE event_receipts
-         SET discord_mutation_status = 1, discord_claim_until = NULL
-         WHERE platform = 0 AND delivery_id = ? AND discord_mutation_status = 0`,
+         SET discord_mutation_status = 1, discord_claim_until = NULL,
+             discord_claim_token = NULL
+         WHERE platform = 0 AND delivery_id = ? AND discord_mutation_status = 0
+           AND discord_claim_token = ?`,
       )
-      .bind(deliveryId)
+      .bind(deliveryId, claimToken)
       .run();
   }
 
-  async releaseDiscordMutation(deliveryId: string): Promise<void> {
+  async releaseDiscordMutation(deliveryId: string, claimToken: string): Promise<void> {
     await this.database
       .prepare(
         `DELETE FROM event_receipts
-         WHERE platform = 0 AND delivery_id = ? AND discord_mutation_status = 0`,
+         WHERE platform = 0 AND delivery_id = ? AND discord_mutation_status = 0
+           AND discord_claim_token = ?`,
       )
-      .bind(deliveryId)
+      .bind(deliveryId, claimToken)
       .run();
   }
 

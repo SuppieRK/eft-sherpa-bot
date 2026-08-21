@@ -239,6 +239,35 @@ describe("schedule-independent dual queues", () => {
     ]);
   });
 
+  it("appends normal intake after the highest active position when a gap exists", async () => {
+    const repo = repository();
+    const removedRequestId = await createRequest(repo, 1, "customs", "pve", 4);
+    await createRequest(repo, 2, "customs", "pve", 4);
+    await createRequest(repo, 3, "customs", "pve", 4);
+    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE raid_group_members SET state = 2, updated_at = ?
+         WHERE group_id = ? AND request_id = ? AND state = 0`,
+      ).bind(now.getTime(), raid.id, removedRequestId),
+      env.DB.prepare(`UPDATE help_requests SET state = 3, updated_at = ? WHERE id = ?`).bind(
+        now.getTime(),
+        removedRequestId,
+      ),
+    ]);
+
+    const appendedRequestId = await createRequest(repo, 4, "customs", "pve", 4);
+
+    await expect(
+      env.DB.prepare(
+        `SELECT position FROM raid_group_members
+         WHERE group_id = ? AND request_id = ? AND state = 0`,
+      )
+        .bind(raid.id, appendedRequestId)
+        .first(),
+    ).resolves.toEqual({ position: 4 });
+  });
+
   it("commits one board dirty version with a new intake membership", async () => {
     const repo = repository();
     const input = {
@@ -1019,6 +1048,62 @@ describe("schedule-independent dual queues", () => {
     expect((await repo.getBoardSnapshot()).ordinaryRaidCount).toBe(2);
   });
 
+  it("appends a postponed requester after the highest active follow-up position", async () => {
+    const repo = repository();
+    const retainedRequest = await createRequest(repo, 1, "customs", "pve", 4);
+    const removedRequest = await createRequest(repo, 2, "customs", "pve", 4);
+    const existingRequest = await createRequest(repo, 3, "customs", "pve", 4);
+    const appendedRequest = await createRequest(repo, 4, "customs", "pve", 4);
+    const source = await start(
+      repo,
+      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+    );
+    const first = await repo.postponeRequester({
+      groupId: source.id,
+      requestId: removedRequest,
+      actionKey: "postpone-gap-first",
+      changedAt: now,
+    });
+    await repo.postponeRequester({
+      groupId: source.id,
+      requestId: existingRequest,
+      actionKey: "postpone-gap-second",
+      changedAt: now,
+    });
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE raid_group_members SET state = 2, updated_at = ?
+         WHERE group_id = ? AND request_id = ? AND state = 0`,
+      ).bind(now.getTime(), first.dedicated.id, removedRequest),
+      env.DB.prepare(`UPDATE help_requests SET state = 3, updated_at = ? WHERE id = ?`).bind(
+        now.getTime(),
+        removedRequest,
+      ),
+    ]);
+
+    const result = await repo.postponeRequester({
+      groupId: source.id,
+      requestId: appendedRequest,
+      actionKey: "postpone-gap-third",
+      changedAt: now,
+    });
+
+    expect(result.source.members.map((member) => member.requestId)).toEqual([retainedRequest]);
+    await expect(
+      env.DB.prepare(
+        `SELECT request_id AS requestId, position
+         FROM raid_group_members WHERE group_id = ? AND state = 0 ORDER BY position`,
+      )
+        .bind(first.dedicated.id)
+        .all(),
+    ).resolves.toMatchObject({
+      results: [
+        { requestId: existingRequest, position: 2 },
+        { requestId: appendedRequest, position: 3 },
+      ],
+    });
+  });
+
   it("creates another follow-up after a source-linked follow-up becomes full", async () => {
     const repo = repository();
     const retainedRequest = await createRequest(repo, 1);
@@ -1428,6 +1513,40 @@ describe("schedule-independent dual queues", () => {
     expect(stored).toEqual({ requestCount: 60, raidCount: 20, memberCount: 60 });
   }, 15_000);
 
+  it("appends legacy recovery after the highest active position when a gap exists", async () => {
+    const repo = repository();
+    const removedRequest = await createRequest(repo, 1, "customs", "pve", 3);
+    await createRequest(repo, 2, "customs", "pve", 3);
+    await createRequest(repo, 3, "customs", "pve", 3);
+    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE raid_group_members SET state = 2, updated_at = ?
+         WHERE group_id = ? AND request_id = ? AND state = 0`,
+      ).bind(now.getTime(), raid.id, removedRequest),
+      env.DB.prepare(`UPDATE help_requests SET state = 3, updated_at = ? WHERE id = ?`).bind(
+        now.getTime(),
+        removedRequest,
+      ),
+    ]);
+    await seedWaitingRequests(1, { offset: 10_000 });
+
+    await expect(
+      repo.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toEqual({ repaired: 1, hasMore: false });
+    await expect(
+      env.DB.prepare(
+        `SELECT member.position
+         FROM raid_group_members AS member
+         JOIN help_requests AS request ON request.id = member.request_id
+         WHERE member.group_id = ? AND member.state = 0
+           AND request.source_delivery_id = 'bulk-delivery-10001'`,
+      )
+        .bind(raid.id)
+        .first(),
+    ).resolves.toEqual({ position: 4 });
+  });
+
   it("bounds and drains a 1,000-request recovery backlog in 80-request lookahead batches", async () => {
     const repo = repository();
     await seedWaitingRequests(1_000);
@@ -1555,9 +1674,13 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     await ensureCommunityState();
     const old = new Date(now.getTime() - 25 * 60 * 60 * 1_000);
-    await repo.claimDiscordMutation("old", "component", old);
-    await expect(repo.claimDiscordMutation("recent", "component", now)).resolves.toBe(true);
-    await expect(repo.claimDiscordMutation("recent", "component", now)).resolves.toBe(false);
+    await repo.claimDiscordMutation("old", "component", old, old);
+    await expect(repo.claimDiscordMutation("recent", "component", now, now)).resolves.toEqual(
+      expect.any(String),
+    );
+    await expect(
+      repo.claimDiscordMutation("recent", "component", now, now),
+    ).resolves.toBeUndefined();
     await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: true, deleted: 1 });
     const receipts = await env.DB.prepare(
       `SELECT delivery_id AS deliveryId FROM event_receipts ORDER BY delivery_id`,
@@ -1568,12 +1691,21 @@ describe("schedule-independent dual queues", () => {
   it("serializes board drains and preserves changes that arrive during rendering", async () => {
     await ensureCommunityState();
     const repo = repository();
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-board",
+      renderedVersion: 0,
+      changedAt: now,
+    });
     for (let index = 0; index < 10; index += 1) {
       await repo.markBoardDirty(new Date(now.getTime() + index));
     }
     const claims = await Promise.all(
       Array.from({ length: 10 }, (_, index) =>
-        repo.acquireBoardDrainLease({ token: `lease-${index}`, changedAt: now }),
+        repo.acquireBoardDrainLease({
+          token: `lease-${index}`,
+          changedAt: now,
+          createIfMissing: false,
+        }),
       ),
     );
     const winner = claims.find((claim) => claim !== undefined);
@@ -1585,43 +1717,61 @@ describe("schedule-independent dual queues", () => {
       repo.completeBoardDrain({
         token: winner?.token ?? "missing",
         renderedVersion: winner?.dirtyVersion ?? 0,
+        expectedMessageId: "canonical-board",
         changedAt: new Date(now.getTime() + 21),
       }),
-    ).resolves.toEqual({ current: false, hasMore: true });
+    ).resolves.toMatchObject({ applied: true, current: false, hasMore: true });
     const followUp = await repo.acquireBoardDrainLease({
       token: "follow-up",
       changedAt: new Date(now.getTime() + 22),
+      createIfMissing: false,
     });
     expect(followUp).toMatchObject({ dirtyVersion: 11, renderedVersion: 10 });
     await expect(
       repo.completeBoardDrain({
         token: "follow-up",
         renderedVersion: followUp?.dirtyVersion ?? 0,
+        expectedMessageId: "canonical-board",
         changedAt: new Date(now.getTime() + 23),
       }),
-    ).resolves.toEqual({ current: true, hasMore: false });
+    ).resolves.toMatchObject({ applied: true, current: true, hasMore: false });
     await expect(
-      repo.acquireBoardDrainLease({ token: "none", changedAt: new Date(now.getTime() + 24) }),
+      repo.acquireBoardDrainLease({
+        token: "none",
+        changedAt: new Date(now.getTime() + 24),
+        createIfMissing: false,
+      }),
     ).resolves.toBeUndefined();
   });
 
   it("reclaims only incomplete expired Discord mutation receipts", async () => {
     const repo = repository();
-    await expect(repo.claimDiscordMutation("retryable", "component", now)).resolves.toBe(true);
-    await expect(repo.claimDiscordMutation("retryable", "component", now)).resolves.toBe(false);
-    await repo.releaseDiscordMutation("retryable");
-    await expect(repo.claimDiscordMutation("retryable", "component", now)).resolves.toBe(true);
+    const firstToken = await repo.claimDiscordMutation("retryable", "component", now, now);
+    expect(firstToken).toEqual(expect.any(String));
     await expect(
-      repo.claimDiscordMutation("retryable", "component", new Date(now.getTime() + 5 * 60 * 1_000)),
-    ).resolves.toBe(true);
-    await repo.completeDiscordMutation("retryable");
+      repo.claimDiscordMutation("retryable", "component", now, now),
+    ).resolves.toBeUndefined();
+    await repo.releaseDiscordMutation("retryable", firstToken ?? "missing");
+    const secondToken = await repo.claimDiscordMutation("retryable", "component", now, now);
+    expect(secondToken).toEqual(expect.any(String));
+    const reclaimedToken = await repo.claimDiscordMutation(
+      "retryable",
+      "component",
+      now,
+      new Date(now.getTime() + 5 * 60 * 1_000),
+    );
+    expect(reclaimedToken).toEqual(expect.any(String));
+    expect(reclaimedToken).not.toBe(secondToken);
+    await repo.completeDiscordMutation("retryable", secondToken ?? "missing");
+    await repo.completeDiscordMutation("retryable", reclaimedToken ?? "missing");
     await expect(
       repo.claimDiscordMutation(
         "retryable",
         "component",
+        now,
         new Date(now.getTime() + 10 * 60 * 1_000),
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBeUndefined();
     await expect(
       env.DB.prepare(
         `SELECT discord_mutation_status AS status, discord_claim_until AS claimUntil
@@ -1643,7 +1793,9 @@ describe("schedule-independent dual queues", () => {
       .run();
 
     const repo = repository();
-    await expect(repo.claimDiscordMutation("current-one", "component", now)).resolves.toBe(true);
+    await expect(repo.claimDiscordMutation("current-one", "component", now, now)).resolves.toEqual(
+      expect.any(String),
+    );
     await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: true, deleted: 100 });
     await expect(
       env.DB.prepare(
@@ -1651,7 +1803,9 @@ describe("schedule-independent dual queues", () => {
          FROM event_receipts WHERE delivery_id LIKE 'expired-discord-%'`,
       ).first(),
     ).resolves.toEqual({ count: 500, oldest: "expired-discord-100" });
-    await expect(repo.claimDiscordMutation("current-two", "component", now)).resolves.toBe(true);
+    await expect(repo.claimDiscordMutation("current-two", "component", now, now)).resolves.toEqual(
+      expect.any(String),
+    );
     await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: false, deleted: 0 });
     const nextLease = new Date(now.getTime() + 15 * 60 * 1_000);
     await expect(repo.maintainExpiredReceipts(nextLease)).resolves.toEqual({
@@ -1729,14 +1883,21 @@ describe("schedule-independent dual queues", () => {
       .run();
 
     const repo = repository();
+    const commandClaim = await repo.claimTwitchCommand({
+      deliveryId: "current-twitch",
+      eventType: "command:queue",
+      receivedAt: now,
+      claimedAt: now,
+    });
+    expect(commandClaim.outcome).toBe("claimed");
+    if (commandClaim.outcome !== "claimed") throw new Error("Twitch claim was not acquired");
     await expect(
-      repo.recordTwitchReply({
+      repo.completeTwitchCommand({
         deliveryId: "current-twitch",
-        eventType: "command:queue",
+        claimToken: commandClaim.claimToken,
         replyText: "Current reply",
-        receivedAt: now,
       }),
-    ).resolves.toMatchObject({ duplicate: false, replyText: "Current reply" });
+    ).resolves.toMatchObject({ replyText: "Current reply", replyStatus: "pending" });
     await expect(repo.maintainExpiredReceipts(now)).resolves.toEqual({ ran: true, deleted: 100 });
     await expect(
       env.DB.prepare(
@@ -1744,6 +1905,50 @@ describe("schedule-independent dual queues", () => {
          FROM event_receipts WHERE delivery_id LIKE 'expired-twitch-%'`,
       ).first(),
     ).resolves.toEqual({ count: 200, oldest: "expired-twitch-100" });
+  });
+
+  it("reclaims an expired Twitch command with wall-clock time and fences the stale worker", async () => {
+    const repo = repository();
+    const first = await repo.claimTwitchCommand({
+      deliveryId: "abandoned-twitch-command",
+      eventType: "command:queue",
+      receivedAt: now,
+      claimedAt: now,
+    });
+    expect(first.outcome).toBe("claimed");
+    if (first.outcome !== "claimed") throw new Error("The first Twitch claim was not acquired");
+    await expect(
+      repo.claimTwitchCommand({
+        deliveryId: "abandoned-twitch-command",
+        eventType: "command:queue",
+        receivedAt: now,
+        claimedAt: new Date(now.getTime() + 60_000),
+      }),
+    ).resolves.toEqual({ outcome: "processing" });
+
+    const reclaimed = await repo.claimTwitchCommand({
+      deliveryId: "abandoned-twitch-command",
+      eventType: "command:queue",
+      receivedAt: now,
+      claimedAt: new Date(now.getTime() + 2 * 60_000),
+    });
+    expect(reclaimed.outcome).toBe("claimed");
+    if (reclaimed.outcome !== "claimed") throw new Error("The Twitch claim was not reclaimed");
+    expect(reclaimed.claimToken).not.toBe(first.claimToken);
+    await expect(
+      repo.completeTwitchCommand({
+        deliveryId: "abandoned-twitch-command",
+        claimToken: first.claimToken,
+        replyText: "Stale reply",
+      }),
+    ).rejects.toThrow("processing claim expired");
+    await expect(
+      repo.completeTwitchCommand({
+        deliveryId: "abandoned-twitch-command",
+        claimToken: reclaimed.claimToken,
+        replyText: "Current reply",
+      }),
+    ).resolves.toMatchObject({ replyText: "Current reply", replyStatus: "pending" });
   });
 
   it("does not rewrite an unchanged Twitch-only identity observation", async () => {
@@ -1790,6 +1995,77 @@ describe("schedule-independent dual queues", () => {
     expect(mappings.results).toEqual([
       { twitchLogin: "new_login", twitchUserId: "shared-twitch-id" },
     ]);
+  });
+
+  it("does not transfer profile data when a verified Twitch login is recycled", async () => {
+    const repo = repository();
+    await repo.upsertUserMapping({
+      twitchLogin: "original_login",
+      twitchUserId: "stable-original",
+      discordUserId: "discord-original",
+      discordDisplayName: "Original Discord",
+      inGameName: "Original PMC",
+      observedAt: now,
+    });
+    await repo.upsertUserMapping({
+      twitchLogin: "recycled_login",
+      twitchUserId: "stable-owner",
+      discordUserId: "discord-owner",
+      discordDisplayName: "Owner Discord",
+      inGameName: "Owner PMC",
+      observedAt: now,
+    });
+
+    await expect(
+      repo.observeTwitchIdentity({
+        twitchLogin: "recycled_login",
+        twitchUserId: "stable-original",
+        observedAt: new Date(now.getTime() + 1),
+      }),
+    ).rejects.toThrow("belongs to another verified Twitch identity");
+    await expect(
+      repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: "recycled-login-request",
+        twitchUserId: "stable-original",
+        twitchLogin: "recycled_login",
+        gameMode: "pve",
+        inGameName: "Untrusted PMC",
+        mapId: "customs",
+        objective: "Do not create this request",
+        recipientLimit: 4,
+        observedAt: new Date(now.getTime() + 2),
+      }),
+    ).rejects.toThrow("belongs to another verified Twitch identity");
+
+    await expect(
+      env.DB.prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
+                discord_user_id AS discordUserId,
+                discord_display_name AS discordDisplayName, in_game_name AS inGameName
+         FROM user_mappings ORDER BY twitch_login`,
+      ).all(),
+    ).resolves.toMatchObject({
+      results: [
+        {
+          twitchLogin: "original_login",
+          twitchUserId: "stable-original",
+          discordUserId: "discord-original",
+          discordDisplayName: "Original Discord",
+          inGameName: "Original PMC",
+        },
+        {
+          twitchLogin: "recycled_login",
+          twitchUserId: "stable-owner",
+          discordUserId: "discord-owner",
+          discordDisplayName: "Owner Discord",
+          inGameName: "Owner PMC",
+        },
+      ],
+    });
+    await expect(
+      env.DB.prepare(`SELECT count(*) AS count FROM help_requests`).first(),
+    ).resolves.toEqual({ count: 0 });
   });
 
   it("keeps queue access and active uniqueness after a Twitch login rename", async () => {

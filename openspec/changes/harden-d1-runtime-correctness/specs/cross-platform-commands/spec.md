@@ -11,6 +11,10 @@ The system SHALL verify platform signatures and a ten-minute timestamp window be
 - **WHEN** a guarded Discord mutation fails before its durable state commits
 - **THEN** a later exact delivery can reclaim or retry it and the failed attempt is not recorded as complete
 
+#### Scenario: Discord reclaims an abandoned exact delivery
+- **WHEN** the wall-clock claim lease expires and another Worker reclaims the same signed interaction
+- **THEN** the new random claim token fences completion and release so the stale Worker cannot alter the newer claim
+
 #### Scenario: Discord mutation repeats after commit
 - **WHEN** a completed Discord mutation delivery repeats
 - **THEN** it does not apply the state transition or its external effect again
@@ -22,6 +26,14 @@ The system SHALL verify platform signatures and a ten-minute timestamp window be
 #### Scenario: Twitch delivery overlaps while reply is pending
 - **WHEN** several copies of one signed Twitch command overlap before the first reply finishes
 - **THEN** the stored winning receipt permits at most one platform reply and one canonical-board synchronization
+
+#### Scenario: Twitch command processing claim is abandoned
+- **WHEN** a Worker stops after claiming a Twitch command but before storing its reply
+- **THEN** a later exact delivery can reclaim the expired processing lease and rerun the idempotent command work
+
+#### Scenario: Twitch send acknowledgement is ambiguous
+- **WHEN** Twitch may have accepted a reply but the Worker cannot durably record success
+- **THEN** the stored send token suppresses automatic resend and the system records safe diagnostic evidence instead of risking a duplicate message
 
 #### Scenario: Failed Twitch reply is retried concurrently
 - **WHEN** several repeated deliveries observe the same failed Twitch reply

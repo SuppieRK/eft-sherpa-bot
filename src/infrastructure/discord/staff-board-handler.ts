@@ -140,52 +140,88 @@ export async function synchronizeCanonicalBoard(input: {
   communityConfig: CommunityConfig;
   changedAt: Date;
   createIfMissing: boolean;
+  context?: ExecutionContext | TrackedExecutionContext;
   snapshot?: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
-  message?: DiscordBotMessage;
+  captureSnapshot?: (snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>) => void;
 }): Promise<string | undefined> {
   const repository = new D1MvpRepository(input.environment.DB);
-  const initial = input.snapshot ?? (await repository.getBoardSnapshot(input.changedAt));
-  if (initial.canonicalMessageId === undefined && input.createIfMissing) {
-    const created = await createDiscordMessage(
-      input.environment,
-      input.communityConfig.discord.staffChannelId,
-      input.message ?? boardMessage(initial, input.communityConfig),
-    );
-    await repository.setCanonicalBoardMessage({
-      messageId: created.id,
-      changedAt: input.changedAt,
-    });
-    return created.id;
-  }
-  if (initial.canonicalMessageId === undefined) return undefined;
-
   const token = crypto.randomUUID();
-  let canonicalMessageId = initial.canonicalMessageId;
+  let canonicalMessageId = input.snapshot?.canonicalMessageId;
   let reusableSnapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>> | undefined =
-    initial;
+    input.snapshot;
+  let hasMore = false;
   // oxlint-disable no-await-in-loop -- Each lease/CAS step must finish before the next board version.
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const lease = await repository.acquireBoardDrainLease({ token, changedAt: new Date() });
-    if (lease === undefined) return canonicalMessageId;
+    const lease = await repository.acquireBoardDrainLease({
+      token,
+      changedAt: new Date(),
+      createIfMissing: input.createIfMissing,
+    });
+    if (lease === undefined) {
+      const storedMessageId = canonicalMessageId ?? (await repository.getCanonicalBoardMessageId());
+      if (storedMessageId !== undefined || !input.createIfMissing || attempt === 2) {
+        return storedMessageId;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      continue;
+    }
     const snapshot =
       reusableSnapshot?.boardVersion === lease.dirtyVersion
         ? reusableSnapshot
         : await repository.getBoardSnapshot(input.changedAt);
-    reusableSnapshot = undefined;
+    input.captureSnapshot?.(snapshot);
     const message = boardMessage(snapshot, input.communityConfig);
-    try {
-      await updateDiscordMessage(
+    const renderedVersion = snapshot.boardVersion ?? lease.dirtyVersion;
+    reusableSnapshot = undefined;
+    const expectedMessageId = lease.canonicalMessageId ?? null;
+    canonicalMessageId = lease.canonicalMessageId;
+    if (expectedMessageId === null) {
+      if (!input.createIfMissing) {
+        await repository.releaseBoardDrainLease(token);
+        return undefined;
+      }
+      const created = await createDiscordMessage(
         input.environment,
         input.communityConfig.discord.staffChannelId,
-        canonicalMessageId,
         message,
       );
       const completed = await repository.completeBoardDrain({
         token,
-        renderedVersion: lease.dirtyVersion,
+        renderedVersion,
+        expectedMessageId: null,
+        messageId: created.id,
         changedAt: new Date(),
       });
-      if (!completed.hasMore) return canonicalMessageId;
+      if (!completed.applied) {
+        await deleteDuplicateRaidMessage({
+          environment: input.environment,
+          channelId: input.communityConfig.discord.staffChannelId,
+          messageId: created.id,
+        });
+        return repository.getCanonicalBoardMessageId();
+      }
+      canonicalMessageId = completed.canonicalMessageId;
+      hasMore = completed.hasMore;
+      if (!hasMore) return canonicalMessageId;
+      continue;
+    }
+    try {
+      await updateDiscordMessage(
+        input.environment,
+        input.communityConfig.discord.staffChannelId,
+        expectedMessageId,
+        message,
+      );
+      const completed = await repository.completeBoardDrain({
+        token,
+        renderedVersion,
+        expectedMessageId,
+        changedAt: new Date(),
+      });
+      if (!completed.applied) return repository.getCanonicalBoardMessageId();
+      canonicalMessageId = completed.canonicalMessageId;
+      hasMore = completed.hasMore;
+      if (!hasMore) return canonicalMessageId;
     } catch (error) {
       if (!(error instanceof DiscordApiError) || error.status !== 404 || !input.createIfMissing) {
         await repository.releaseBoardDrainLease(token);
@@ -196,20 +232,44 @@ export async function synchronizeCanonicalBoard(input: {
         input.communityConfig.discord.staffChannelId,
         message,
       );
-      canonicalMessageId = created.id;
-      await repository.setCanonicalBoardMessage({
-        messageId: created.id,
-        changedAt: input.changedAt,
-      });
-      await repository.completeBoardDrain({
+      const completed = await repository.completeBoardDrain({
         token,
-        renderedVersion: lease.dirtyVersion,
+        renderedVersion,
+        expectedMessageId,
+        messageId: created.id,
         changedAt: new Date(),
       });
+      if (!completed.applied) {
+        await deleteDuplicateRaidMessage({
+          environment: input.environment,
+          channelId: input.communityConfig.discord.staffChannelId,
+          messageId: created.id,
+        });
+        return repository.getCanonicalBoardMessageId();
+      }
+      canonicalMessageId = completed.canonicalMessageId;
+      hasMore = completed.hasMore;
+      if (!hasMore) return canonicalMessageId;
     }
   }
   // oxlint-enable no-await-in-loop
   await repository.releaseBoardDrainLease(token);
+  if (hasMore && input.context !== undefined) {
+    scheduleBackground(
+      input.context,
+      "discord.board_followup",
+      input.environment,
+      async (environment) => {
+        await synchronizeCanonicalBoard({
+          environment,
+          communityConfig: input.communityConfig,
+          changedAt: new Date(),
+          createIfMissing: input.createIfMissing,
+          ...(input.context === undefined ? {} : { context: input.context }),
+        });
+      },
+    );
+  }
   return canonicalMessageId;
 }
 
@@ -316,8 +376,8 @@ async function reconcileVisibleRaidMessages(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
+  context?: ExecutionContext | TrackedExecutionContext;
   snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
-  message: DiscordBotMessage;
 }): Promise<void> {
   const repository = new D1MvpRepository(input.environment.DB);
   const visibleRaids = [...input.snapshot.priorityRaids, ...input.snapshot.ordinaryRaids].filter(
@@ -352,8 +412,12 @@ async function reconcileVisibleRaidMessages(input: {
     else raid.staffMessageId = result.value;
   }
   await synchronizeCanonicalBoard({
-    ...input,
+    environment: input.environment,
+    communityConfig: input.communityConfig,
+    changedAt: input.changedAt,
     createIfMissing: false,
+    snapshot: input.snapshot,
+    ...(input.context === undefined ? {} : { context: input.context }),
   });
 }
 
@@ -416,12 +480,17 @@ class StaffBoardHandler {
     this.repository = new D1MvpRepository(dependencies.environment.DB);
   }
 
-  private async claimMutation(deliveryId: string, eventType: string): Promise<boolean> {
-    return this.repository.claimDiscordMutation(deliveryId, eventType, this.dependencies.changedAt);
+  private async claimMutation(deliveryId: string, eventType: string): Promise<string | undefined> {
+    return this.repository.claimDiscordMutation(
+      deliveryId,
+      eventType,
+      this.dependencies.changedAt,
+      new Date(),
+    );
   }
 
-  private async completeMutation(deliveryId: string): Promise<void> {
-    await this.repository.completeDiscordMutation(deliveryId);
+  private async completeMutation(deliveryId: string, claimToken: string): Promise<void> {
+    await this.repository.completeDiscordMutation(deliveryId, claimToken);
     scheduleBackground(
       this.dependencies.context,
       "discord.receipt_cleanup",
@@ -434,8 +503,8 @@ class StaffBoardHandler {
     );
   }
 
-  private releaseMutation(deliveryId: string): Promise<void> {
-    return this.repository.releaseDiscordMutation(deliveryId);
+  private releaseMutation(deliveryId: string, claimToken: string): Promise<void> {
+    return this.repository.releaseDiscordMutation(deliveryId, claimToken);
   }
 
   private refreshBoardLater(): void {
@@ -449,6 +518,9 @@ class StaffBoardHandler {
           communityConfig: this.dependencies.communityConfig,
           changedAt: this.dependencies.changedAt,
           createIfMissing: false,
+          ...(this.dependencies.context === undefined
+            ? {}
+            : { context: this.dependencies.context }),
         });
       },
     );
@@ -456,7 +528,6 @@ class StaffBoardHandler {
 
   private reconcileBoardLater(
     snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>,
-    message: DiscordBotMessage,
   ): void {
     scheduleBackground(
       this.dependencies.context,
@@ -467,7 +538,6 @@ class StaffBoardHandler {
           ...this.dependencies,
           environment,
           snapshot,
-          message,
         });
       },
     );
@@ -580,18 +650,21 @@ class StaffBoardHandler {
     if (!hasAccess(interaction, communityConfig)) {
       return ephemeral("Use `/board` in the staff channel as the streamer or a volunteer sherpa.");
     }
-    const snapshot = await this.repository.getBoardSnapshot(this.dependencies.changedAt);
-    const message = boardMessage(snapshot, communityConfig);
+    let renderedSnapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>> | undefined;
     const messageId = await synchronizeCanonicalBoard({
       environment: this.dependencies.environment,
       communityConfig,
       changedAt: this.dependencies.changedAt,
       createIfMissing: true,
-      snapshot,
-      message,
+      captureSnapshot(snapshot) {
+        renderedSnapshot = snapshot;
+      },
+      ...(this.dependencies.context === undefined ? {} : { context: this.dependencies.context }),
     });
     if (messageId === undefined) throw new Error("The canonical board was not created.");
-    this.reconcileBoardLater(snapshot, message);
+    const currentSnapshot =
+      renderedSnapshot ?? (await this.repository.getBoardSnapshot(this.dependencies.changedAt));
+    this.reconcileBoardLater(currentSnapshot);
     return ephemeral(
       `[Open the sherpa board](${discordMessageUrl(
         communityConfig.discord.guildId,
@@ -884,15 +957,14 @@ class StaffBoardHandler {
       await this.repository.markBoardDirty(changedAt);
       const snapshot = await this.repository.getBoardSnapshot(changedAt);
       const message = boardMessage(snapshot, communityConfig);
-      this.reconcileBoardLater(snapshot, message);
+      this.reconcileBoardLater(snapshot);
       return update(message);
     }
-    if (
-      !(await this.claimMutation(
-        interaction.interactionId,
-        boardAction === undefined ? `raid:${raidAction?.action}` : "raid:review",
-      ))
-    ) {
+    const claimToken = await this.claimMutation(
+      interaction.interactionId,
+      boardAction === undefined ? `raid:${raidAction?.action}` : "raid:review",
+    );
+    if (claimToken === undefined) {
       return ephemeral("That action was already received.");
     }
     try {
@@ -901,19 +973,19 @@ class StaffBoardHandler {
         response = await this.reviewRaid(interaction);
       } else {
         if (raidAction === undefined) {
-          await this.completeMutation(interaction.interactionId);
+          await this.completeMutation(interaction.interactionId, claimToken);
           return new Response("Unsupported component", { status: 400 });
         }
         response = await this.handleRaidAction(interaction, raidAction);
       }
-      await this.completeMutation(interaction.interactionId);
+      await this.completeMutation(interaction.interactionId, claimToken);
       return response;
     } catch (error) {
       if (error instanceof RepositoryInvariantError) {
-        await this.completeMutation(interaction.interactionId);
+        await this.completeMutation(interaction.interactionId, claimToken);
         return ephemeral(error.message);
       }
-      await this.releaseMutation(interaction.interactionId);
+      await this.releaseMutation(interaction.interactionId, claimToken);
       throw error;
     }
   }

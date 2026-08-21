@@ -327,9 +327,9 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     if (
       operationResults.some(
         (result) =>
-          result.aggregate.statements.max > 5 ||
+          result.aggregate.statements.max > 6 ||
           result.aggregate.rowsRead.max > 20 ||
-          result.aggregate.rowsWritten.max !== 3,
+          result.aggregate.rowsWritten.max !== 5,
       )
     ) {
       fail(`${operationId} exceeded its invalid-input D1 limit`);
@@ -339,9 +339,9 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     if (
       operationResults.some(
         (result) =>
-          result.aggregate.statements.max > 5 ||
+          result.aggregate.statements.max > 7 ||
           result.aggregate.rowsRead.max > 450 ||
-          result.aggregate.rowsWritten.max > 104,
+          result.aggregate.rowsWritten.max > 106,
       )
     ) {
       fail(`${operationId} exceeded its leased-cleanup D1 limit`);

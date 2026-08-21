@@ -38,6 +38,10 @@ export interface UserMapping {
 }
 
 export class RepositoryInvariantError extends Error {
-  override readonly name = "RepositoryInvariantError";
+  override readonly name: string = "RepositoryInvariantError";
+}
+
+export class StableTwitchIdentityConflictError extends RepositoryInvariantError {
+  override readonly name = "StableTwitchIdentityConflictError";
 }
 import type { GameMode } from "./game-mode";

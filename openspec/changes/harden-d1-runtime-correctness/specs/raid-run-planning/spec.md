@@ -48,3 +48,19 @@ Every committed queue change SHALL increment a monotonic board dirty version. Ca
 #### Scenario: Staff select Refresh
 - **WHEN** authorized staff select `Refresh`
 - **THEN** Refresh uses a current snapshot and current controls through the serialized drain or returns short retry guidance instead of issuing an unordered canonical PATCH
+
+#### Scenario: A current membership position has a gap
+- **WHEN** a current member was removed from a non-final position and another compatible request is appended through intake, repair, or postponement
+- **THEN** the new member receives a position after the highest current position without colliding with an existing membership
+
+#### Scenario: Board state changes during creation or replacement
+- **WHEN** the queue changes after a board snapshot is rendered but before its Discord message ID is stored
+- **THEN** only the rendered snapshot version is acknowledged and a later bounded drain renders the newer dirty version
+
+#### Scenario: Several callers create a missing canonical board
+- **WHEN** concurrent authorized calls observe no canonical board message
+- **THEN** one lease holder stores one canonical message and any losing created message is deleted
+
+#### Scenario: Work remains after one bounded drain
+- **WHEN** a newer dirty version still exists after three render attempts
+- **THEN** the tracked execution context schedules another bounded drain and final telemetry includes that follow-up

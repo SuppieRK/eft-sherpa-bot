@@ -12,6 +12,10 @@ The current Worker can lose a viewer's active request after a Twitch login renam
 - Remove verified redundant statements and indexes, and use `RETURNING` or void mutation paths where local D1 evidence confirms lower cost.
 - Extend the fully local benchmark with operator, duplicate-delivery, recovery, history, reconciliation, and burst scenarios; add stable query IDs, binding-call counts, hand-reviewed maximum budgets, and current provenance.
 - Apply all schema changes through additive migration `0006`; migrations already applied to DEV remain unchanged.
+- Add forward-only migration `0007` for fenced Discord and Twitch processing claims; keep the already-applied migration `0006` unchanged.
+- Allocate new raid memberships after the highest active position so removed-position gaps cannot block later intake, repair, or postponement.
+- Reject cross-user Twitch login collisions instead of transferring Discord or EFT identity details between stable Twitch IDs.
+- Fence canonical-board creation, replacement, completion, and bounded follow-up work with the exact rendered snapshot version.
 
 ## Capabilities
 
@@ -28,4 +32,4 @@ None.
 
 ## Impact
 
-The change affects the D1 schema and repository queries, Discord and Twitch webhook handlers, board synchronization, Worker telemetry, local Miniflare benchmarks, deployment verification, and regression tests. It does not change public viewer commands or staff workflow wording. Implementation starts from `main` on a new feature branch and requires a manual DEV deployment and smoke test before merge.
+The change affects the D1 schema and repository queries, Discord and Twitch webhook handlers, board synchronization, Worker telemetry, local Miniflare benchmarks, deployment verification, and regression tests. It does not change public viewer commands or staff workflow wording. The follow-up hardening work uses additive migration `0007` and leaves applied migrations unchanged.
