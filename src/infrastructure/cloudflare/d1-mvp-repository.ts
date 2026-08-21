@@ -733,8 +733,6 @@ export class D1MvpRepository
           timestamp,
           timestamp,
         ),
-    );
-    statements.push(
       this.database
         .prepare(
           `INSERT OR IGNORE INTO raid_groups
@@ -798,8 +796,6 @@ export class D1MvpRepository
            RETURNING request_id`,
         )
         .bind(timestamp, timestamp, platform, input.sourceDeliveryId),
-    );
-    statements.push(
       this.boardDirtyStatement(timestamp, true),
       this.database
         .prepare(
