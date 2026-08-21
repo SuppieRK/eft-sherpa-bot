@@ -59,7 +59,7 @@ function sourceDigest() {
     "vitest.benchmark.config.ts",
     ...readdirSync(path.join(ROOT, "migrations"))
       .filter((name) => name.endsWith(".sql"))
-      .sort()
+      .sort((left, right) => left.localeCompare(right, "en"))
       .map((name) => `migrations/${name}`),
   ];
   const hash = createHash("sha256");

@@ -52,7 +52,7 @@ if (status.database?.hasLegacyUnassignedRequests !== false) {
   throw new Error("D1 still contains legacy unassigned requests");
 }
 if (!Number.isInteger(status.database?.stableIdentityRepairCount)) {
-  throw new Error("D1 did not report the stable identity repair count");
+  throw new TypeError("D1 did not report the stable identity repair count");
 }
 if (discord.ok !== true) throw new Error("Discord validation did not complete");
 if (!["created", "reused"].includes(twitch.action)) {

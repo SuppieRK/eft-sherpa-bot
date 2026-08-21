@@ -799,8 +799,8 @@ export class D1MvpRepository
         )
         .bind(timestamp, timestamp, platform, input.sourceDeliveryId),
     );
-    statements.push(this.boardDirtyStatement(timestamp, true));
     statements.push(
+      this.boardDirtyStatement(timestamp, true),
       this.database
         .prepare(
           `INSERT INTO raid_group_members
@@ -1284,7 +1284,9 @@ export class D1MvpRepository
       .bind(groupId)
       .first<{ state: number; outcome: number | null }>();
     if (state === null) return undefined;
-    const memberState = state.state === 0 || state.state === 1 ? 0 : state.outcome === 0 ? 1 : -1;
+    let memberState = -1;
+    if (state.state === 0 || state.state === 1) memberState = 0;
+    else if (state.outcome === 0) memberState = 1;
     const rows = await this.database
       .prepare(raidSelectSql("WHERE raid.id = ?", memberState))
       .bind(groupId)

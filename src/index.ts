@@ -9,7 +9,10 @@ import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
 import { parseTwitchRequestInput } from "./domain/twitch-request";
 import { isStaffBoardMember } from "./domain/staff-board";
-import { D1MvpRepository } from "./infrastructure/cloudflare/d1-mvp-repository";
+import {
+  D1MvpRepository,
+  type TwitchReplyReceipt,
+} from "./infrastructure/cloudflare/d1-mvp-repository";
 import { logDiagnostic } from "./infrastructure/cloudflare/diagnostics";
 import type { CloudflareEnvironment } from "./infrastructure/cloudflare/environment";
 import { requireEnvironmentValue } from "./infrastructure/cloudflare/environment";
@@ -707,6 +710,33 @@ async function deliverTwitchReply(input: {
   }
 }
 
+async function handleExistingTwitchReceipt(input: {
+  receipt: TwitchReplyReceipt;
+  deliveryId: string;
+  repository: D1MvpRepository;
+  context: TrackedExecutionContext;
+  communityConfig: CommunityConfig;
+}): Promise<Response> {
+  const shouldRetry =
+    input.receipt.replyStatus === "failed" &&
+    (await input.repository.claimFailedTwitchReplyRetry(input.deliveryId));
+  if (shouldRetry) {
+    input.context.waitUntilTask("twitch.reply_retry", async (backgroundEnvironment) => {
+      await deliverTwitchReply({
+        environment: backgroundEnvironment,
+        communityConfig: input.communityConfig,
+        repository: new D1MvpRepository(backgroundEnvironment.DB),
+        deliveryId: input.deliveryId,
+        replyText: input.receipt.replyText,
+        ...(input.receipt.replyToMessageId === undefined
+          ? {}
+          : { replyToMessageId: input.receipt.replyToMessageId }),
+      });
+    });
+  }
+  return new Response(null, { status: 204 });
+}
+
 async function handleTwitchEventSub(
   request: Request,
   environment: CloudflareEnvironment,
@@ -746,24 +776,13 @@ async function handleTwitchEventSub(
   const repository = new D1MvpRepository(environment.DB);
   const existingReceipt = await repository.findTwitchReply(verification.headers.messageId);
   if (existingReceipt !== undefined) {
-    const shouldRetry =
-      existingReceipt.replyStatus === "failed" &&
-      (await repository.claimFailedTwitchReplyRetry(verification.headers.messageId));
-    if (shouldRetry) {
-      context.waitUntilTask("twitch.reply_retry", async (backgroundEnvironment) => {
-        await deliverTwitchReply({
-          environment: backgroundEnvironment,
-          communityConfig,
-          repository: new D1MvpRepository(backgroundEnvironment.DB),
-          deliveryId: verification.headers.messageId,
-          replyText: existingReceipt.replyText,
-          ...(existingReceipt.replyToMessageId === undefined
-            ? {}
-            : { replyToMessageId: existingReceipt.replyToMessageId }),
-        });
-      });
-    }
-    return new Response(null, { status: 204 });
+    return handleExistingTwitchReceipt({
+      receipt: existingReceipt,
+      deliveryId: verification.headers.messageId,
+      repository,
+      context,
+      communityConfig,
+    });
   }
   const commandResult = await buildTwitchPublicReply(
     command,
@@ -831,6 +850,121 @@ function hasDiagnosticsAccess(request: Request, environment: CloudflareEnvironme
   return mismatch === 0;
 }
 
+type WorkerRoute = "health" | "twitch" | "discord" | "status" | "legacy_repair";
+
+function workerRoute(request: Request, url: URL): WorkerRoute | undefined {
+  if (request.method === "GET" && url.pathname === "/health") return "health";
+  if (request.method === "POST" && url.pathname === "/webhooks/twitch/eventsub") return "twitch";
+  if (request.method === "POST" && url.pathname === "/webhooks/discord/interactions") {
+    return "discord";
+  }
+  if (request.method === "GET" && url.pathname === "/internal/status") return "status";
+  if (request.method === "POST" && url.pathname === "/internal/repair-unassigned-requests") {
+    return "legacy_repair";
+  }
+  return undefined;
+}
+
+async function handleLegacyRepair(
+  environment: CloudflareEnvironment,
+  communityConfig: CommunityConfig,
+): Promise<Response> {
+  const repository = new D1MvpRepository(environment.DB);
+  const result = await repository.repairLegacyUnassignedRequests({
+    recipientLimit: communityConfig.policies.recipientLimit,
+    changedAt: new Date(),
+  });
+  if (result.repaired > 0 && !result.hasMore) {
+    await synchronizeCanonicalBoard({
+      environment,
+      communityConfig,
+      changedAt: new Date(),
+      createIfMissing: false,
+    });
+  }
+  return Response.json(result);
+}
+
+async function handleInternalStatus(
+  environment: CloudflareEnvironment,
+  communityConfig: CommunityConfig,
+): Promise<Response> {
+  const [authorization, database] = await Promise.all([
+    validateTwitchAuthorization(environment, {
+      clientId: communityConfig.twitch.clientId,
+      botUserId: communityConfig.twitch.botUserId,
+    }),
+    new D1MvpRepository(environment.DB).getDiagnostics(),
+  ]);
+  const recovery = getTwitchAuthorizationRecovery(authorization);
+  return Response.json({
+    authorization,
+    database,
+    ...(recovery === undefined ? {} : { recovery }),
+  });
+}
+
+async function handleConfiguredWorkerRequest(input: {
+  route: Exclude<WorkerRoute, "health">;
+  request: Request;
+  environment: CloudflareEnvironment;
+  communityConfig: CommunityConfig;
+  context: TrackedExecutionContext;
+}): Promise<Response> {
+  if (input.route === "twitch") {
+    return handleTwitchEventSub(
+      input.request,
+      input.environment,
+      input.communityConfig,
+      input.context,
+    );
+  }
+  if (input.route === "discord") {
+    return handleDiscordInteraction(
+      input.request,
+      input.environment,
+      input.communityConfig,
+      input.context,
+    );
+  }
+  if (!hasDiagnosticsAccess(input.request, input.environment)) {
+    return new Response("Not found", { status: 404 });
+  }
+  return input.route === "legacy_repair"
+    ? handleLegacyRepair(input.environment, input.communityConfig)
+    : handleInternalStatus(input.environment, input.communityConfig);
+}
+
+async function handleWorkerRequest(input: {
+  request: Request;
+  environment: CloudflareEnvironment;
+  context: TrackedExecutionContext;
+  communityConfigOverride?: CommunityConfig;
+}): Promise<Response> {
+  const communityConfig =
+    input.communityConfigOverride ?? communityConfigFromEnvironment(input.environment);
+  const configurationErrors = validateCommunityConfig(communityConfig);
+  const route = workerRoute(input.request, new URL(input.request.url));
+  if (route === "health") {
+    return Response.json({
+      status: "ok",
+      environment: input.environment.APP_ENV,
+      configuration: configurationErrors.length === 0 ? "ready" : "incomplete",
+    });
+  }
+  if (route === undefined) return new Response("Not found", { status: 404 });
+  if (configurationErrors.length > 0) {
+    return new Response("Community configuration is incomplete", { status: 503 });
+  }
+  return handleConfiguredWorkerRequest({
+    route,
+    request: input.request,
+    environment: input.environment,
+    communityConfig,
+    context: input.context,
+  });
+}
+
 export function createWorker(communityConfigOverride?: CommunityConfig) {
   return {
     async fetch(
@@ -839,67 +973,11 @@ export function createWorker(communityConfigOverride?: CommunityConfig) {
       context: ExecutionContext,
     ): Promise<Response> {
       return observeWorkerRequest(request, environment, context, async (measured, tracked) => {
-        const communityConfig = communityConfigOverride ?? communityConfigFromEnvironment(measured);
-        const configurationErrors = validateCommunityConfig(communityConfig);
-        const url = new URL(request.url);
-        if (request.method === "GET" && url.pathname === "/health") {
-          return Response.json({
-            status: "ok",
-            environment: measured.APP_ENV,
-            configuration: configurationErrors.length === 0 ? "ready" : "incomplete",
-          });
-        }
-        const isTwitch = request.method === "POST" && url.pathname === "/webhooks/twitch/eventsub";
-        const isDiscord =
-          request.method === "POST" && url.pathname === "/webhooks/discord/interactions";
-        const isStatus = request.method === "GET" && url.pathname === "/internal/status";
-        const isLegacyRepair =
-          request.method === "POST" && url.pathname === "/internal/repair-unassigned-requests";
-        if (!(isTwitch || isDiscord || isStatus || isLegacyRepair)) {
-          return new Response("Not found", { status: 404 });
-        }
-        if (configurationErrors.length > 0) {
-          return new Response("Community configuration is incomplete", { status: 503 });
-        }
-        if (isTwitch) {
-          return handleTwitchEventSub(request, measured, communityConfig, tracked);
-        }
-        if (isDiscord) {
-          return handleDiscordInteraction(request, measured, communityConfig, tracked);
-        }
-        if (isStatus || isLegacyRepair) {
-          if (!hasDiagnosticsAccess(request, measured)) {
-            return new Response("Not found", { status: 404 });
-          }
-        }
-        if (isLegacyRepair) {
-          const repository = new D1MvpRepository(measured.DB);
-          const result = await repository.repairLegacyUnassignedRequests({
-            recipientLimit: communityConfig.policies.recipientLimit,
-            changedAt: new Date(),
-          });
-          if (result.repaired > 0 && !result.hasMore) {
-            await synchronizeCanonicalBoard({
-              environment: measured,
-              communityConfig,
-              changedAt: new Date(),
-              createIfMissing: false,
-            });
-          }
-          return Response.json(result);
-        }
-        const [authorization, database] = await Promise.all([
-          validateTwitchAuthorization(measured, {
-            clientId: communityConfig.twitch.clientId,
-            botUserId: communityConfig.twitch.botUserId,
-          }),
-          new D1MvpRepository(measured.DB).getDiagnostics(),
-        ]);
-        const recovery = getTwitchAuthorizationRecovery(authorization);
-        return Response.json({
-          authorization,
-          database,
-          ...(recovery === undefined ? {} : { recovery }),
+        return handleWorkerRequest({
+          request,
+          environment: measured,
+          context: tracked,
+          ...(communityConfigOverride === undefined ? {} : { communityConfigOverride }),
         });
       });
     },

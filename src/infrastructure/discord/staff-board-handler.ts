@@ -117,15 +117,16 @@ async function raidDetailMessage(input: {
     input.raid.state === "planned" &&
     !input.raid.automaticFill &&
     input.raid.members.length < input.raid.requesterCapacity;
-  const candidates = input.candidatesPreloaded
-    ? input.pullCandidateSource === undefined
-      ? undefined
-      : { source: input.pullCandidateSource }
-    : canPull
-      ? await input.repository.getPullRequesterCandidates(input.raid.id, {
-          requireStaffMessage: false,
-        })
-      : undefined;
+  let candidates: { source: StaffBoardRaid } | undefined;
+  if (input.candidatesPreloaded) {
+    if (input.pullCandidateSource !== undefined) {
+      candidates = { source: input.pullCandidateSource };
+    }
+  } else if (canPull) {
+    candidates = await input.repository.getPullRequesterCandidates(input.raid.id, {
+      requireStaffMessage: false,
+    });
+  }
   return renderRaidMessage(
     input.raid,
     input.communityConfig.policies.attemptLimit,
@@ -224,6 +225,20 @@ async function deleteDuplicateRaidMessage(input: {
   }
 }
 
+async function tryUpdateRaidMessage(input: {
+  environment: CloudflareEnvironment;
+  channelId: string;
+  messageId: string;
+  message: DiscordBotMessage;
+}): Promise<"updated" | "missing" | "failed"> {
+  try {
+    await updateDiscordMessage(input.environment, input.channelId, input.messageId, input.message);
+    return "updated";
+  } catch (error) {
+    return error instanceof DiscordApiError && error.status === 404 ? "missing" : "failed";
+  }
+}
+
 async function reconcileRaidMessage(input: {
   raid: StaffBoardRaid;
   repository: D1MvpRepository;
@@ -234,7 +249,7 @@ async function reconcileRaidMessage(input: {
   candidatesPreloaded?: boolean;
 }): Promise<string | null | undefined> {
   const current = input.raid;
-  const isReviewedPlanned = current?.state === "planned" && !current.automaticFill;
+  const isReviewedPlanned = current.state === "planned" && !current.automaticFill;
   if (current.state !== "active" && !isReviewedPlanned) return undefined;
   const channelId = input.communityConfig.discord.staffChannelId;
   const message = await raidDetailMessage({
@@ -249,12 +264,16 @@ async function reconcileRaidMessage(input: {
       : { candidatesPreloaded: input.candidatesPreloaded }),
   });
   if (current.staffMessageId !== undefined) {
-    try {
-      await updateDiscordMessage(input.environment, channelId, current.staffMessageId, message);
+    const updateResult = await tryUpdateRaidMessage({
+      environment: input.environment,
+      channelId,
+      messageId: current.staffMessageId,
+      message,
+    });
+    if (updateResult === "updated") {
       return current.staffMessageId;
-    } catch (error) {
-      if (!(error instanceof DiscordApiError) || error.status !== 404) return undefined;
     }
+    if (updateResult === "failed") return undefined;
     if (current.state === "planned") {
       await input.repository.compareAndSetRaidStaffMessage({
         groupId: current.id,
