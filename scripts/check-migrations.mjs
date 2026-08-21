@@ -8,11 +8,12 @@ const migrationDirectory = path.join(root, "migrations");
 const manifest = JSON.parse(
   readFileSync(path.join(root, "config", "migration-checksums.json"), "utf8"),
 );
+const compareMigrationNames = (left, right) => left.localeCompare(right, "en-US");
 const files = readdirSync(migrationDirectory)
   .filter((file) => /^\d{4}_[a-z0-9_]+\.sql$/.test(file))
-  .sort();
+  .sort(compareMigrationNames);
 const recordedMigrations = manifest.migrations ?? {};
-const recorded = Object.keys(recordedMigrations).sort();
+const recorded = Object.keys(recordedMigrations).sort(compareMigrationNames);
 const recordNewMigrations = process.argv.slice(2).includes("--record");
 
 if (manifest.version !== 1) {

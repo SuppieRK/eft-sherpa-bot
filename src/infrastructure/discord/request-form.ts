@@ -166,7 +166,8 @@ export function buildDiscordRequestValidationReply(validation: RequestFormValida
   if (validation.valid) {
     throw new Error("A valid request has no validation reply");
   }
-  return `Please fix this request:\n${validation.issues.map((issue) => `• ${issue.message}`).join("\n")}`;
+  const issueList = validation.issues.map((issue) => `• ${issue.message}`).join("\n");
+  return `Please fix this request:\n${issueList}`;
 }
 
 export function buildDiscordRequestCreatedReply(

@@ -24,12 +24,14 @@ export function renderQueueFacts(facts: QueueFacts, platform: "discord" | "twitc
   if (facts.caller === undefined) {
     return platform === "discord" ? "Use `/request` to join." : "Use !request [mode] [map] [goal].";
   }
-  const ahead =
-    facts.caller.raidsAhead.kind === "more_than"
-      ? `more than ${facts.caller.raidsAhead.count} raids ahead`
-      : facts.caller.raidsAhead.count === 0
-        ? "no raids ahead"
-        : `${plural(facts.caller.raidsAhead.count, "raid")} ahead`;
+  let ahead: string;
+  if (facts.caller.raidsAhead.kind === "more_than") {
+    ahead = `more than ${facts.caller.raidsAhead.count} raids ahead`;
+  } else if (facts.caller.raidsAhead.count === 0) {
+    ahead = "no raids ahead";
+  } else {
+    ahead = `${plural(facts.caller.raidsAhead.count, "raid")} ahead`;
+  }
   const other =
     facts.caller.otherActiveModeMapNames.length === 0
       ? ""

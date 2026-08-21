@@ -168,6 +168,56 @@ function parseCommandOptions(data: Record<string, unknown>): Readonly<Record<str
   return options;
 }
 
+function parseApplicationCommand(
+  data: Record<string, unknown>,
+  context: DiscordInteractionContext,
+): DiscordApplicationCommandInteraction | undefined {
+  const commandName = requiredString(data, "name");
+  if (commandName === undefined) return undefined;
+  return {
+    type: "application_command",
+    ...context,
+    commandName,
+    options: parseCommandOptions(data),
+    resolvedUserDisplayNames: parseResolvedUserDisplayNames(data),
+  };
+}
+
+function parseMessageComponent(
+  payload: Record<string, unknown>,
+  data: Record<string, unknown>,
+  context: DiscordInteractionContext,
+): DiscordMessageComponentInteraction | undefined {
+  const customId = requiredString(data, "custom_id");
+  if (customId === undefined) return undefined;
+  const messageId = isRecord(payload.message) ? requiredString(payload.message, "id") : undefined;
+  const values = Array.isArray(data.values)
+    ? data.values.filter((value): value is string => typeof value === "string")
+    : [];
+  return {
+    type: "message_component",
+    ...context,
+    customId,
+    ...(messageId === undefined ? {} : { messageId }),
+    values,
+    resolvedRoleIdsByUser: parseResolvedRoleIds(data),
+    resolvedUserDisplayNames: parseResolvedUserDisplayNames(data),
+  };
+}
+
+function parseModalSubmit(
+  data: Record<string, unknown>,
+  context: DiscordInteractionContext,
+): DiscordModalSubmitInteraction | undefined {
+  const customId = requiredString(data, "custom_id");
+  if (customId === undefined || !Array.isArray(data.components)) return undefined;
+  const values: Record<string, string> = {};
+  for (const component of data.components) {
+    collectModalValues(component, values);
+  }
+  return { type: "modal_submit", ...context, customId, values };
+}
+
 function decodeHex(value: string, expectedBytes: number): Uint8Array | undefined {
   if (value.length !== expectedBytes * 2 || !/^[0-9a-f]+$/i.test(value)) {
     return undefined;
@@ -227,52 +277,15 @@ export function parseDiscordInteraction(payload: unknown): ParsedDiscordInteract
     return undefined;
   }
   if (payload.type === DISCORD_INTERACTION_APPLICATION_COMMAND) {
-    const commandName = requiredString(payload.data, "name");
-    return commandName === undefined
-      ? undefined
-      : {
-          type: "application_command",
-          ...context,
-          commandName,
-          options: parseCommandOptions(payload.data),
-          resolvedUserDisplayNames: parseResolvedUserDisplayNames(payload.data),
-        };
+    return parseApplicationCommand(payload.data, context);
   }
   if (payload.type === DISCORD_INTERACTION_MESSAGE_COMPONENT) {
-    const customId = requiredString(payload.data, "custom_id");
-    const messageId = isRecord(payload.message) ? requiredString(payload.message, "id") : undefined;
-    const values = Array.isArray(payload.data.values)
-      ? payload.data.values.filter((value): value is string => typeof value === "string")
-      : [];
-    return customId === undefined
-      ? undefined
-      : {
-          type: "message_component",
-          ...context,
-          customId,
-          ...(messageId === undefined ? {} : { messageId }),
-          values,
-          resolvedRoleIdsByUser: parseResolvedRoleIds(payload.data),
-          resolvedUserDisplayNames: parseResolvedUserDisplayNames(payload.data),
-        };
+    return parseMessageComponent(payload, payload.data, context);
   }
   if (payload.type !== DISCORD_INTERACTION_MODAL_SUBMIT) {
     return undefined;
   }
-  const customId = requiredString(payload.data, "custom_id");
-  if (customId === undefined || !Array.isArray(payload.data.components)) {
-    return undefined;
-  }
-  const values: Record<string, string> = {};
-  for (const component of payload.data.components) {
-    collectModalValues(component, values);
-  }
-  return {
-    type: "modal_submit",
-    ...context,
-    customId,
-    values,
-  };
+  return parseModalSubmit(payload.data, context);
 }
 
 export function readDiscordInteractionTimestamp(headers: Headers): Date {

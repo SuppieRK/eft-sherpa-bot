@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { trustedGitExecutable } from "./trusted-git.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CONFIG_PATH = path.join(ROOT, "benchmark", "wrangler.local.jsonc");
@@ -42,7 +43,10 @@ function validateLocalConfiguration() {
 }
 
 function gitCommit() {
-  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" });
+  const result = spawnSync(trustedGitExecutable(), ["rev-parse", "HEAD"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
   return result.status === 0 ? result.stdout.trim() : "unknown";
 }
 
@@ -142,11 +146,12 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
   const writes = new Set(operationResults.map((result) => result.aggregate.rowsWritten.median));
   if (statements.size !== 1) fail(`${operationId} statement count changed with scale`);
   if (writes.size !== 1) fail(`${operationId} row writes changed with scale`);
-  const queueRowLimit = operationId.startsWith("discord.queue.")
-    ? 200
-    : operationId.startsWith("twitch.queue.")
-      ? 220
-      : undefined;
+  let queueRowLimit;
+  if (operationId.startsWith("discord.queue.")) {
+    queueRowLimit = 200;
+  } else if (operationId.startsWith("twitch.queue.")) {
+    queueRowLimit = 220;
+  }
   if (
     queueRowLimit !== undefined &&
     operationResults.some((result) => result.aggregate.rowsRead.max >= queueRowLimit)

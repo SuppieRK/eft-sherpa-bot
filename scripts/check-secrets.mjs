@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { trustedGitExecutable } from "./trusted-git.mjs";
 
 const trackedOrPending = execFileSync(
-  "git",
+  trustedGitExecutable(),
   ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
   { encoding: "utf8" },
 )
@@ -21,7 +22,7 @@ const secretPatterns = [
   { name: "Twitch OAuth token", pattern: /oauth:[a-z0-9]{30}/i },
   {
     name: "Discord bot token",
-    pattern: /(?:M|N)[A-Za-z\d_-]{23}\.[A-Za-z\d_-]{6}\.[A-Za-z\d_-]{27,}/,
+    pattern: /[MN][A-Za-z\d_-]{23}\.[A-Za-z\d_-]{6}\.[A-Za-z\d_-]{27,}/,
   },
   { name: "GitHub token", pattern: /gh[pousr]_[A-Za-z0-9]{30,}/ },
   {

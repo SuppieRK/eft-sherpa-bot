@@ -125,11 +125,19 @@ export function renderStaffStatistics(statistics: StaffStatistics): StaffInsight
   };
 }
 
+const markdownEscapeReplacement = String.raw`\$1`;
+
 function directoryEntry(entry: StaffUserDirectoryEntry): string {
+  const discordIdentity =
+    entry.discordUserId === undefined ? "Not linked (optional)" : `<@${entry.discordUserId}>`;
+  const inGameName =
+    entry.inGameName === undefined
+      ? "Missing"
+      : entry.inGameName.replaceAll(/([\\`*_~|>])/g, markdownEscapeReplacement);
   return [
     `Twitch: @${entry.twitchLogin} (${entry.twitchIdentityObserved ? "ID observed" : "ID not observed"})`,
-    `Discord: ${entry.discordUserId === undefined ? "Not linked (optional)" : `<@${entry.discordUserId}>`}`,
-    `EFT: ${entry.inGameName === undefined ? "Missing" : entry.inGameName.replaceAll(/([\\`*_~|>])/g, "\\$1")}`,
+    `Discord: ${discordIdentity}`,
+    `EFT: ${inGameName}`,
   ].join("\n");
 }
 

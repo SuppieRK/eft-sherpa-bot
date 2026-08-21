@@ -126,6 +126,22 @@ interface MaterializedGroup extends OpenGroupRow {
   actionKey?: string;
 }
 
+interface NewMaterializedGroup {
+  actionKey: string;
+  isPriority: number;
+  gameMode: number;
+  mapId: string;
+  capacity: number;
+  sortKey: number;
+}
+
+interface MaterializedAssignment {
+  requestId: number;
+  groupId: number | null;
+  actionKey: string | null;
+  memberPosition: number;
+}
+
 interface QueueSelectionRow {
   gameMode: GameMode;
   requestId: number;
@@ -170,6 +186,26 @@ export interface PullRequesterResult {
   pushTarget?: StaffBoardRaid;
 }
 
+interface PullRequesterInput {
+  destinationGroupId: number;
+  sourceGroupId: number;
+  requestId: number;
+  actionKey: string;
+  changedAt: Date;
+}
+
+interface PullRequesterPlan {
+  destination: StaffBoardRaid;
+  source: StaffBoardRaid;
+  remainder: StaffBoardMember[];
+  remainderJson: string;
+  boundary: PullBoundaryRow | null;
+  canPush: boolean;
+  sourceDisposition: PullRequesterResult["sourceDisposition"];
+  crossQueue: boolean;
+  timestamp: number;
+}
+
 function epoch(date: Date): number {
   return date.getTime();
 }
@@ -180,58 +216,70 @@ function requestProjection(): string {
                      WHEN 2 THEN 'completed' ELSE 'canceled' END AS state`;
 }
 
+function raidFromRow(row: RaidRow): StaffBoardRaid {
+  return {
+    gameMode: row.gameMode,
+    id: row.id,
+    queueKind: row.queueKind,
+    mapId: row.mapId,
+    state: row.state,
+    ...(row.outcome === null ? {} : { outcome: row.outcome }),
+    requesterCapacity: row.requesterCapacity,
+    sortKey: row.sortKey,
+    ...(row.leaderDiscordUserId === null ? {} : { leaderDiscordUserId: row.leaderDiscordUserId }),
+    ...(row.leaderType === null ? {} : { leaderType: row.leaderType }),
+    automaticFill: row.automaticFill === 1,
+    attemptCount: row.attemptCount,
+    discordCallStatus: row.discordCallStatus,
+    twitchCallStatus: row.twitchCallStatus,
+    ...(row.staffMessageId === null ? {} : { staffMessageId: row.staffMessageId }),
+    members: [],
+  };
+}
+
+function rowMemberMatchesRaid(row: RaidRow, raid: StaffBoardRaid): boolean {
+  if (raid.state === "planned" || raid.state === "active") {
+    return row.memberState === MEMBER_STATE.planned;
+  }
+  if (raid.outcome === "helped") {
+    return row.memberState === MEMBER_STATE.completed;
+  }
+  return row.memberState !== MEMBER_STATE.removed;
+}
+
+function memberFromRow(row: RaidRow): StaffBoardMember | undefined {
+  if (
+    row.memberId === null ||
+    row.requestId === null ||
+    row.twitchLogin === null ||
+    row.inGameName === null ||
+    row.objective === null ||
+    row.memberPosition === null
+  ) {
+    return undefined;
+  }
+  return {
+    id: row.memberId,
+    requestId: row.requestId,
+    twitchLogin: row.twitchLogin,
+    inGameName: row.inGameName,
+    ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+    objective: row.objective,
+    ...(row.notes === null ? {} : { notes: row.notes }),
+    position: row.memberPosition,
+  };
+}
+
 function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
   const raids = new Map<number, StaffBoardRaid>();
   for (const row of rows) {
     let raid = raids.get(row.id);
     if (raid === undefined) {
-      raid = {
-        gameMode: row.gameMode,
-        id: row.id,
-        queueKind: row.queueKind,
-        mapId: row.mapId,
-        state: row.state,
-        ...(row.outcome === null ? {} : { outcome: row.outcome }),
-        requesterCapacity: row.requesterCapacity,
-        sortKey: row.sortKey,
-        ...(row.leaderDiscordUserId === null
-          ? {}
-          : { leaderDiscordUserId: row.leaderDiscordUserId }),
-        ...(row.leaderType === null ? {} : { leaderType: row.leaderType }),
-        automaticFill: row.automaticFill === 1,
-        attemptCount: row.attemptCount,
-        discordCallStatus: row.discordCallStatus,
-        twitchCallStatus: row.twitchCallStatus,
-        ...(row.staffMessageId === null ? {} : { staffMessageId: row.staffMessageId }),
-        members: [],
-      };
+      raid = raidFromRow(row);
       raids.set(row.id, raid);
     }
-    const includeMember =
-      row.memberId !== null &&
-      row.requestId !== null &&
-      row.twitchLogin !== null &&
-      row.inGameName !== null &&
-      row.objective !== null &&
-      row.memberPosition !== null &&
-      (raid.state === "planned" || raid.state === "active"
-        ? row.memberState === MEMBER_STATE.planned
-        : raid.outcome === "helped"
-          ? row.memberState === MEMBER_STATE.completed
-          : row.memberState !== MEMBER_STATE.removed);
-    if (includeMember) {
-      const member: StaffBoardMember = {
-        id: row.memberId as number,
-        requestId: row.requestId as number,
-        twitchLogin: row.twitchLogin as string,
-        inGameName: row.inGameName as string,
-        ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
-        objective: row.objective as string,
-        ...(row.notes === null ? {} : { notes: row.notes }),
-        position: row.memberPosition as number,
-      };
-      raid.members.push(member);
-    }
+    const member = memberFromRow(row);
+    if (member !== undefined && rowMemberMatchesRaid(row, raid)) raid.members.push(member);
   }
   return [...raids.values()];
 }
@@ -332,6 +380,96 @@ function pullSourceIdSql(requireStaffMessage = true): string {
             FROM destination
           )
           SELECT groupId FROM selected WHERE groupId IS NOT NULL`;
+}
+
+function materializationBucketKey(row: {
+  isPriority: number;
+  gameMode: number;
+  mapId: string;
+}): string {
+  return `${row.isPriority}:${row.gameMode}:${row.mapId}`;
+}
+
+function availableMaterializationGroups(
+  rows: readonly OpenGroupRow[],
+): Map<string, { groups: MaterializedGroup[]; index: number }> {
+  const buckets = new Map<string, { groups: MaterializedGroup[]; index: number }>();
+  for (const row of rows) {
+    if (row.memberCount >= row.requesterCapacity) continue;
+    const key = materializationBucketKey(row);
+    const bucket = buckets.get(key) ?? { groups: [], index: 0 };
+    bucket.groups.push({ ...row });
+    buckets.set(key, bucket);
+  }
+  return buckets;
+}
+
+function nextMaterializationSortKey(
+  request: WaitingRow,
+  maxima: { priority: number; ordinary: number },
+): number {
+  if (request.isPriority === 1) {
+    maxima.priority += SORT_STEP;
+    return maxima.priority;
+  }
+  maxima.ordinary += SORT_STEP;
+  return maxima.ordinary;
+}
+
+function createMaterializedGroup(
+  request: WaitingRow,
+  maxima: { priority: number; ordinary: number },
+  capacityForMap: (mapId: string) => number,
+): MaterializedGroup {
+  return {
+    groupId: 0,
+    actionKey: `materialize:${request.requestId}`,
+    gameMode: request.gameMode,
+    mapId: request.mapId,
+    isPriority: request.isPriority,
+    sortKey: nextMaterializationSortKey(request, maxima),
+    requesterCapacity: capacityForMap(request.mapId),
+    memberCount: 0,
+  };
+}
+
+function planMaterialization(
+  waiting: readonly WaitingRow[],
+  existing: readonly OpenGroupRow[],
+  initialMaxima: { priority: number; ordinary: number },
+  capacityForMap: (mapId: string) => number,
+): { newGroups: NewMaterializedGroup[]; assignments: MaterializedAssignment[] } {
+  const buckets = availableMaterializationGroups(existing);
+  const maxima = { ...initialMaxima };
+  const newGroups: NewMaterializedGroup[] = [];
+  const assignments: MaterializedAssignment[] = [];
+  for (const request of waiting) {
+    const bucketKey = materializationBucketKey(request);
+    const bucket = buckets.get(bucketKey) ?? { groups: [], index: 0 };
+    let group = bucket.groups[bucket.index];
+    if (group === undefined) {
+      group = createMaterializedGroup(request, maxima, capacityForMap);
+      bucket.groups.push(group);
+      buckets.set(bucketKey, bucket);
+      newGroups.push({
+        actionKey: `materialize:${request.requestId}`,
+        isPriority: request.isPriority,
+        gameMode: request.gameMode,
+        mapId: request.mapId,
+        capacity: group.requesterCapacity,
+        sortKey: group.sortKey,
+      });
+    }
+    group.memberCount += 1;
+    assignments.push({
+      requestId: request.requestId,
+      groupId: group.groupId === 0 ? null : group.groupId,
+      actionKey: group.actionKey ?? null,
+      memberPosition: group.memberCount,
+    });
+    if (group.memberCount >= group.requesterCapacity) bucket.index += 1;
+  }
+  return { newGroups, assignments };
 }
 
 export interface TwitchReplyReceipt {
@@ -583,75 +721,15 @@ export class D1MvpRepository
         .first<{ priorityMax: number; ordinaryMax: number }>(),
     ]);
 
-    const availableByQueueAndMap = new Map<
-      string,
-      { groups: MaterializedGroup[]; index: number }
-    >();
-    for (const row of existing.results) {
-      if (row.memberCount >= row.requesterCapacity) continue;
-      const key = `${row.isPriority}:${row.gameMode}:${row.mapId}`;
-      const bucket = availableByQueueAndMap.get(key) ?? { groups: [], index: 0 };
-      bucket.groups.push({ ...row });
-      availableByQueueAndMap.set(key, bucket);
-    }
-    let priorityMax = Number(maxima?.priorityMax ?? 0);
-    let ordinaryMax = Number(maxima?.ordinaryMax ?? 0);
-    const newGroups: Array<{
-      actionKey: string;
-      isPriority: number;
-      gameMode: number;
-      mapId: string;
-      capacity: number;
-      sortKey: number;
-    }> = [];
-    const assignments: Array<{
-      requestId: number;
-      groupId: number | null;
-      actionKey: string | null;
-      memberPosition: number;
-    }> = [];
-    for (const request of waiting.results) {
-      const bucketKey = `${request.isPriority}:${request.gameMode}:${request.mapId}`;
-      const bucket = availableByQueueAndMap.get(bucketKey) ?? { groups: [], index: 0 };
-      let group = bucket.groups[bucket.index];
-      if (group === undefined) {
-        const actionKey = `materialize:${request.requestId}`;
-        if (request.isPriority === 1) {
-          priorityMax += SORT_STEP;
-        } else {
-          ordinaryMax += SORT_STEP;
-        }
-        const sortKey = request.isPriority === 1 ? priorityMax : ordinaryMax;
-        group = {
-          groupId: 0,
-          actionKey,
-          gameMode: request.gameMode,
-          mapId: request.mapId,
-          isPriority: request.isPriority,
-          sortKey,
-          requesterCapacity: this.requesterCapacity(request.mapId, input.recipientLimit),
-          memberCount: 0,
-        };
-        bucket.groups.push(group);
-        availableByQueueAndMap.set(bucketKey, bucket);
-        newGroups.push({
-          actionKey,
-          isPriority: request.isPriority,
-          gameMode: request.gameMode,
-          mapId: request.mapId,
-          capacity: group.requesterCapacity,
-          sortKey,
-        });
-      }
-      group.memberCount += 1;
-      assignments.push({
-        requestId: request.requestId,
-        groupId: group.groupId === 0 ? null : group.groupId,
-        actionKey: group.actionKey ?? null,
-        memberPosition: group.memberCount,
-      });
-      if (group.memberCount >= group.requesterCapacity) bucket.index += 1;
-    }
+    const { newGroups, assignments } = planMaterialization(
+      waiting.results,
+      existing.results,
+      {
+        priority: Number(maxima?.priorityMax ?? 0),
+        ordinary: Number(maxima?.ordinaryMax ?? 0),
+      },
+      (mapId) => this.requesterCapacity(mapId, input.recipientLimit),
+    );
     const timestamp = epoch(input.changedAt);
     const groupJson = JSON.stringify(newGroups);
     const assignmentJson = JSON.stringify(assignments);
@@ -828,20 +906,13 @@ export class D1MvpRepository
       .first<PullBoundaryRow>();
   }
 
-  async pullRequester(input: {
-    destinationGroupId: number;
-    sourceGroupId: number;
-    requestId: number;
-    actionKey: string;
-    changedAt: Date;
-  }): Promise<PullRequesterResult> {
+  private async planPullRequester(input: PullRequesterInput): Promise<PullRequesterPlan> {
     const [destination, candidates] = await Promise.all([
       this.getRaid(input.destinationGroupId),
       this.getPullRequesterCandidates(input.destinationGroupId),
     ]);
     if (
-      destination === undefined ||
-      destination.state !== "planned" ||
+      destination?.state !== "planned" ||
       destination.automaticFill ||
       destination.staffMessageId === undefined ||
       destination.members.length >= destination.requesterCapacity ||
@@ -866,10 +937,249 @@ export class D1MvpRepository
       boundary.leaderDiscordUserId === null &&
       boundary.staffMessageId === null &&
       boundary.currentMemberCount + remainder.length <= boundary.requesterCapacity;
-    const sourceDisposition: PullRequesterResult["sourceDisposition"] =
-      remainder.length === 0 ? "closed" : canPush ? "pushed" : "retained";
-    const crossQueue = destination.queueKind === "priority" && source.queueKind === "ordinary";
-    const timestamp = epoch(input.changedAt);
+    let sourceDisposition: PullRequesterResult["sourceDisposition"] = "retained";
+    if (remainder.length === 0) {
+      sourceDisposition = "closed";
+    } else if (canPush) {
+      sourceDisposition = "pushed";
+    }
+    return {
+      destination,
+      source,
+      remainder,
+      remainderJson,
+      boundary,
+      canPush,
+      sourceDisposition,
+      crossQueue: destination.queueKind === "priority" && source.queueKind === "ordinary",
+      timestamp: epoch(input.changedAt),
+    };
+  }
+
+  private pullCrossQueueStatements(
+    input: PullRequesterInput,
+    plan: PullRequesterPlan,
+  ): D1PreparedStatement[] {
+    if (!plan.crossQueue) return [];
+    return [
+      this.database
+        .prepare(
+          `UPDATE help_requests SET is_priority = 1, updated_at = ?
+           WHERE id = ? AND state = 1 AND is_priority = 0
+             AND EXISTS (
+               SELECT 1 FROM raid_group_members
+               WHERE group_id = ? AND request_id = ? AND state = 2 AND updated_at = ?
+             )`,
+        )
+        .bind(
+          plan.timestamp,
+          input.requestId,
+          input.sourceGroupId,
+          input.requestId,
+          plan.timestamp,
+        ),
+    ];
+  }
+
+  private pullPushStatements(
+    input: PullRequesterInput,
+    plan: PullRequesterPlan,
+  ): D1PreparedStatement[] {
+    if (!plan.canPush || plan.boundary === null) return [];
+    return [
+      this.database
+        .prepare(
+          `UPDATE raid_group_members SET state = 2, updated_at = ?
+           WHERE group_id = ? AND state = 0
+             AND request_id IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(plan.timestamp, input.sourceGroupId, plan.remainderJson),
+      this.database
+        .prepare(
+          `INSERT INTO raid_group_members
+             (group_id, request_id, position, created_at, updated_at)
+           SELECT
+             CASE WHEN
+               target.id = (
+                 SELECT id FROM raid_groups
+                 WHERE is_priority = ? AND game_mode = ? AND map_id = ?
+                   AND state IN (0, 1) AND sort_key > ?
+                 ORDER BY sort_key LIMIT 1
+               )
+               AND target.state = 0 AND target.automatic_fill = 1
+               AND target.leader_discord_user_id IS NULL
+               AND target.staff_message_id IS NULL
+               AND target.current_member_count + json_array_length(?) <= target.requester_capacity
+               AND (
+                 SELECT count(*) FROM raid_group_members AS removed
+                 JOIN json_each(?) AS expected ON expected.value = removed.request_id
+                 WHERE removed.group_id = ? AND removed.state = 2 AND removed.updated_at = ?
+               ) = json_array_length(?)
+             THEN target.id ELSE NULL END,
+             item.value,
+             (SELECT coalesce(max(position), 0) FROM raid_group_members
+              WHERE group_id = target.id AND state = 0) + CAST(item.key AS INTEGER) + 1,
+             ?, ?
+           FROM json_each(?) AS item
+           JOIN raid_groups AS target ON target.id = ?`,
+        )
+        .bind(
+          plan.source.queueKind === "priority" ? 1 : 0,
+          gameModeCode(plan.source.gameMode),
+          plan.source.mapId,
+          plan.source.sortKey,
+          plan.remainderJson,
+          plan.remainderJson,
+          input.sourceGroupId,
+          plan.timestamp,
+          plan.remainderJson,
+          plan.timestamp,
+          plan.timestamp,
+          plan.remainderJson,
+          plan.boundary.groupId,
+        ),
+    ];
+  }
+
+  private pullSourceStatement(
+    input: PullRequesterInput,
+    plan: PullRequesterPlan,
+  ): D1PreparedStatement {
+    if (plan.sourceDisposition !== "retained") {
+      return this.database
+        .prepare(
+          `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
+                  last_action_key = ?, completed_at = ?, updated_at = ?
+           WHERE id = ? AND state = 0 AND automatic_fill = 1
+             AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+             AND current_member_count = 0`,
+        )
+        .bind(input.actionKey, plan.timestamp, plan.timestamp, input.sourceGroupId);
+    }
+    return this.database
+      .prepare(
+        `UPDATE raid_groups SET last_action_key = ?, updated_at = ?
+         WHERE id = ? AND state = 0 AND automatic_fill = 1
+           AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+           AND current_member_count = ?`,
+      )
+      .bind(input.actionKey, plan.timestamp, input.sourceGroupId, plan.remainder.length);
+  }
+
+  private pullDestinationMembershipStatement(
+    input: PullRequesterInput,
+    plan: PullRequesterPlan,
+  ): D1PreparedStatement {
+    let sourceStateAssertion = `source.state = 3 AND source.outcome = 1
+                                AND source.current_member_count = 0`;
+    let sourceStateBindings: unknown[] = [];
+    if (plan.sourceDisposition === "retained") {
+      sourceStateAssertion = `source.state = 0 AND source.automatic_fill = 1
+                              AND source.leader_discord_user_id IS NULL
+                              AND source.staff_message_id IS NULL
+                              AND source.current_member_count = ?
+                              AND (SELECT count(*) FROM raid_group_members AS current
+                                   JOIN json_each(?) AS expected
+                                     ON expected.value = current.request_id
+                                   WHERE current.group_id = source.id AND current.state = 0)
+                                  = json_array_length(?)`;
+      sourceStateBindings = [plan.remainder.length, plan.remainderJson, plan.remainderJson];
+    }
+
+    let pushAssertion = "";
+    let pushBindings: unknown[] = [];
+    if (plan.sourceDisposition === "pushed" && plan.boundary !== null) {
+      pushAssertion = `AND (SELECT count(*) FROM raid_group_members AS pushed
+                            JOIN json_each(?) AS expected
+                              ON expected.value = pushed.request_id
+                            WHERE pushed.group_id = ? AND pushed.state = 0)
+                           = json_array_length(?)`;
+      pushBindings = [plan.remainderJson, plan.boundary.groupId, plan.remainderJson];
+    }
+
+    let retainedBoundaryAssertion = "";
+    let retainedBoundaryBindings: unknown[] = [];
+    if (plan.sourceDisposition === "retained") {
+      if (plan.boundary === null) {
+        retainedBoundaryAssertion = `AND NOT EXISTS (
+          SELECT 1 FROM raid_groups AS next
+          WHERE next.is_priority = source.is_priority
+            AND next.game_mode = source.game_mode AND next.map_id = source.map_id
+            AND next.state IN (0, 1) AND next.sort_key > source.sort_key
+        )`;
+      } else {
+        retainedBoundaryAssertion = `AND ? = (
+          SELECT id FROM raid_groups AS next
+          WHERE next.is_priority = source.is_priority
+            AND next.game_mode = source.game_mode AND next.map_id = source.map_id
+            AND next.state IN (0, 1) AND next.sort_key > source.sort_key
+          ORDER BY next.sort_key LIMIT 1
+        )
+        AND EXISTS (
+          SELECT 1 FROM raid_groups AS boundary
+          WHERE boundary.id = ? AND (
+            boundary.state <> 0 OR boundary.automatic_fill <> 1
+            OR boundary.leader_discord_user_id IS NOT NULL
+            OR boundary.staff_message_id IS NOT NULL
+            OR boundary.current_member_count + ? > boundary.requester_capacity
+          )
+        )`;
+        retainedBoundaryBindings = [
+          plan.boundary.groupId,
+          plan.boundary.groupId,
+          plan.remainder.length,
+        ];
+      }
+    }
+
+    return this.database
+      .prepare(
+        `INSERT INTO raid_group_members
+           (group_id, request_id, position, created_at, updated_at)
+         SELECT
+           CASE WHEN
+             destination.state = 0 AND destination.automatic_fill = 0
+             AND destination.staff_message_id IS NOT NULL
+             AND destination.current_member_count < destination.requester_capacity
+             AND destination.game_mode = source.game_mode
+             AND destination.map_id = source.map_id
+             AND request.state = 1 AND request.game_mode = destination.game_mode
+             AND request.map_id = destination.map_id
+             AND request.is_priority = destination.is_priority
+             AND ${sourceStateAssertion}
+             AND EXISTS (
+               SELECT 1 FROM raid_group_members AS removed
+               WHERE removed.group_id = source.id AND removed.request_id = request.id
+                 AND removed.state = 2 AND removed.updated_at = ?
+             )
+             ${pushAssertion}
+             ${retainedBoundaryAssertion}
+           THEN destination.id ELSE NULL END,
+           request.id,
+           (SELECT coalesce(max(position), 0) + 1 FROM raid_group_members
+            WHERE group_id = destination.id AND state = 0),
+           ?, ?
+         FROM raid_groups AS destination
+         JOIN raid_groups AS source ON source.id = ?
+         JOIN help_requests AS request ON request.id = ?
+         WHERE destination.id = ?`,
+      )
+      .bind(
+        ...sourceStateBindings,
+        plan.timestamp,
+        ...pushBindings,
+        ...retainedBoundaryBindings,
+        plan.timestamp,
+        plan.timestamp,
+        input.sourceGroupId,
+        input.requestId,
+        input.destinationGroupId,
+      );
+  }
+
+  async pullRequester(input: PullRequesterInput): Promise<PullRequesterResult> {
+    const plan = await this.planPullRequester(input);
+    const { boundary, sourceDisposition, timestamp } = plan;
     const statements: D1PreparedStatement[] = [
       this.database
         .prepare(
@@ -884,202 +1194,14 @@ export class D1MvpRepository
           input.sourceGroupId,
           input.destinationGroupId,
         ),
-    ];
-    if (crossQueue) {
-      statements.push(
-        this.database
-          .prepare(
-            `UPDATE help_requests SET is_priority = 1, updated_at = ?
-             WHERE id = ? AND state = 1 AND is_priority = 0
-               AND EXISTS (
-                 SELECT 1 FROM raid_group_members
-                 WHERE group_id = ? AND request_id = ? AND state = 2 AND updated_at = ?
-               )`,
-          )
-          .bind(timestamp, input.requestId, input.sourceGroupId, input.requestId, timestamp),
-      );
-    }
-    if (canPush && boundary !== null) {
-      statements.push(
-        this.database
-          .prepare(
-            `UPDATE raid_group_members SET state = 2, updated_at = ?
-             WHERE group_id = ? AND state = 0
-               AND request_id IN (SELECT value FROM json_each(?))`,
-          )
-          .bind(timestamp, input.sourceGroupId, remainderJson),
-        this.database
-          .prepare(
-            `INSERT INTO raid_group_members
-               (group_id, request_id, position, created_at, updated_at)
-             SELECT
-               CASE WHEN
-                 target.id = (
-                   SELECT id FROM raid_groups
-                   WHERE is_priority = ? AND game_mode = ? AND map_id = ?
-                     AND state IN (0, 1) AND sort_key > ?
-                   ORDER BY sort_key LIMIT 1
-                 )
-                 AND target.state = 0 AND target.automatic_fill = 1
-                 AND target.leader_discord_user_id IS NULL
-                 AND target.staff_message_id IS NULL
-                 AND target.current_member_count + json_array_length(?) <= target.requester_capacity
-                 AND (
-                   SELECT count(*) FROM raid_group_members AS removed
-                   JOIN json_each(?) AS expected ON expected.value = removed.request_id
-                   WHERE removed.group_id = ? AND removed.state = 2 AND removed.updated_at = ?
-                 ) = json_array_length(?)
-               THEN target.id ELSE NULL END,
-               item.value,
-               (SELECT coalesce(max(position), 0) FROM raid_group_members
-                WHERE group_id = target.id AND state = 0) + CAST(item.key AS INTEGER) + 1,
-               ?, ?
-             FROM json_each(?) AS item
-             JOIN raid_groups AS target ON target.id = ?`,
-          )
-          .bind(
-            source.queueKind === "priority" ? 1 : 0,
-            gameModeCode(source.gameMode),
-            source.mapId,
-            source.sortKey,
-            remainderJson,
-            remainderJson,
-            input.sourceGroupId,
-            timestamp,
-            remainderJson,
-            timestamp,
-            timestamp,
-            remainderJson,
-            boundary.groupId,
-          ),
-      );
-    }
-    if (sourceDisposition !== "retained") {
-      statements.push(
-        this.database
-          .prepare(
-            `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
-                    last_action_key = ?, completed_at = ?, updated_at = ?
-             WHERE id = ? AND state = 0 AND automatic_fill = 1
-               AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
-               AND current_member_count = 0`,
-          )
-          .bind(input.actionKey, timestamp, timestamp, input.sourceGroupId),
-      );
-    } else {
-      statements.push(
-        this.database
-          .prepare(
-            `UPDATE raid_groups SET last_action_key = ?, updated_at = ?
-             WHERE id = ? AND state = 0 AND automatic_fill = 1
-               AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
-               AND current_member_count = ?`,
-          )
-          .bind(input.actionKey, timestamp, input.sourceGroupId, remainder.length),
-      );
-    }
-    statements.push(
+      ...this.pullCrossQueueStatements(input, plan),
+      ...this.pullPushStatements(input, plan),
+      this.pullSourceStatement(input, plan),
       this.database
         .prepare(`UPDATE raid_groups SET updated_at = ? WHERE id = ?`)
         .bind(timestamp, input.destinationGroupId),
-    );
-
-    const sourceStateAssertion =
-      sourceDisposition === "retained"
-        ? `source.state = 0 AND source.automatic_fill = 1
-           AND source.leader_discord_user_id IS NULL AND source.staff_message_id IS NULL
-           AND source.current_member_count = ?
-           AND (SELECT count(*) FROM raid_group_members AS current
-                JOIN json_each(?) AS expected ON expected.value = current.request_id
-                WHERE current.group_id = source.id AND current.state = 0) = json_array_length(?)`
-        : `source.state = 3 AND source.outcome = 1 AND source.current_member_count = 0`;
-    const sourceStateBindings: unknown[] =
-      sourceDisposition === "retained" ? [remainder.length, remainderJson, remainderJson] : [];
-    const pushAssertion =
-      sourceDisposition === "pushed" && boundary !== null
-        ? `AND (SELECT count(*) FROM raid_group_members AS pushed
-                JOIN json_each(?) AS expected ON expected.value = pushed.request_id
-                WHERE pushed.group_id = ? AND pushed.state = 0) = json_array_length(?)`
-        : "";
-    const pushBindings: unknown[] =
-      sourceDisposition === "pushed" && boundary !== null
-        ? [remainderJson, boundary.groupId, remainderJson]
-        : [];
-    const retainedBoundaryAssertion =
-      sourceDisposition !== "retained"
-        ? ""
-        : boundary === null
-          ? `AND NOT EXISTS (
-               SELECT 1 FROM raid_groups AS next
-               WHERE next.is_priority = source.is_priority
-                 AND next.game_mode = source.game_mode AND next.map_id = source.map_id
-                 AND next.state IN (0, 1) AND next.sort_key > source.sort_key
-             )`
-          : `AND ? = (
-               SELECT id FROM raid_groups AS next
-               WHERE next.is_priority = source.is_priority
-                 AND next.game_mode = source.game_mode AND next.map_id = source.map_id
-                 AND next.state IN (0, 1) AND next.sort_key > source.sort_key
-               ORDER BY next.sort_key LIMIT 1
-             )
-             AND EXISTS (
-               SELECT 1 FROM raid_groups AS boundary
-               WHERE boundary.id = ? AND (
-                 boundary.state <> 0 OR boundary.automatic_fill <> 1
-                 OR boundary.leader_discord_user_id IS NOT NULL
-                 OR boundary.staff_message_id IS NOT NULL
-                 OR boundary.current_member_count + ? > boundary.requester_capacity
-               )
-             )`;
-    const retainedBoundaryBindings: unknown[] =
-      sourceDisposition === "retained" && boundary !== null
-        ? [boundary.groupId, boundary.groupId, remainder.length]
-        : [];
-    statements.push(
-      this.database
-        .prepare(
-          `INSERT INTO raid_group_members
-             (group_id, request_id, position, created_at, updated_at)
-           SELECT
-             CASE WHEN
-               destination.state = 0 AND destination.automatic_fill = 0
-               AND destination.staff_message_id IS NOT NULL
-               AND destination.current_member_count < destination.requester_capacity
-               AND destination.game_mode = source.game_mode
-               AND destination.map_id = source.map_id
-               AND request.state = 1 AND request.game_mode = destination.game_mode
-               AND request.map_id = destination.map_id
-               AND request.is_priority = destination.is_priority
-               AND ${sourceStateAssertion}
-               AND EXISTS (
-                 SELECT 1 FROM raid_group_members AS removed
-                 WHERE removed.group_id = source.id AND removed.request_id = request.id
-                   AND removed.state = 2 AND removed.updated_at = ?
-               )
-               ${pushAssertion}
-               ${retainedBoundaryAssertion}
-             THEN destination.id ELSE NULL END,
-             request.id,
-             (SELECT coalesce(max(position), 0) + 1 FROM raid_group_members
-              WHERE group_id = destination.id AND state = 0),
-             ?, ?
-           FROM raid_groups AS destination
-           JOIN raid_groups AS source ON source.id = ?
-           JOIN help_requests AS request ON request.id = ?
-           WHERE destination.id = ?`,
-        )
-        .bind(
-          ...sourceStateBindings,
-          timestamp,
-          ...pushBindings,
-          ...retainedBoundaryBindings,
-          timestamp,
-          timestamp,
-          input.sourceGroupId,
-          input.requestId,
-          input.destinationGroupId,
-        ),
-    );
+      this.pullDestinationMembershipStatement(input, plan),
+    ];
 
     try {
       await this.database.batch(statements);
@@ -1204,7 +1326,7 @@ export class D1MvpRepository
     changedAt: Date;
   }): Promise<StaffBoardRaid> {
     const raid = await this.getRaid(input.groupId);
-    if (raid === undefined || raid.state !== "active")
+    if (raid?.state !== "active")
       throw new RepositoryInvariantError("That raid is no longer active.");
     const timestamp = epoch(input.changedAt);
     if (input.outcome === "unsuccessful") {
@@ -1309,12 +1431,14 @@ export class D1MvpRepository
     const window = await this.requesterFollowUpWindow(input.groupId);
     if (window === null) throw new RepositoryInvariantError("That raid is no longer available.");
     const reusableGroupId = window.reusableGroupId;
-    const followUpSortKey =
-      sourceBecomesEmpty && window.followUpCount === 0
-        ? window.sourceSortKey
-        : window.nextSortKey === null
-          ? window.anchorSortKey + SORT_STEP
-          : Math.floor((window.anchorSortKey + window.nextSortKey) / 2);
+    let followUpSortKey: number;
+    if (sourceBecomesEmpty && window.followUpCount === 0) {
+      followUpSortKey = window.sourceSortKey;
+    } else if (window.nextSortKey === null) {
+      followUpSortKey = window.anchorSortKey + SORT_STEP;
+    } else {
+      followUpSortKey = Math.floor((window.anchorSortKey + window.nextSortKey) / 2);
+    }
     const timestamp = epoch(input.changedAt);
     const followUpAction = `${input.actionKey}:postponed`;
     const sourceUpdate = this.database
@@ -1462,7 +1586,7 @@ export class D1MvpRepository
     changedAt: Date;
   }): Promise<StaffBoardRaid> {
     const source = await this.getRaid(input.groupId);
-    if (source === undefined || source.state !== "active")
+    if (source?.state !== "active")
       throw new RepositoryInvariantError("That raid is no longer active.");
     if (source.members.length === 0)
       throw new RepositoryInvariantError("That raid has no requesters to postpone.");
@@ -1643,12 +1767,12 @@ export class D1MvpRepository
     const reverse = input.direction === "previous";
     const comparator = reverse ? "<" : ">";
     const order = reverse ? "DESC" : "ASC";
-    const boundary =
-      input.direction === "first"
-        ? ""
-        : input.direction === "at"
-          ? "WHERE twitch_login >= ?"
-          : `WHERE twitch_login ${comparator} ?`;
+    let boundary = "";
+    if (input.direction === "at") {
+      boundary = "WHERE twitch_login >= ?";
+    } else if (input.direction !== "first") {
+      boundary = `WHERE twitch_login ${comparator} ?`;
+    }
     let statement = this.database.prepare(
       `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
               discord_user_id AS discordUserId, discord_display_name AS discordDisplayName,
@@ -1689,17 +1813,20 @@ export class D1MvpRepository
         ...(row.inGameName === null ? {} : { inGameName: row.inGameName }),
       }),
     );
+    let hasPrevious: boolean;
+    if (input.direction === "first") {
+      hasPrevious = false;
+    } else if (input.direction === "at") {
+      hasPrevious = hasRowsBeforeCursor ?? false;
+    } else if (reverse) {
+      hasPrevious = lookahead;
+    } else {
+      hasPrevious = true;
+    }
     return {
       entries,
-      hasPrevious:
-        input.direction === "first"
-          ? false
-          : input.direction === "at"
-            ? (hasRowsBeforeCursor ?? false)
-            : reverse
-              ? lookahead
-              : true,
-      hasNext: input.direction === "first" ? lookahead : reverse ? true : lookahead,
+      hasPrevious,
+      hasNext: reverse || lookahead,
     };
   }
 

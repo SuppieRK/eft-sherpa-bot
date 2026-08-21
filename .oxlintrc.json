@@ -11,5 +11,8 @@
   "options": {
     "denyWarnings": true,
     "typeAware": true
+  },
+  "rules": {
+    "typescript/no-misused-promises": "error"
   }
 }

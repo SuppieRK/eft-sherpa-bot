@@ -13,17 +13,18 @@ async function readJson(path) {
 
 function findBookmark(value) {
   if (typeof value === "string" && /^[0-9a-f-]{16,}$/i.test(value)) return value;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findBookmark(item);
-      if (found !== undefined) return found;
-    }
-  } else if (value !== null && typeof value === "object") {
+  if (Array.isArray(value)) return findBookmarkIn(value);
+  if (value !== null && typeof value === "object") {
     if (typeof value.bookmark === "string") return value.bookmark;
-    for (const item of Object.values(value)) {
-      const found = findBookmark(item);
-      if (found !== undefined) return found;
-    }
+    return findBookmarkIn(Object.values(value));
+  }
+  return undefined;
+}
+
+function findBookmarkIn(values) {
+  for (const value of values) {
+    const found = findBookmark(value);
+    if (found !== undefined) return found;
   }
   return undefined;
 }
@@ -74,6 +75,7 @@ await writeFile(".artifacts/deployment-evidence.json", `${JSON.stringify(evidenc
 
 const summary = process.env.GITHUB_STEP_SUMMARY;
 if (summary !== undefined) {
+  const migrations = evidence.migrations.map((item) => `\`${item}\``).join(", ");
   await writeFile(
     summary,
     [
@@ -83,7 +85,7 @@ if (summary !== undefined) {
       `- Commit: \`${evidence.commitSha}\``,
       `- Worker: ${evidence.workerUrl}`,
       `- Database: \`${evidence.databaseName}\``,
-      `- Migrations: ${evidence.migrations.map((item) => `\`${item}\``).join(", ")}`,
+      `- Migrations: ${migrations}`,
       "- Discord: ready",
       "- Twitch: ready",
       "- Worker health: ready",

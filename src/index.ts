@@ -22,6 +22,9 @@ import {
   DISCORD_INTERACTION_RESPONSE_UPDATE_MESSAGE,
   parseDiscordInteraction,
   readDiscordInteractionTimestamp,
+  type DiscordApplicationCommandInteraction,
+  type DiscordMessageComponentInteraction,
+  type ParsedDiscordInteraction,
   verifyDiscordInteractionRequest,
 } from "./infrastructure/discord/interactions";
 import {
@@ -145,273 +148,282 @@ function getTwitchAuthorizationRecovery(
   return { action: "refresh_twitch_app_token", operatorCommand: "npm run twitch:token" };
 }
 
-async function handleDiscordInteraction(
-  request: Request,
-  environment: CloudflareEnvironment,
-  communityConfig: CommunityConfig,
-  context: ExecutionContext,
+type DiscordModalSubmitInteraction = Extract<ParsedDiscordInteraction, { type: "modal_submit" }>;
+type UserDirectoryAction = NonNullable<ReturnType<typeof parseUserDirectoryAction>>;
+type UserDirectoryEditAction = Extract<UserDirectoryAction, { twitchLogin: string }>;
+
+interface DiscordInteractionDependencies {
+  environment: CloudflareEnvironment;
+  communityConfig: CommunityConfig;
+  context: ExecutionContext;
+  changedAt: Date;
+  repository: D1MvpRepository;
+}
+
+async function handleStaffInsightsCommand(
+  interaction: DiscordApplicationCommandInteraction,
+  dependencies: DiscordInteractionDependencies,
 ): Promise<Response> {
-  const rawBody = await request.text();
-  if (
-    !(await verifyDiscordInteractionRequest(
-      request.headers,
-      rawBody,
-      communityConfig.discord.publicKey,
-      new Date(),
-    ))
-  ) {
-    return new Response("Invalid request signature", { status: 401 });
+  const { communityConfig, repository } = dependencies;
+  if (!hasStaffAccess(interaction, communityConfig)) return staffDenied();
+  if (interaction.commandName === DISCORD_STAFF_STATS_COMMAND) {
+    const service = new StaffStatisticsQueryService(repository);
+    return discordEphemeralInsights(renderStaffStatistics(await service.getAllTime()));
   }
-  let payload: unknown;
+  return discordEphemeralInsights(
+    renderUserDirectory(await repository.getUserDirectoryPage({ direction: "first" })),
+  );
+}
+
+async function handleDiscordRequestCommand(
+  interaction: DiscordApplicationCommandInteraction,
+  repository: D1MvpRepository,
+): Promise<Response> {
+  const gameMode = parseGameMode(interaction.options.mode);
+  if (gameMode === undefined) {
+    return discordEphemeralMessage("Select PvP Seasonal, PvP, or PvE, then try again.");
+  }
+  const mapping = await repository.findUserMappingByDiscordId(interaction.discordUserId);
+  let defaults: Parameters<typeof buildDiscordRequestModal>[1];
+  if (mapping !== undefined) {
+    defaults = { twitchLogin: mapping.twitchLogin };
+    if (mapping.inGameName !== undefined) defaults.inGameName = mapping.inGameName;
+  }
+  return Response.json({
+    type: DISCORD_INTERACTION_RESPONSE_MODAL,
+    data: buildDiscordRequestModal(gameMode, defaults),
+  });
+}
+
+async function handleDiscordLinkCommand(
+  interaction: DiscordApplicationCommandInteraction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const { communityConfig, changedAt, repository } = dependencies;
+  const twitchLogin = parseTwitchNameOption(interaction.options.name);
+  if (twitchLogin === undefined) {
+    return discordEphemeralMessage("Enter a Twitch name using letters, numbers, or underscore.");
+  }
+  const rawEftName = interaction.options.eft;
+  const inGameName = parseEftNameOption(rawEftName);
+  if (rawEftName !== undefined && inGameName === undefined) {
+    return discordEphemeralMessage("Enter an Escape from Tarkov name between 1 and 64 characters.");
+  }
+  const selectsDiscordMember = interaction.options.discord !== undefined;
+  const targetDiscordUserId = interaction.options.discord ?? interaction.discordUserId;
+  if (
+    selectsDiscordMember &&
+    !isStaffBoardMember({
+      discordUserId: interaction.discordUserId,
+      discordRoleIds: interaction.discordRoleIds,
+      streamerDiscordUserId: communityConfig.discord.streamerUserId,
+      volunteerRoleId: communityConfig.discord.volunteerRoleId,
+    })
+  ) {
+    return discordEphemeralMessage(
+      "Only the streamer or a volunteer sherpa can use the Discord member option.",
+    );
+  }
+  const claimed = await repository.claimDiscordMutation(
+    interaction.interactionId,
+    "identity:link-twitch",
+    changedAt,
+  );
+  if (!claimed) return discordEphemeralMessage("That link command was already received.");
+  const discordDisplayName =
+    targetDiscordUserId === interaction.discordUserId
+      ? interaction.discordDisplayName
+      : interaction.resolvedUserDisplayNames[targetDiscordUserId];
+  await repository.linkDiscordToTwitch({
+    twitchLogin,
+    discordUserId: targetDiscordUserId,
+    ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
+    ...(inGameName === undefined ? {} : { inGameName }),
+    linkedAt: changedAt,
+  });
+  return discordEphemeralMessage(
+    buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
+  );
+}
+
+async function handleDiscordQueueCommand(
+  interaction: DiscordApplicationCommandInteraction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const { repository, communityConfig, changedAt } = dependencies;
+  await materializeRaidBoard(repository, communityConfig, changedAt);
+  const queryService = new QueueQueryService(repository);
+  return discordEphemeralMessage(
+    renderQueueFacts(
+      await queryService.queue({ platform: "discord", userId: interaction.discordUserId }),
+      "discord",
+    ),
+  );
+}
+
+async function handleDiscordApplicationCommand(
+  interaction: DiscordApplicationCommandInteraction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  if (
+    interaction.commandName === DISCORD_STAFF_STATS_COMMAND ||
+    interaction.commandName === DISCORD_STAFF_USERS_COMMAND
+  ) {
+    return handleStaffInsightsCommand(interaction, dependencies);
+  }
+  if (interaction.commandName === DISCORD_STAFF_BOARD_COMMAND) {
+    return openDiscordStaffBoard(interaction, dependencies);
+  }
+  if (interaction.commandName === DISCORD_REQUEST_COMMAND) {
+    return handleDiscordRequestCommand(interaction, dependencies.repository);
+  }
+  if (interaction.commandName === DISCORD_LINK_TWITCH_COMMAND) {
+    return handleDiscordLinkCommand(interaction, dependencies);
+  }
+  if (interaction.commandName === "queue") {
+    return handleDiscordQueueCommand(interaction, dependencies);
+  }
+  return new Response("Unsupported application command", { status: 400 });
+}
+
+function updatedUserDetail(
+  outcome: "updated" | "stale",
+  entry: Awaited<ReturnType<D1MvpRepository["findUserMappingByTwitchLogin"]>>,
+  pageFirst: string,
+): Response {
+  if (outcome === "updated" && entry !== undefined) {
+    return discordUpdateInsights(renderUserDetail(entry, pageFirst));
+  }
+  return discordEphemeralMessage("User details changed. Open `/users` again.");
+}
+
+async function completeMissingDiscord(
+  interaction: DiscordMessageComponentInteraction,
+  action: UserDirectoryEditAction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const { repository, changedAt } = dependencies;
+  const discordUserId = interaction.values[0];
+  const hasResolvedMember =
+    discordUserId !== undefined && Object.hasOwn(interaction.resolvedRoleIdsByUser, discordUserId);
+  if (!hasResolvedMember || discordUserId === undefined) {
+    return discordEphemeralMessage("Select a current member of this Discord server.");
+  }
+  const claimed = await repository.claimDiscordMutation(
+    interaction.interactionId,
+    "identity:complete-discord",
+    changedAt,
+  );
+  if (!claimed) {
+    return discordEphemeralMessage("That user update was already received. Open `/users` again.");
+  }
   try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    return new Response("Invalid JSON", { status: 400 });
-  }
-  const interaction = parseDiscordInteraction(payload);
-  if (interaction === undefined) {
-    return new Response("Unsupported interaction", { status: 400 });
-  }
-  if (interaction.type === "ping") {
-    return Response.json({ type: DISCORD_INTERACTION_RESPONSE_PONG });
-  }
-  if (
-    interaction.applicationId !== communityConfig.discord.applicationId ||
-    interaction.guildId !== communityConfig.discord.guildId
-  ) {
-    return new Response("Unexpected Discord community", { status: 403 });
-  }
-  const changedAt = readDiscordInteractionTimestamp(request.headers);
-  const repository = new D1MvpRepository(environment.DB);
-
-  if (interaction.type === "application_command") {
-    if (
-      interaction.commandName === DISCORD_STAFF_STATS_COMMAND ||
-      interaction.commandName === DISCORD_STAFF_USERS_COMMAND
-    ) {
-      if (!hasStaffAccess(interaction, communityConfig)) return staffDenied();
-      if (interaction.commandName === DISCORD_STAFF_STATS_COMMAND) {
-        const service = new StaffStatisticsQueryService(repository);
-        return discordEphemeralInsights(renderStaffStatistics(await service.getAllTime()));
-      }
-      return discordEphemeralInsights(
-        renderUserDirectory(await repository.getUserDirectoryPage({ direction: "first" })),
-      );
-    }
-    if (interaction.commandName === DISCORD_STAFF_BOARD_COMMAND) {
-      return openDiscordStaffBoard(interaction, {
-        environment,
-        communityConfig,
-        changedAt,
-        context,
-      });
-    }
-    if (interaction.commandName === DISCORD_REQUEST_COMMAND) {
-      const gameMode = parseGameMode(interaction.options.mode);
-      if (gameMode === undefined) {
-        return discordEphemeralMessage("Select PvP Seasonal, PvP, or PvE, then try again.");
-      }
-      const mapping = await repository.findUserMappingByDiscordId(interaction.discordUserId);
-      return Response.json({
-        type: DISCORD_INTERACTION_RESPONSE_MODAL,
-        data: buildDiscordRequestModal(
-          gameMode,
-          mapping === undefined
-            ? undefined
-            : {
-                twitchLogin: mapping.twitchLogin,
-                ...(mapping.inGameName === undefined ? {} : { inGameName: mapping.inGameName }),
-              },
-        ),
-      });
-    }
-    if (interaction.commandName === DISCORD_LINK_TWITCH_COMMAND) {
-      const twitchLogin = parseTwitchNameOption(interaction.options.name);
-      if (twitchLogin === undefined) {
-        return discordEphemeralMessage(
-          "Enter a Twitch name using letters, numbers, or underscore.",
-        );
-      }
-      const rawEftName = interaction.options.eft;
-      const inGameName = parseEftNameOption(rawEftName);
-      if (rawEftName !== undefined && inGameName === undefined) {
-        return discordEphemeralMessage(
-          "Enter an Escape from Tarkov name between 1 and 64 characters.",
-        );
-      }
-      const selectsDiscordMember = interaction.options.discord !== undefined;
-      const targetDiscordUserId = interaction.options.discord ?? interaction.discordUserId;
-      if (
-        selectsDiscordMember &&
-        !isStaffBoardMember({
-          discordUserId: interaction.discordUserId,
-          discordRoleIds: interaction.discordRoleIds,
-          streamerDiscordUserId: communityConfig.discord.streamerUserId,
-          volunteerRoleId: communityConfig.discord.volunteerRoleId,
-        })
-      ) {
-        return discordEphemeralMessage(
-          "Only the streamer or a volunteer sherpa can use the Discord member option.",
-        );
-      }
-      if (
-        !(await repository.claimDiscordMutation(
-          interaction.interactionId,
-          "identity:link-twitch",
-          changedAt,
-        ))
-      ) {
-        return discordEphemeralMessage("That link command was already received.");
-      }
-      const discordDisplayName =
-        targetDiscordUserId === interaction.discordUserId
-          ? interaction.discordDisplayName
-          : interaction.resolvedUserDisplayNames[targetDiscordUserId];
-      await repository.linkDiscordToTwitch({
-        twitchLogin,
-        discordUserId: targetDiscordUserId,
-        ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
-        ...(inGameName === undefined ? {} : { inGameName }),
-        linkedAt: changedAt,
-      });
-      return discordEphemeralMessage(
-        buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
-      );
-    }
-    const queryService = new QueueQueryService(repository);
-    if (interaction.commandName === "queue") {
-      await materializeRaidBoard(repository, communityConfig, changedAt);
-      return discordEphemeralMessage(
-        renderQueueFacts(
-          await queryService.queue({ platform: "discord", userId: interaction.discordUserId }),
-          "discord",
-        ),
-      );
-    }
-    return new Response("Unsupported application command", { status: 400 });
-  }
-
-  if (interaction.type === "message_component") {
-    const directoryAction = parseUserDirectoryAction(interaction.customId);
-    if (directoryAction !== undefined) {
-      if (!hasStaffAccess(interaction, communityConfig)) return staffDenied();
-      if (
-        directoryAction.action === "next" ||
-        directoryAction.action === "previous" ||
-        directoryAction.action === "at"
-      ) {
-        return discordUpdateInsights(
-          renderUserDirectory(
-            await repository.getUserDirectoryPage({
-              direction: directoryAction.action,
-              cursor: directoryAction.cursor,
-            }),
-          ),
-        );
-      }
-      if (directoryAction.action === "detail") {
-        const twitchLogin = interaction.values[0];
-        const entry =
-          twitchLogin === undefined
-            ? undefined
-            : await repository.findUserMappingByTwitchLogin(twitchLogin);
-        return entry === undefined
-          ? discordEphemeralMessage("Open `/users` again and select a current user.")
-          : discordUpdateInsights(renderUserDetail(entry, directoryAction.pageFirst));
-      }
-      if (directoryAction.action === "add_eft") {
-        return Response.json({
-          type: DISCORD_INTERACTION_RESPONSE_MODAL,
-          data: buildEftNameModal(directoryAction.twitchLogin, directoryAction.pageFirst),
-        });
-      }
-      if (directoryAction.action !== "add_discord") {
-        return discordEphemeralMessage("Open `/users` again and use a current control.");
-      }
-      const discordUserId = interaction.values[0];
-      const hasResolvedMember =
-        discordUserId !== undefined &&
-        Object.hasOwn(interaction.resolvedRoleIdsByUser, discordUserId);
-      if (!hasResolvedMember || discordUserId === undefined) {
-        return discordEphemeralMessage("Select a current member of this Discord server.");
-      }
-      if (
-        !(await repository.claimDiscordMutation(
-          interaction.interactionId,
-          "identity:complete-discord",
-          changedAt,
-        ))
-      ) {
-        return discordEphemeralMessage(
-          "That user update was already received. Open `/users` again.",
-        );
-      }
-      try {
-        const outcome = await repository.completeMissingDiscord({
-          twitchLogin: directoryAction.twitchLogin,
-          discordUserId,
-          ...(interaction.resolvedUserDisplayNames[discordUserId] === undefined
-            ? {}
-            : { discordDisplayName: interaction.resolvedUserDisplayNames[discordUserId] }),
-          changedAt,
-        });
-        const entry = await repository.findUserMappingByTwitchLogin(directoryAction.twitchLogin);
-        return outcome === "updated" && entry !== undefined
-          ? discordUpdateInsights(renderUserDetail(entry, directoryAction.pageFirst))
-          : discordEphemeralMessage("User details changed. Open `/users` again.");
-      } catch {
-        return discordEphemeralMessage(
-          "That Discord member is already linked. Use `/link-twitch` to correct the association.",
-        );
-      }
-    }
-    if (
-      parseStaffBoardAction(interaction.customId) !== undefined ||
-      parseRaidMessageAction(interaction.customId) !== undefined
-    ) {
-      return handleDiscordStaffBoardComponent(interaction, {
-        environment,
-        communityConfig,
-        changedAt,
-        context,
-      });
-    }
-    if (interaction.customId.startsWith("users:")) {
-      return discordEphemeralMessage("Open `/users` again and use a current control.");
-    }
-    return new Response("Unsupported component", { status: 400 });
-  }
-
-  const userModalAction = parseUserDirectoryAction(interaction.customId);
-  if (userModalAction?.action === "add_eft") {
-    if (!hasStaffAccess(interaction, communityConfig)) return staffDenied();
-    const inGameName = interaction.values[USER_DIRECTORY_EFT_FIELD]?.trim();
-    if (inGameName === undefined || inGameName.length < 1 || inGameName.length > 64) {
-      return discordEphemeralMessage("Enter an Escape from Tarkov name from 1 to 64 characters.");
-    }
-    if (
-      !(await repository.claimDiscordMutation(
-        interaction.interactionId,
-        "identity:complete-eft",
-        changedAt,
-      ))
-    ) {
-      return discordEphemeralMessage("That user update was already received. Open `/users` again.");
-    }
-    const outcome = await repository.completeMissingInGameName({
-      twitchLogin: userModalAction.twitchLogin,
-      inGameName,
+    const discordDisplayName = interaction.resolvedUserDisplayNames[discordUserId];
+    const outcome = await repository.completeMissingDiscord({
+      twitchLogin: action.twitchLogin,
+      discordUserId,
+      ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
       changedAt,
     });
-    const entry = await repository.findUserMappingByTwitchLogin(userModalAction.twitchLogin);
-    return outcome === "updated" && entry !== undefined
-      ? discordUpdateInsights(renderUserDetail(entry, userModalAction.pageFirst))
-      : discordEphemeralMessage("User details changed. Open `/users` again.");
+    const entry = await repository.findUserMappingByTwitchLogin(action.twitchLogin);
+    return updatedUserDetail(outcome, entry, action.pageFirst);
+  } catch {
+    return discordEphemeralMessage(
+      "That Discord member is already linked. Use `/link-twitch` to correct the association.",
+    );
+  }
+}
+
+async function handleUserDirectoryComponent(
+  interaction: DiscordMessageComponentInteraction,
+  action: UserDirectoryAction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const { communityConfig, repository } = dependencies;
+  if (!hasStaffAccess(interaction, communityConfig)) return staffDenied();
+  if (action.action === "next" || action.action === "previous" || action.action === "at") {
+    const page = await repository.getUserDirectoryPage({
+      direction: action.action,
+      cursor: action.cursor,
+    });
+    return discordUpdateInsights(renderUserDirectory(page));
+  }
+  if (action.action === "detail") {
+    const twitchLogin = interaction.values[0];
+    const entry =
+      twitchLogin === undefined
+        ? undefined
+        : await repository.findUserMappingByTwitchLogin(twitchLogin);
+    if (entry === undefined) {
+      return discordEphemeralMessage("Open `/users` again and select a current user.");
+    }
+    return discordUpdateInsights(renderUserDetail(entry, action.pageFirst));
+  }
+  if (action.action === "add_eft") {
+    return Response.json({
+      type: DISCORD_INTERACTION_RESPONSE_MODAL,
+      data: buildEftNameModal(action.twitchLogin, action.pageFirst),
+    });
+  }
+  if (action.action === "add_discord") {
+    return completeMissingDiscord(interaction, action, dependencies);
+  }
+  return discordEphemeralMessage("Open `/users` again and use a current control.");
+}
+
+async function handleDiscordMessageComponent(
+  interaction: DiscordMessageComponentInteraction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const directoryAction = parseUserDirectoryAction(interaction.customId);
+  if (directoryAction !== undefined) {
+    return handleUserDirectoryComponent(interaction, directoryAction, dependencies);
+  }
+  const isBoardControl =
+    parseStaffBoardAction(interaction.customId) !== undefined ||
+    parseRaidMessageAction(interaction.customId) !== undefined;
+  if (isBoardControl) {
+    return handleDiscordStaffBoardComponent(interaction, dependencies);
   }
   if (interaction.customId.startsWith("users:")) {
     return discordEphemeralMessage("Open `/users` again and use a current control.");
   }
+  return new Response("Unsupported component", { status: 400 });
+}
 
+async function handleUserDirectoryEftModal(
+  interaction: DiscordModalSubmitInteraction,
+  action: UserDirectoryEditAction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const { communityConfig, repository, changedAt } = dependencies;
+  if (!hasStaffAccess(interaction, communityConfig)) return staffDenied();
+  const inGameName = interaction.values[USER_DIRECTORY_EFT_FIELD]?.trim();
+  if (inGameName === undefined || inGameName.length < 1 || inGameName.length > 64) {
+    return discordEphemeralMessage("Enter an Escape from Tarkov name from 1 to 64 characters.");
+  }
+  const claimed = await repository.claimDiscordMutation(
+    interaction.interactionId,
+    "identity:complete-eft",
+    changedAt,
+  );
+  if (!claimed) {
+    return discordEphemeralMessage("That user update was already received. Open `/users` again.");
+  }
+  const outcome = await repository.completeMissingInGameName({
+    twitchLogin: action.twitchLogin,
+    inGameName,
+    changedAt,
+  });
+  const entry = await repository.findUserMappingByTwitchLogin(action.twitchLogin);
+  return updatedUserDetail(outcome, entry, action.pageFirst);
+}
+
+async function handleDiscordRequestModal(
+  interaction: DiscordModalSubmitInteraction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const { environment, communityConfig, context, changedAt, repository } = dependencies;
   const gameMode = requestModalGameMode(interaction.customId);
   if (gameMode === undefined) {
     if (interaction.customId.startsWith(DISCORD_REQUEST_MODAL_V2_PREFIX)) {
@@ -454,6 +466,65 @@ async function handleDiscordInteraction(
   );
 }
 
+async function handleDiscordModalSubmit(
+  interaction: DiscordModalSubmitInteraction,
+  dependencies: DiscordInteractionDependencies,
+): Promise<Response> {
+  const userAction = parseUserDirectoryAction(interaction.customId);
+  if (userAction?.action === "add_eft") {
+    return handleUserDirectoryEftModal(interaction, userAction, dependencies);
+  }
+  if (interaction.customId.startsWith("users:")) {
+    return discordEphemeralMessage("Open `/users` again and use a current control.");
+  }
+  return handleDiscordRequestModal(interaction, dependencies);
+}
+
+async function handleDiscordInteraction(
+  request: Request,
+  environment: CloudflareEnvironment,
+  communityConfig: CommunityConfig,
+  context: ExecutionContext,
+): Promise<Response> {
+  const rawBody = await request.text();
+  const verified = await verifyDiscordInteractionRequest(
+    request.headers,
+    rawBody,
+    communityConfig.discord.publicKey,
+    new Date(),
+  );
+  if (!verified) return new Response("Invalid request signature", { status: 401 });
+  const parsedBody = parseJsonBody(rawBody);
+  if (!parsedBody.ok) return new Response("Invalid JSON", { status: 400 });
+  const interaction = parseDiscordInteraction(parsedBody.payload);
+  if (interaction === undefined) {
+    return new Response("Unsupported interaction", { status: 400 });
+  }
+  if (interaction.type === "ping") {
+    return Response.json({ type: DISCORD_INTERACTION_RESPONSE_PONG });
+  }
+  if (
+    interaction.applicationId !== communityConfig.discord.applicationId ||
+    interaction.guildId !== communityConfig.discord.guildId
+  ) {
+    return new Response("Unexpected Discord community", { status: 403 });
+  }
+  const dependencies: DiscordInteractionDependencies = {
+    environment,
+    communityConfig,
+    context,
+    changedAt: readDiscordInteractionTimestamp(request.headers),
+    repository: new D1MvpRepository(environment.DB),
+  };
+  if (interaction.type === "application_command") {
+    return handleDiscordApplicationCommand(interaction, dependencies);
+  }
+  if (interaction.type === "message_component") {
+    return handleDiscordMessageComponent(interaction, dependencies);
+  }
+  return handleDiscordModalSubmit(interaction, dependencies);
+}
+
 async function buildTwitchPublicReply(
   command: TwitchPublicCommand,
   twitchUserId: string,
@@ -466,18 +537,7 @@ async function buildTwitchPublicReply(
   if (command.name === "request") {
     const parsed = parseTwitchRequestInput(command.input);
     if (!parsed.valid) {
-      if (parsed.reason === "missing_mode" || parsed.reason === "unknown_mode") {
-        return "Use !request [mode] [map] [goal]. Modes: seasonal, pvp, pve.";
-      }
-      if (parsed.reason === "missing_map") {
-        return "Use !request [mode] [map] [goal].";
-      }
-      if (parsed.reason === "goal_too_long") {
-        return "Keep the goal to 150 characters or fewer.";
-      }
-      return parsed.suggestion === undefined
-        ? "I do not know that map. Use !request [mode] [map] [goal]."
-        : `Did you mean ${parsed.suggestion.name}? Try !request ${parsed.gameMode ?? "pve"} ${parsed.suggestion.id} [goal].`;
+      return invalidTwitchRequestReply(parsed);
     }
     const result = await repository.createRequest({
       sourcePlatform: "twitch",
@@ -501,6 +561,76 @@ async function buildTwitchPublicReply(
     await queryService.queue({ platform: "twitch", userId: twitchUserId }),
     "twitch",
   );
+}
+
+type InvalidTwitchRequest = Extract<ReturnType<typeof parseTwitchRequestInput>, { valid: false }>;
+
+function invalidTwitchRequestReply(parsed: InvalidTwitchRequest): string {
+  if (parsed.reason === "missing_mode" || parsed.reason === "unknown_mode") {
+    return "Use !request [mode] [map] [goal]. Modes: seasonal, pvp, pve.";
+  }
+  if (parsed.reason === "missing_map") {
+    return "Use !request [mode] [map] [goal].";
+  }
+  if (parsed.reason === "goal_too_long") {
+    return "Keep the goal to 150 characters or fewer.";
+  }
+  if (parsed.suggestion === undefined) {
+    return "I do not know that map. Use !request [mode] [map] [goal].";
+  }
+  return `Did you mean ${parsed.suggestion.name}? Try !request ${parsed.gameMode ?? "pve"} ${parsed.suggestion.id} [goal].`;
+}
+
+type VerifiedEventSubHeaders = Extract<
+  Awaited<ReturnType<typeof verifyTwitchEventSubRequest>>,
+  { ok: true }
+>["headers"];
+type TwitchChatEvent = NonNullable<ReturnType<typeof parseTwitchChatMessageEvent>>;
+
+function parseJsonBody(rawBody: string): { ok: true; payload: unknown } | { ok: false } {
+  try {
+    return { ok: true, payload: JSON.parse(rawBody) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function eventSubControlResponse(
+  headers: VerifiedEventSubHeaders,
+  payload: unknown,
+): Response | undefined {
+  if (headers.messageType === "webhook_callback_verification") {
+    const challenge = parseEventSubChallenge(payload);
+    if (challenge === undefined) return new Response("Missing challenge", { status: 400 });
+    return new Response(challenge, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  }
+  if (headers.messageType === "revocation") {
+    logDiagnostic("warn", "twitch_eventsub_revoked", {
+      subscriptionType: headers.subscriptionType ?? "unknown",
+    });
+    return new Response(null, { status: 204 });
+  }
+  if (
+    headers.messageType !== "notification" ||
+    headers.subscriptionType !== "channel.chat.message"
+  ) {
+    return new Response(null, { status: 204 });
+  }
+  return undefined;
+}
+
+function acceptedTwitchChatEvent(
+  payload: unknown,
+  broadcasterUserId: string,
+): TwitchChatEvent | Response {
+  const event = parseTwitchChatMessageEvent(payload);
+  if (event === undefined) {
+    return new Response("Invalid channel.chat.message payload", { status: 400 });
+  }
+  if (event.broadcasterUserId !== broadcasterUserId) {
+    return new Response("Unexpected broadcaster", { status: 403 });
+  }
+  return event;
 }
 
 async function deliverTwitchReply(input: {
@@ -553,38 +683,18 @@ async function handleTwitchEventSub(
       status: verification.reason === "missing_headers" ? 400 : 403,
     });
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
+  const parsedBody = parseJsonBody(rawBody);
+  if (!parsedBody.ok) {
     return new Response("Invalid JSON", { status: 400 });
   }
-  if (verification.headers.messageType === "webhook_callback_verification") {
-    const challenge = parseEventSubChallenge(payload);
-    if (challenge === undefined) {
-      return new Response("Missing challenge", { status: 400 });
-    }
-    return new Response(challenge, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-  }
-  if (verification.headers.messageType === "revocation") {
-    logDiagnostic("warn", "twitch_eventsub_revoked", {
-      subscriptionType: verification.headers.subscriptionType ?? "unknown",
-    });
-    return new Response(null, { status: 204 });
-  }
-  if (
-    verification.headers.messageType !== "notification" ||
-    verification.headers.subscriptionType !== "channel.chat.message"
-  ) {
-    return new Response(null, { status: 204 });
-  }
-  const event = parseTwitchChatMessageEvent(payload);
-  if (event === undefined) {
-    return new Response("Invalid channel.chat.message payload", { status: 400 });
-  }
-  if (event.broadcasterUserId !== communityConfig.twitch.broadcasterUserId) {
-    return new Response("Unexpected broadcaster", { status: 403 });
-  }
+  const controlResponse = eventSubControlResponse(verification.headers, parsedBody.payload);
+  if (controlResponse !== undefined) return controlResponse;
+  const acceptedEvent = acceptedTwitchChatEvent(
+    parsedBody.payload,
+    communityConfig.twitch.broadcasterUserId,
+  );
+  if (acceptedEvent instanceof Response) return acceptedEvent;
+  const event = acceptedEvent;
   const command = parseTwitchPublicCommand(event.text);
   if (command === undefined) {
     return new Response(null, { status: 204 });
@@ -650,7 +760,7 @@ function hasDiagnosticsAccess(request: Request, environment: CloudflareEnvironme
   }
   let mismatch = 0;
   for (let index = 0; index < expected.length; index += 1) {
-    mismatch |= expected.charCodeAt(index) ^ actual.charCodeAt(index);
+    mismatch |= (expected.codePointAt(index) ?? 0) ^ (actual.codePointAt(index) ?? 0);
   }
   return mismatch === 0;
 }

@@ -4,7 +4,10 @@ export type TwitchPublicCommand =
   | { name: "request"; rawText: string; input: string }
   | { name: "queue"; rawText: string };
 
-const publicCommandPattern = new RegExp(`^!(${PUBLIC_COMMAND_NAMES.join("|")})(?:\\s+(.+))?$`, "i");
+const publicCommandPattern = new RegExp(
+  String.raw`^!(${PUBLIC_COMMAND_NAMES.join("|")})(?:\s+(.+))?$`,
+  "i",
+);
 
 export function parseTwitchPublicCommand(text: string): TwitchPublicCommand | undefined {
   const trimmed = text.trim();

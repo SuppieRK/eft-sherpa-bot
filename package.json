@@ -32,6 +32,7 @@
     "discord:configure": "node scripts/discord/configure-commands.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "install:runtime-binaries": "node node_modules/esbuild/install.js && node node_modules/workerd/install.js",
     "lint": "npm run lint:biome && npm run lint:oxlint",
     "lint:biome": "biome lint .",
     "lint:oxlint": "oxlint --report-unused-disable-directives .",
