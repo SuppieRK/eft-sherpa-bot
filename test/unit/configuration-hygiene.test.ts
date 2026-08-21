@@ -3,6 +3,7 @@ import mvpTemplate from "../../config/wrangler.mvp.example.jsonc?raw";
 import localTemplate from "../../wrangler.jsonc?raw";
 import benchmarkTemplate from "../../benchmark/wrangler.local.jsonc?raw";
 import benchmarkRunner from "../../scripts/run-d1-benchmark.mjs?raw";
+import twitchAuthorization from "../../scripts/twitch/authorize-bot.mjs?raw";
 import benchmarkVitest from "../../vitest.benchmark.config.ts?raw";
 
 describe("single-community MVP configuration", () => {
@@ -24,6 +25,11 @@ describe("single-community MVP configuration", () => {
     for (const contents of [localTemplate, mvpTemplate]) {
       expect(contents).not.toMatch(/"(?:token|secret|password)"\s*:/i);
     }
+  });
+
+  it("keeps remote Twitch token metadata out of operator logs", () => {
+    expect(twitchAuthorization).toContain("appTokenReady: true");
+    expect(twitchAuthorization).not.toContain("appTokenExpiresInSeconds");
   });
 
   it("configures four help recipients per raid before map capacity limits", () => {

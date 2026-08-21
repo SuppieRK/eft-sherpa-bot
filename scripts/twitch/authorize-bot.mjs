@@ -217,7 +217,7 @@ if (appTokenOnly) {
   console.log(
     JSON.stringify(
       {
-        appTokenExpiresInSeconds: appToken.expires_in,
+        appTokenReady: true,
         secretFilesUpdated: [WORKER_FILE, OPERATOR_FILE],
       },
       null,
