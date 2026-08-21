@@ -28,4 +28,4 @@
 ## 5. Verification and Delivery
 
 - [x] 5.1 Run formatting, linting, type checking, dead-code checks, migration and documentation checks, deployment-helper tests, all automated tests, build, secret scan, strict OpenSpec validation, and diff checks.
-- [ ] 5.2 Sync the delta specifications, archive the completed OpenSpec change, commit and push all work to the current branch, and update the existing pull-request description with D1, concurrency, and workerd profile evidence.
+- [x] 5.2 Sync the delta specifications, archive the completed OpenSpec change, commit and push all work to the current branch, and update the existing pull-request description with D1, concurrency, and workerd profile evidence.
