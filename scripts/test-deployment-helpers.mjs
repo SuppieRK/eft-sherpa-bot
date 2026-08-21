@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { checkedJson } from "./deployment/fetch-json.mjs";
 import { WORKER_SECRET_NAMES, workerSecrets } from "./deployment/render-worker-secrets.mjs";
+import { repairLegacyRequests } from "./deployment/repair-legacy-requests.mjs";
 import { waitForWorker } from "./deployment/wait-for-worker.mjs";
 import { ensureTwitchSubscription } from "./twitch/create-chat-subscription.mjs";
 
@@ -76,6 +77,36 @@ await assert.rejects(
     sleep: () => undefined,
   }),
   /Worker did not become ready after 2 attempts: \/internal\/status failed with status 500/,
+);
+
+{
+  const replies = [
+    { repaired: 80, hasMore: true },
+    { repaired: 3, hasMore: false },
+  ];
+  const requests = [];
+  const result = await repairLegacyRequests({
+    workerBaseUrl: "https://worker.example",
+    diagnosticsToken: "diagnostics-token",
+    fetcher: (url, init) => {
+      requests.push({ url: new URL(url).href, init });
+      return Response.json(replies.shift());
+    },
+  });
+  assert.deepEqual(result, { batches: 2, repaired: 83 });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].init.method, "POST");
+  assert.equal(requests[0].init.headers.Authorization, "Bearer diagnostics-token");
+}
+
+await assert.rejects(
+  repairLegacyRequests({
+    workerBaseUrl: "https://worker.example",
+    diagnosticsToken: "diagnostics-token",
+    maxBatches: 2,
+    fetcher: () => Response.json({ repaired: 80, hasMore: true }),
+  }),
+  /still has work after 2 batches/,
 );
 
 {

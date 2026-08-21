@@ -4,6 +4,13 @@ export interface OperationMeasurement {
   statements: number;
   rowsRead: number;
   rowsWritten: number;
+  statementGroups?: Record<string, D1CounterGroup>;
+}
+
+interface D1CounterGroup {
+  statements: number;
+  rowsRead: number;
+  rowsWritten: number;
 }
 
 interface Distribution {
@@ -58,6 +65,12 @@ export function assertStableCost(measurements: readonly OperationMeasurement[]):
         `${key} changed between identical measured samples: ${[...values].join(", ")}`,
       );
     }
+  }
+  const statementGroups = new Set(
+    measurements.map((measurement) => JSON.stringify(measurement.statementGroups ?? {})),
+  );
+  if (statementGroups.size !== 1) {
+    throw new Error("statementGroups changed between identical measured samples");
   }
   const statementCount = measurements[0]?.statements ?? Number.POSITIVE_INFINITY;
   if (statementCount > 50) {

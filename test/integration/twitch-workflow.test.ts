@@ -3,6 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorker } from "../../src";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
+import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
 import { createTwitchEventSubSignature } from "../../src/infrastructure/twitch/eventsub";
 import { testCommunityConfig } from "../fixtures/community";
 
@@ -63,6 +64,42 @@ async function eventSubRequest(
 
 afterEach(() => vi.restoreAllMocks());
 
+async function seedLegacyWaitingRequest(input: {
+  deliveryId: string;
+  gameMode: number;
+  mapId: string;
+  twitchLogin: string;
+  twitchUserId: string;
+}): Promise<number> {
+  const repo = new D1MvpRepository(testEnvironment.DB);
+  const observedAt = new Date("2096-08-15T20:00:00.000Z");
+  await repo.upsertUserMapping({
+    twitchLogin: input.twitchLogin,
+    twitchUserId: input.twitchUserId,
+    observedAt,
+  });
+  const row = await env.DB.prepare(
+    `INSERT INTO help_requests
+       (source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+        game_mode, map_id, objective, created_at, updated_at)
+     VALUES (1, ?, ?, ?, ?, ?, ?, 'Legacy task', ?, ?)
+     RETURNING id`,
+  )
+    .bind(
+      input.deliveryId,
+      input.twitchUserId,
+      input.twitchLogin,
+      input.twitchLogin,
+      input.gameMode,
+      input.mapId,
+      observedAt.getTime(),
+      observedAt.getTime(),
+    )
+    .first<{ id: number }>();
+  if (row === null) throw new Error("Legacy request was not seeded");
+  return row.id;
+}
+
 describe("Twitch private-pilot commands", () => {
   it.each([
     ["!request", "use !request [mode] [map] [goal]"],
@@ -86,6 +123,9 @@ describe("Twitch private-pilot commands", () => {
     await waitOnExecutionContext(context);
     const request = twitchFetch.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(requestBody(request?.body).toLowerCase()).toContain(expectedText);
+    await expect(
+      env.DB.prepare(`SELECT count(*) AS count FROM user_mappings`).first(),
+    ).resolves.toEqual({ count: 0 });
   });
 
   it("creates a Twitch-native request and keeps one active request per mode and map", async () => {
@@ -137,6 +177,99 @@ describe("Twitch private-pilot commands", () => {
     expect(reply).toContain("1st in the PvE queue");
     expect(reply).toContain("no raids ahead");
     expect(reply).not.toContain("C1");
+  });
+
+  it("updates Twitch identity before a queue lookup", async () => {
+    const repo = new D1MvpRepository(testEnvironment.DB);
+    await repo.observeTwitchIdentity({
+      twitchLogin: "viewer",
+      twitchUserId: "old-twitch-id",
+      observedAt: new Date("2096-08-15T20:00:00.000Z"),
+    });
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }));
+    const context = createExecutionContext();
+    await worker.fetch(await eventSubRequest("!queue", "queue-observe"), testEnvironment, context);
+    await waitOnExecutionContext(context);
+
+    expect(twitchFetch).toHaveBeenCalledTimes(1);
+    await expect(
+      env.DB.prepare(
+        `SELECT twitch_user_id AS twitchUserId FROM user_mappings WHERE twitch_login = 'viewer'`,
+      ).first(),
+    ).resolves.toEqual({ twitchUserId: "twitch-viewer" });
+  });
+
+  it("recovers a duplicate request that committed before materialization", async () => {
+    const requestId = await seedLegacyWaitingRequest({
+      deliveryId: "recover-waiting",
+      twitchUserId: "twitch-viewer",
+      twitchLogin: "viewer",
+      gameMode: 2,
+      mapId: "customs",
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }),
+    );
+    const context = createExecutionContext();
+    await worker.fetch(
+      await eventSubRequest("!request pve customs pocket watch", "recover-waiting"),
+      testEnvironment,
+      context,
+    );
+    await waitOnExecutionContext(context);
+
+    await expect(
+      env.DB.prepare(`SELECT state FROM help_requests WHERE id = ?`).bind(requestId).first(),
+    ).resolves.toEqual({ state: 1 });
+    await expect(
+      env.DB.prepare(`SELECT count(*) AS count FROM raid_group_members`).first(),
+    ).resolves.toEqual({ count: 1 });
+  });
+
+  it("does not materialize unrelated waiting work for an already planned duplicate", async () => {
+    const repo = new D1MvpRepository(testEnvironment.DB);
+    const planned = await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "duplicate-planned",
+      twitchUserId: "twitch-viewer",
+      twitchLogin: "viewer",
+      gameMode: "pve",
+      inGameName: "viewer",
+      mapId: "customs",
+      objective: "Pocket watch",
+      recipientLimit: 3,
+      observedAt: new Date("2096-08-15T20:00:00.000Z"),
+    });
+    const unrelatedRequestId = await seedLegacyWaitingRequest({
+      deliveryId: "unrelated-waiting",
+      twitchUserId: "other-twitch-viewer",
+      twitchLogin: "other_viewer",
+      gameMode: 1,
+      mapId: "woods",
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }),
+    );
+    const context = createExecutionContext();
+    await worker.fetch(
+      await eventSubRequest("!request pve customs pocket watch", "duplicate-planned"),
+      testEnvironment,
+      context,
+    );
+    await waitOnExecutionContext(context);
+
+    await expect(
+      env.DB.prepare(`SELECT state FROM help_requests WHERE id = ?`)
+        .bind(planned.request.id)
+        .first(),
+    ).resolves.toEqual({ state: 1 });
+    await expect(
+      env.DB.prepare(`SELECT state FROM help_requests WHERE id = ?`)
+        .bind(unrelatedRequestId)
+        .first(),
+    ).resolves.toEqual({ state: 0 });
   });
 
   it("ignores the removed position command", async () => {

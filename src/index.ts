@@ -128,17 +128,6 @@ function staffDenied(): Response {
   );
 }
 
-function materializeRaidBoard(
-  repository: D1MvpRepository,
-  communityConfig: CommunityConfig,
-  changedAt: Date,
-): Promise<number> {
-  return repository.materializeWaitingRequests({
-    recipientLimit: communityConfig.policies.recipientLimit,
-    changedAt,
-  });
-}
-
 function getTwitchAuthorizationRecovery(
   authorization: TwitchAuthorizationHealth,
 ): { action: "refresh_twitch_app_token"; operatorCommand: "npm run twitch:token" } | undefined {
@@ -158,6 +147,26 @@ interface DiscordInteractionDependencies {
   context: ExecutionContext;
   changedAt: Date;
   repository: D1MvpRepository;
+}
+
+async function claimDiscordMutation(
+  dependencies: DiscordInteractionDependencies,
+  deliveryId: string,
+  eventType: string,
+): Promise<boolean> {
+  const claimed = await dependencies.repository.claimDiscordMutation(
+    deliveryId,
+    eventType,
+    dependencies.changedAt,
+  );
+  if (claimed) {
+    dependencies.context.waitUntil(
+      dependencies.repository
+        .maintainExpiredReceipts(dependencies.changedAt)
+        .catch(() => undefined),
+    );
+  }
+  return claimed;
 }
 
 async function handleStaffInsightsCommand(
@@ -224,10 +233,10 @@ async function handleDiscordLinkCommand(
       "Only the streamer or a volunteer sherpa can use the Discord member option.",
     );
   }
-  const claimed = await repository.claimDiscordMutation(
+  const claimed = await claimDiscordMutation(
+    dependencies,
     interaction.interactionId,
     "identity:link-twitch",
-    changedAt,
   );
   if (!claimed) return discordEphemeralMessage("That link command was already received.");
   const discordDisplayName =
@@ -250,8 +259,7 @@ async function handleDiscordQueueCommand(
   interaction: DiscordApplicationCommandInteraction,
   dependencies: DiscordInteractionDependencies,
 ): Promise<Response> {
-  const { repository, communityConfig, changedAt } = dependencies;
-  await materializeRaidBoard(repository, communityConfig, changedAt);
+  const { repository } = dependencies;
   const queryService = new QueueQueryService(repository);
   return discordEphemeralMessage(
     renderQueueFacts(
@@ -309,10 +317,10 @@ async function completeMissingDiscord(
   if (!hasResolvedMember || discordUserId === undefined) {
     return discordEphemeralMessage("Select a current member of this Discord server.");
   }
-  const claimed = await repository.claimDiscordMutation(
+  const claimed = await claimDiscordMutation(
+    dependencies,
     interaction.interactionId,
     "identity:complete-discord",
-    changedAt,
   );
   if (!claimed) {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
@@ -402,10 +410,10 @@ async function handleUserDirectoryEftModal(
   if (inGameName === undefined || inGameName.length < 1 || inGameName.length > 64) {
     return discordEphemeralMessage("Enter an Escape from Tarkov name from 1 to 64 characters.");
   }
-  const claimed = await repository.claimDiscordMutation(
+  const claimed = await claimDiscordMutation(
+    dependencies,
     interaction.interactionId,
     "identity:complete-eft",
-    changedAt,
   );
   if (!claimed) {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
@@ -435,7 +443,7 @@ async function handleDiscordRequestModal(
   if (!validation.valid) {
     return discordEphemeralMessage(buildDiscordRequestValidationReply(validation));
   }
-  await repository.claimDiscordMutation(interaction.interactionId, "request:create", changedAt);
+  await claimDiscordMutation(dependencies, interaction.interactionId, "request:create");
   const created = await repository.createRequest({
     sourcePlatform: "discord",
     sourceDeliveryId: interaction.interactionId,
@@ -449,17 +457,19 @@ async function handleDiscordRequestModal(
     mapId: validation.value.mapId,
     objective: validation.value.objective,
     ...(validation.value.notes === undefined ? {} : { notes: validation.value.notes }),
+    recipientLimit: communityConfig.policies.recipientLimit,
     observedAt: changedAt,
   });
-  await materializeRaidBoard(repository, communityConfig, changedAt);
-  context.waitUntil(
-    synchronizeCanonicalBoard({
-      environment,
-      communityConfig,
-      changedAt,
-      createIfMissing: false,
-    }).catch(() => undefined),
-  );
+  if (created.queueChanged) {
+    context.waitUntil(
+      synchronizeCanonicalBoard({
+        environment,
+        communityConfig,
+        changedAt,
+        createIfMissing: false,
+      }).catch(() => undefined),
+    );
+  }
   const mapName = resolveTarkovMap(validation.value.mapId)?.name ?? validation.value.mapId;
   return discordEphemeralMessage(
     buildDiscordRequestCreatedReply(validation.value.gameMode, mapName, created.outcome),
@@ -533,11 +543,11 @@ async function buildTwitchPublicReply(
   observedAt: Date,
   repository: D1MvpRepository,
   communityConfig: CommunityConfig,
-): Promise<string> {
+): Promise<{ replyText: string; boardChanged: boolean }> {
   if (command.name === "request") {
     const parsed = parseTwitchRequestInput(command.input);
     if (!parsed.valid) {
-      return invalidTwitchRequestReply(parsed);
+      return { replyText: invalidTwitchRequestReply(parsed), boardChanged: false };
     }
     const result = await repository.createRequest({
       sourcePlatform: "twitch",
@@ -548,20 +558,31 @@ async function buildTwitchPublicReply(
       inGameName: twitchLogin,
       mapId: parsed.map.id,
       objective: parsed.goal,
+      recipientLimit: communityConfig.policies.recipientLimit,
       observedAt,
     });
-    await materializeRaidBoard(repository, communityConfig, observedAt);
     const raidName = formatModeMap(parsed.gameMode, parsed.map.name);
-    return result.outcome === "already_active"
-      ? `You are already queued for ${raidName}. Use !queue to check it.`
-      : `You are queued for ${raidName}. Use !queue to check it.`;
+    return {
+      replyText:
+        result.outcome === "already_active"
+          ? `You are already queued for ${raidName}. Use !queue to check it.`
+          : `You are queued for ${raidName}. Use !queue to check it.`,
+      boardChanged: result.queueChanged,
+    };
   }
-  await materializeRaidBoard(repository, communityConfig, observedAt);
+  await repository.observeTwitchIdentity({
+    twitchUserId,
+    twitchLogin,
+    observedAt,
+  });
   const queryService = new QueueQueryService(repository);
-  return renderQueueFacts(
-    await queryService.queue({ platform: "twitch", userId: twitchUserId }),
-    "twitch",
-  );
+  return {
+    replyText: renderQueueFacts(
+      await queryService.queue({ platform: "twitch", userId: twitchUserId }),
+      "twitch",
+    ),
+    boardChanged: false,
+  };
 }
 
 type InvalidTwitchRequest = Extract<ReturnType<typeof parseTwitchRequestInput>, { valid: false }>;
@@ -702,26 +723,25 @@ async function handleTwitchEventSub(
   }
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);
-  await repository.observeTwitchIdentity({
-    twitchUserId: event.chatterUserId,
-    twitchLogin: event.chatterUserLogin,
+  const commandResult = await buildTwitchPublicReply(
+    command,
+    event.chatterUserId,
+    event.chatterUserLogin,
+    verification.headers.messageId,
     observedAt,
-  });
+    repository,
+    communityConfig,
+  );
   const receipt = await repository.recordTwitchReply({
     deliveryId: verification.headers.messageId,
     eventType: `command:${command.name}`,
-    replyText: await buildTwitchPublicReply(
-      command,
-      event.chatterUserId,
-      event.chatterUserLogin,
-      verification.headers.messageId,
-      observedAt,
-      repository,
-      communityConfig,
-    ),
+    replyText: commandResult.replyText,
     ...(replyToMessage ? { replyToMessageId: event.messageId } : {}),
     receivedAt: observedAt,
   });
+  if (!receipt.duplicate) {
+    context.waitUntil(repository.maintainExpiredReceipts(observedAt).catch(() => undefined));
+  }
   const shouldDeliver =
     (!receipt.duplicate && receipt.replyStatus === "pending") ||
     (receipt.duplicate &&
@@ -741,7 +761,7 @@ async function handleTwitchEventSub(
       }),
     );
   }
-  if (command.name === "request" && !receipt.duplicate) {
+  if (commandResult.boardChanged) {
     context.waitUntil(
       synchronizeCanonicalBoard({
         environment,
@@ -789,7 +809,9 @@ export function createWorker(communityConfigOverride?: CommunityConfig) {
         const isDiscord =
           request.method === "POST" && url.pathname === "/webhooks/discord/interactions";
         const isStatus = request.method === "GET" && url.pathname === "/internal/status";
-        if (!(isTwitch || isDiscord || isStatus)) {
+        const isLegacyRepair =
+          request.method === "POST" && url.pathname === "/internal/repair-unassigned-requests";
+        if (!(isTwitch || isDiscord || isStatus || isLegacyRepair)) {
           return new Response("Not found", { status: 404 });
         }
         if (configurationErrors.length > 0) {
@@ -801,10 +823,26 @@ export function createWorker(communityConfigOverride?: CommunityConfig) {
         if (isDiscord) {
           return handleDiscordInteraction(request, measured, communityConfig, context);
         }
-        if (isStatus) {
+        if (isStatus || isLegacyRepair) {
           if (!hasDiagnosticsAccess(request, measured)) {
             return new Response("Not found", { status: 404 });
           }
+        }
+        if (isLegacyRepair) {
+          const repository = new D1MvpRepository(measured.DB);
+          const result = await repository.repairLegacyUnassignedRequests({
+            recipientLimit: communityConfig.policies.recipientLimit,
+            changedAt: new Date(),
+          });
+          if (result.repaired > 0 && !result.hasMore) {
+            await synchronizeCanonicalBoard({
+              environment: measured,
+              communityConfig,
+              changedAt: new Date(),
+              createIfMissing: false,
+            });
+          }
+          return Response.json(result);
         }
         const [authorization, database] = await Promise.all([
           validateTwitchAuthorization(measured, {

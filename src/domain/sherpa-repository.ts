@@ -20,13 +20,14 @@ export interface CreateHelpRequest {
   mapId: string;
   objective: string;
   notes?: string;
+  recipientLimit: number;
   observedAt: Date;
 }
 
 export type CreateHelpRequestOutcome =
-  | { outcome: "created"; request: HelpRequestRecord }
-  | { outcome: "duplicate_delivery"; request: HelpRequestRecord }
-  | { outcome: "already_active"; request: HelpRequestRecord };
+  | { outcome: "created"; queueChanged: true; request: HelpRequestRecord }
+  | { outcome: "duplicate_delivery"; queueChanged: boolean; request: HelpRequestRecord }
+  | { outcome: "already_active"; queueChanged: false; request: HelpRequestRecord };
 
 export interface UserMapping {
   twitchLogin: string;

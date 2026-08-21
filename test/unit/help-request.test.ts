@@ -118,7 +118,6 @@ describe("help request lifecycle", () => {
   const allowed = new Set([
     "waiting:planned",
     "waiting:canceled",
-    "planned:waiting",
     "planned:completed",
     "planned:canceled",
   ]);

@@ -83,9 +83,50 @@ function markdown(report) {
   }
   lines.push(
     "",
+    "## Focused Normalized Costs",
+    "",
+    "| Active requests | Operation | Processed items | Rows read per item | Rows written per item |",
+    "|---:|---|---:|---:|---:|",
+  );
+  for (const result of report.results) {
+    const processedItems =
+      result.id === "twitch.request.invalid.expired-receipts" ? 100 : undefined;
+    if (processedItems === undefined) continue;
+    lines.push(
+      `| ${result.scale.toLocaleString("en-US")} | ${result.label} | ${processedItems} | ${(result.aggregate.rowsRead.median / processedItems).toFixed(2)} | ${(result.aggregate.rowsWritten.median / processedItems).toFixed(2)} |`,
+    );
+  }
+  lines.push(
+    "",
+    "## Focused D1 Statement Groups",
+    "",
+    "| Active requests | Operation | Statement group | Statements | Rows read | Rows written |",
+    "|---:|---|---|---:|---:|---:|",
+  );
+  for (const result of report.results) {
+    for (const [group, counters] of Object.entries(result.statementGroups ?? {})) {
+      lines.push(
+        `| ${result.scale.toLocaleString("en-US")} | ${result.label} | ${group} | ${counters.statements} | ${counters.rowsRead.toLocaleString("en-US")} | ${counters.rowsWritten.toLocaleString("en-US")} |`,
+      );
+    }
+  }
+  lines.push(
+    "",
     "## Seed Shape",
     "",
     "Each scale contains a deterministic skewed mix of PvP Seasonal, PvP, and PvE requests. It also contains the stated number of user mappings, corresponding mode-safe raid memberships, capacity-aware raids distributed across the supported map catalog, the same number of recent delivery receipts, and one canonical community record. Scenario fixtures are restored outside the measured window.",
+    "",
+    "| Active requests | Local D1 bytes |",
+    "|---:|---:|",
+  );
+  for (const seed of report.seeds) {
+    lines.push(
+      `| ${seed.scale.toLocaleString("en-US")} | ${seed.databaseBytes.toLocaleString("en-US")} |`,
+    );
+  }
+  lines.push(
+    "",
+    "Focused adversarial scenarios add 600 expired receipts and 1,000 and 10,000 removed membership rows outside the measured window. They exercise complete Worker command paths without changing the stable active-request seed matrix. Legacy unassigned-request recovery is covered by deterministic integration tests because it is an authenticated deployment operation, not a user-facing command.",
     "",
     "## Cost Invariants",
     "",
@@ -99,6 +140,9 @@ function markdown(report) {
     "- Rollup-maintaining request and raid-result mutations must keep constant writes and no more than 32 rows of cross-scale read growth.",
     "- Discord Users page reads must be scale-independent and write zero rows.",
     "- Discord Users missing-detail completion must use bounded reads and writes.",
+    "- Queue and board Refresh operations must perform no request-assignment writes.",
+    "- One due expired-receipt operation must remove exactly 100 expired receipts.",
+    "- Removed membership history must not increase open-board D1 rows read with history size.",
     "",
   );
   return lines.join("\n");
@@ -197,6 +241,53 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     )
   ) {
     fail(`${operationId} must keep D1 reads and writes bounded`);
+  }
+  if (operationId === "discord.board.refresh.removed-history") {
+    const historyReads = new Set(
+      operationResults.map((result) => result.aggregate.rowsRead.median),
+    );
+    if (historyReads.size !== 1) fail(`${operationId} row reads changed with history size`);
+  }
+  if (operationId === "discord.board.refresh") {
+    if (
+      operationResults.some(
+        (result) => result.aggregate.statements.max > 6 || result.aggregate.rowsRead.max > 250,
+      )
+    ) {
+      fail(`${operationId} exceeded its six-statement or 250-row-read limit`);
+    }
+  }
+  if (
+    (operationId.includes(".queue.") || operationId === "discord.board.refresh") &&
+    operationResults.some((result) =>
+      Object.keys(result.statementGroups ?? {}).some((group) => group.startsWith("assignment.")),
+    )
+  ) {
+    fail(`${operationId} performed request-assignment work`);
+  }
+  if (operationId === "twitch.request.invalid") {
+    if (
+      operationResults.some(
+        (result) =>
+          result.aggregate.statements.max > 5 ||
+          result.aggregate.rowsRead.max > 20 ||
+          result.aggregate.rowsWritten.max !== 3,
+      )
+    ) {
+      fail(`${operationId} exceeded its invalid-input D1 limit`);
+    }
+  }
+  if (operationId === "twitch.request.invalid.expired-receipts") {
+    if (
+      operationResults.some(
+        (result) =>
+          result.aggregate.statements.max > 5 ||
+          result.aggregate.rowsRead.max > 450 ||
+          result.aggregate.rowsWritten.max > 104,
+      )
+    ) {
+      fail(`${operationId} exceeded its leased-cleanup D1 limit`);
+    }
   }
   for (let index = 1; index < operationResults.length; index += 1) {
     const previous = operationResults[index - 1];

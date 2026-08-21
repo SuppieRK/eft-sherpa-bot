@@ -2,13 +2,19 @@ import { env } from "cloudflare:workers";
 import { expect, it, vi } from "vitest";
 import { createWorker } from "../src";
 import type { CommunityConfig } from "../src/config/community";
-import { D1Metrics, instrumentD1Database } from "../src/infrastructure/cloudflare/d1-metrics";
+import {
+  D1Metrics,
+  instrumentD1Database,
+  type D1StatementUsage,
+} from "../src/infrastructure/cloudflare/d1-metrics";
 import type { CloudflareEnvironment } from "../src/infrastructure/cloudflare/environment";
 import { testCommunityConfig } from "../test/fixtures/community";
 import {
   BENCHMARK_SAMPLES,
   BENCHMARK_SCALES,
+  BENCHMARK_SCALES_BY_OPERATION,
   BENCHMARK_WARMUPS,
+  FOCUSED_D1_OPERATION_IDS,
   type UserOperationId,
 } from "./contract";
 import { aggregateMeasurements, assertStableCost, type OperationMeasurement } from "./statistics";
@@ -23,8 +29,10 @@ import {
   resetOperationFixture,
   runWorkerRequest,
   seedDatabase,
+  seedExpiredReceiptBacklog,
   seedOperationMapping,
   seedOperationRaid,
+  seedRemovedMembershipHistory,
   type SeedState,
   signedDiscordRequest,
   signedTwitchRequest,
@@ -39,6 +47,50 @@ interface ExternalCall {
 interface PreparedOperation {
   request: Request;
   verify(response: Response): Promise<void> | void;
+}
+
+function statementGroup(query: string): string {
+  const sql = query.replaceAll(/\s+/g, " ").trim().toLowerCase();
+  if (sql.startsWith("update community_state set receipt_cleanup_after")) return "receipt.lease";
+  if (sql.startsWith("delete from event_receipts")) return "receipt.delete";
+  if (sql.startsWith("insert or ignore into event_receipts")) return "receipt.claim";
+  if (sql.includes("from event_receipts where platform = 1")) return "receipt.load";
+  if (sql.startsWith("update event_receipts set reply_status")) return "receipt.reply-status";
+  if (sql.includes("insert or ignore into raid_group_members")) {
+    return "assignment.membership-insert";
+  }
+  if (sql.startsWith("insert or ignore into raid_groups")) return "assignment.raid-insert";
+  if (sql.includes("from community_state where community_id")) return "board.state";
+  if (sql.includes("join raid_group_members as member")) {
+    return sql.includes("where raid.id = ?") ? "board.raid-validation" : "board.raid-hydration";
+  }
+  if (sql.includes("from raid_groups") && sql.includes("union all")) return "board.candidates";
+  return "other";
+}
+
+function groupStatementUsage(
+  statements: readonly Readonly<D1StatementUsage>[],
+): NonNullable<OperationMeasurement["statementGroups"]> {
+  const groups: NonNullable<OperationMeasurement["statementGroups"]> = {};
+  for (const statement of statements) {
+    const key = statementGroup(statement.query);
+    const group = groups[key] ?? { statements: 0, rowsRead: 0, rowsWritten: 0 };
+    group.statements += statement.statements;
+    group.rowsRead += statement.rowsRead;
+    group.rowsWritten += statement.rowsWritten;
+    groups[key] = group;
+  }
+  return groups;
+}
+
+function withoutStatementGroups(measurement: OperationMeasurement): OperationMeasurement {
+  return {
+    wallMs: measurement.wallMs,
+    d1DurationMs: measurement.d1DurationMs,
+    statements: measurement.statements,
+    rowsRead: measurement.rowsRead,
+    rowsWritten: measurement.rowsWritten,
+  };
 }
 
 interface OperationDefinition {
@@ -274,9 +326,14 @@ function operationDefinitions(input: {
             expect(response.status).toBe(200);
             expect(await responseText(response)).toContain("is in the queue");
             const row = await env.DB.prepare(
-              "SELECT state FROM help_requests WHERE twitch_login = 'op_discord_created'",
-            ).first<{ state: number }>();
-            expect(row?.state).toBe(1);
+              `SELECT request.state, count(member.id) AS memberships
+               FROM help_requests AS request
+               LEFT JOIN raid_group_members AS member
+                 ON member.request_id = request.id AND member.state = 0
+               WHERE request.twitch_login = 'op_discord_created'
+               GROUP BY request.id`,
+            ).first<{ state: number; memberships: number }>();
+            expect(row).toEqual({ state: 1, memberships: 1 });
           },
         };
       },
@@ -350,9 +407,14 @@ function operationDefinitions(input: {
             expect(response.status).toBe(204);
             expect(twitchCalls.at(-1)?.body).toContain("queued for PvE · Customs");
             const row = await env.DB.prepare(
-              "SELECT state FROM help_requests WHERE twitch_login = 'op_twitch_created'",
-            ).first<{ state: number }>();
-            expect(row?.state).toBe(1);
+              `SELECT request.state, count(member.id) AS memberships
+               FROM help_requests AS request
+               LEFT JOIN raid_group_members AS member
+                 ON member.request_id = request.id AND member.state = 0
+               WHERE request.twitch_login = 'op_twitch_created'
+               GROUP BY request.id`,
+            ).first<{ state: number; memberships: number }>();
+            expect(row).toEqual({ state: 1, memberships: 1 });
           },
         };
       },
@@ -400,6 +462,29 @@ function operationDefinitions(input: {
               "SELECT id FROM help_requests WHERE twitch_login = 'op_twitch_invalid'",
             ).first();
             expect(row).toBeNull();
+          },
+        };
+      },
+    },
+    {
+      id: "twitch.request.invalid.expired-receipts",
+      label: "Twitch invalid request with expired-receipt backlog",
+      async prepare(_seed, sample) {
+        await seedExpiredReceiptBacklog(600);
+        return {
+          request: await twitch({
+            text: "!request pve",
+            deliveryId: `${OPERATION_PREFIX}twitch-expired-${sample}`,
+            twitchUserId: `${OPERATION_PREFIX}twitch-expired`,
+            twitchLogin: "op_twitch_expired",
+          }),
+          async verify(response) {
+            expect(response.status).toBe(204);
+            const remaining = await env.DB.prepare(
+              `SELECT count(*) AS count FROM event_receipts
+               WHERE delivery_id LIKE 'bench-op-expired-%'`,
+            ).first<{ count: number }>();
+            expect(remaining?.count).toBe(500);
           },
         };
       },
@@ -467,6 +552,27 @@ function operationDefinitions(input: {
             expect(response.status).toBe(200);
             expect(discordMock.calls.some((call) => call.method === "GET")).toBe(false);
             expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(true);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.board.refresh.removed-history",
+      label: "Discord board Refresh with removed membership history",
+      async prepare(seed, sample) {
+        await seedRemovedMembershipHistory(seed, seed.scale);
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}board-history-${sample}`,
+            customId: "board:v6:refresh",
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const remaining = await env.DB.prepare(
+              `SELECT count(*) AS count FROM raid_group_members
+               WHERE group_id = 1 AND state = 2`,
+            ).first<{ count: number }>();
+            expect(remaining?.count).toBe(seed.scale);
           },
         };
       },
@@ -928,6 +1034,7 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
       scale: number;
       samples: OperationMeasurement[];
       aggregate: ReturnType<typeof aggregateMeasurements>;
+      statementGroups?: OperationMeasurement["statementGroups"];
     }> = [];
     const benchmarkScale = Number(
       (env as typeof env & { BENCHMARK_SCALE: number }).BENCHMARK_SCALE,
@@ -938,13 +1045,18 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
       const seed = await seedDatabase(scale);
       seeds.push(await seedCounts(seed));
       for (const definition of definitions) {
+        const selectedScales = BENCHMARK_SCALES_BY_OPERATION[definition.id];
+        if (selectedScales !== undefined && !selectedScales.includes(scale)) continue;
         const measurements: OperationMeasurement[] = [];
         for (let sample = 0; sample < BENCHMARK_WARMUPS + BENCHMARK_SAMPLES; sample += 1) {
           await resetOperationFixture(seed);
           discordMock.reset();
           twitchCalls.length = 0;
           const prepared = await definition.prepare(seed, sample);
-          const metrics = new D1Metrics();
+          const capturesStatements = FOCUSED_D1_OPERATION_IDS.includes(
+            definition.id as (typeof FOCUSED_D1_OPERATION_IDS)[number],
+          );
+          const metrics = new D1Metrics(capturesStatements);
           const environment = {
             ...(env as CloudflareEnvironment),
             DB: instrumentD1Database(env.DB, metrics),
@@ -963,6 +1075,9 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
               statements: usage.statements,
               rowsRead: usage.rowsRead,
               rowsWritten: usage.rowsWritten,
+              ...(capturesStatements
+                ? { statementGroups: groupStatementUsage(metrics.statementDetails()) }
+                : {}),
             });
           }
         }
@@ -971,8 +1086,11 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
           id: definition.id,
           label: definition.label,
           scale,
-          samples: measurements,
+          samples: measurements.map(withoutStatementGroups),
           aggregate: aggregateMeasurements(measurements),
+          ...(measurements[0]?.statementGroups === undefined
+            ? {}
+            : { statementGroups: measurements[0].statementGroups }),
         });
       }
     }

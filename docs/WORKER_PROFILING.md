@@ -11,6 +11,15 @@ Use this procedure to compare Worker CPU use before and after a code change. It 
 7. Select **Stop** in DevTools.
 8. Save the profile under `.artifacts/worker-profile` if you need it for local comparison.
 
-The replay command sends 500 signed Twitch verification requests and 500 signed Discord ping requests. The setup command generates temporary signing values under `.artifacts`. Do not copy these temporary values to GitHub settings or a deployed Worker.
+The replay command sends 100 sets of these requests:
 
-Repeat the same procedure on both revisions. Compare the signature-verification functions and cryptographic key imports. Record a short result in the pull request. Do not use local wall time as a deployment limit. Do not commit the generated keys or CPU profile.
+- Twitch verification.
+- Discord ping.
+- Valid Twitch request creation.
+- Invalid Twitch request guidance.
+- Twitch queue lookup.
+- Discord staff-board rendering.
+
+The command uses local D1 and a local mock for Discord and Twitch replies. The setup command generates temporary signing values under `.artifacts`. Do not copy these temporary values to GitHub settings or a deployed Worker.
+
+Repeat the same procedure on both revisions. Compare signature verification, request creation, queue rendering, board rendering, JSON work, and cryptographic key imports. Record a short result in the pull request. Do not use local wall time as a deployment limit. Do not commit the generated keys or CPU profile. Use the fully local D1 benchmark for database cost decisions.
