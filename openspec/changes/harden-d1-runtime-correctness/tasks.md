@@ -75,4 +75,4 @@
 - [x] 9.1 Add `npm run benchmark:d1` to production deployment verification before any migration, secret upload, platform configuration, or Worker deployment.
 - [x] 9.2 Run formatting, Biome, typed Oxlint, TypeScript, Knip, migration checks, unit/integration tests, build, secret checks, strict OpenSpec validation, and the complete local D1 benchmark.
 - [x] 9.3 Update ASD-STE100 operator and release documentation for migration `0006`, duplicate repair evidence, D1 Analytics comparison, rollback, and DEV smoke verification.
-- [ ] 9.4 Commit the completed change on the feature branch, push it, create a GitHub pull request with measured before/after evidence, and manually deploy that exact branch version to DEV for Discord and Twitch smoke testing.
+- [x] 9.4 Commit the completed change on the feature branch, push it, create a GitHub pull request with measured before/after evidence, and manually deploy that exact branch version to DEV for Discord and Twitch smoke testing.
