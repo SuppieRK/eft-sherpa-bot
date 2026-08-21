@@ -28,6 +28,7 @@ import {
   renderRaidMessage,
   renderStaffBoard,
   type DiscordBotMessage,
+  type RaidMessageAction,
 } from "./staff-board";
 
 type StaffInteraction = Pick<
@@ -449,6 +450,272 @@ class StaffBoardHandler {
     );
   }
 
+  private async reviewRaid(interaction: DiscordMessageComponentInteraction): Promise<Response> {
+    const { communityConfig, changedAt } = this.dependencies;
+    const raidId = Number(selectedValue(interaction));
+    if (!Number.isSafeInteger(raidId) || raidId < 1) {
+      throw new RepositoryInvariantError("Choose a current raid to review.");
+    }
+    const reviewed = await this.repository.reviewRaid({ groupId: raidId, changedAt });
+    const messageId = await this.ensureReviewMessage(reviewed, interaction.discordUserId);
+    this.refreshBoardLater();
+    if (messageId === undefined) {
+      return ephemeral(
+        "That review message was deleted. The raid is back on the board. Review it again to open new details.",
+      );
+    }
+    return ephemeral(
+      `[Open raid details](${discordMessageUrl(
+        communityConfig.discord.guildId,
+        communityConfig.discord.staffChannelId,
+        messageId,
+      )})`,
+    );
+  }
+
+  private async cancelReview(
+    interaction: DiscordMessageComponentInteraction,
+    raid: StaffBoardRaid,
+  ): Promise<Response> {
+    const { changedAt } = this.dependencies;
+    if (interaction.messageId === undefined) {
+      throw new RepositoryInvariantError("That review control is out of date.");
+    }
+    const dismissed = await this.repository.dismissRaidReview({
+      groupId: raid.id,
+      expectedMessageId: interaction.messageId,
+      changedAt,
+    });
+    if (!dismissed) {
+      throw new RepositoryInvariantError("That review is no longer available to cancel.");
+    }
+    const deleted = await this.deleteRaidMessage(interaction.messageId);
+    if (!deleted) {
+      await this.repository.compareAndSetRaidStaffMessage({
+        groupId: raid.id,
+        messageId: interaction.messageId,
+        changedAt,
+      });
+      throw new RepositoryInvariantError(
+        "Discord could not close that review. Try Cancel review again.",
+      );
+    }
+    this.refreshBoardLater();
+    return ephemeral("Review closed. The raid is still on the board.");
+  }
+
+  private async showPullCandidates(raid: StaffBoardRaid): Promise<Response> {
+    const candidates = await this.repository.getPullRequesterCandidates(raid.id);
+    if (candidates === undefined) {
+      return ephemeral("No later requester is available for this raid.");
+    }
+    return ephemeralMessage(renderPullRequesterSelector(raid, candidates.source));
+  }
+
+  private requesterId(interaction: DiscordMessageComponentInteraction): number {
+    const requestId = Number(selectedValue(interaction));
+    if (!Number.isSafeInteger(requestId) || requestId < 1) {
+      throw new RepositoryInvariantError("Choose a current requester.");
+    }
+    return requestId;
+  }
+
+  private async pullRequester(
+    interaction: DiscordMessageComponentInteraction,
+    action: Extract<RaidMessageAction, { action: "pull" }>,
+    raid: StaffBoardRaid,
+  ): Promise<Response> {
+    const pulled = await this.repository.pullRequester({
+      destinationGroupId: raid.id,
+      sourceGroupId: action.sourceRaidId,
+      requestId: this.requesterId(interaction),
+      actionKey: interaction.interactionId,
+      changedAt: this.dependencies.changedAt,
+    });
+    await this.refreshPulledRaidMessage(pulled.destination);
+    this.refreshBoardLater();
+    if (pulled.sourceDisposition === "closed") {
+      return ephemeral("Requester pulled up. The empty source raid was closed.");
+    }
+    if (pulled.sourceDisposition === "pushed") {
+      return ephemeral(
+        "Requester pulled up. The remaining source requesters moved to the next compatible raid.",
+      );
+    }
+    return ephemeral("Requester pulled up. The remaining source raid stayed in place.");
+  }
+
+  private async callRaid(
+    interaction: DiscordMessageComponentInteraction,
+    raid: StaffBoardRaid,
+    isStreamer: boolean,
+  ): Promise<Response> {
+    const { communityConfig, changedAt } = this.dependencies;
+    if (raid.state !== "planned" || raid.staffMessageId === undefined) {
+      throw new RepositoryInvariantError("That raid is no longer available to start.");
+    }
+    if (
+      raid.leaderDiscordUserId !== undefined &&
+      !isStreamer &&
+      raid.leaderDiscordUserId !== interaction.discordUserId
+    ) {
+      throw new RepositoryInvariantError(
+        "Only the reserved leader or streamer can start this postponed raid.",
+      );
+    }
+    let started = await this.repository.startRaid({
+      groupId: raid.id,
+      leaderDiscordUserId: interaction.discordUserId,
+      leaderType: isStreamer ? "streamer" : "volunteer",
+      requestTwitchCall: isStreamer,
+      canOverrideReservedLeader: isStreamer,
+      changedAt,
+    });
+    await sendRaidCalls(started, this.dependencies, this.repository);
+    started = (await this.repository.getRaid(raid.id)) ?? started;
+    this.refreshBoardLater();
+    return update(renderRaidMessage(started, communityConfig.policies.attemptLimit));
+  }
+
+  private assertRaidControlAccess(
+    interaction: DiscordMessageComponentInteraction,
+    raid: StaffBoardRaid,
+    isStreamer: boolean,
+  ): boolean {
+    const isReviewedPlanned =
+      raid.state === "planned" && !raid.automaticFill && raid.staffMessageId !== undefined;
+    if (
+      !isReviewedPlanned &&
+      !isStreamer &&
+      interaction.discordUserId !== raid.leaderDiscordUserId
+    ) {
+      throw new RepositoryInvariantError("Only this raid's leader or the streamer can use it.");
+    }
+    return isReviewedPlanned;
+  }
+
+  private async recordRaidResult(
+    interaction: DiscordMessageComponentInteraction,
+    raid: StaffBoardRaid,
+  ): Promise<Response> {
+    const { communityConfig, changedAt } = this.dependencies;
+    const result = selectedValue(interaction);
+    if (result !== "helped" && result !== "unsuccessful" && result !== "postpone_raid") {
+      throw new RepositoryInvariantError("Choose an available raid result.");
+    }
+    if (result === "postpone_raid") {
+      await this.repository.postponeRaid({
+        groupId: raid.id,
+        actionKey: interaction.interactionId,
+        changedAt,
+      });
+      const deleted = await this.deleteRaidMessage(raid.staffMessageId);
+      this.refreshBoardLater();
+      return ephemeral(
+        deleted
+          ? "Raid postponed to the end of the Priority queue."
+          : "Raid postponed to the end of the Priority queue, but its old details message could not be deleted.",
+      );
+    }
+    const updatedRaid = await this.repository.recordRaidResult({
+      groupId: raid.id,
+      outcome: result,
+      attemptLimit: communityConfig.policies.attemptLimit,
+      actionKey: interaction.interactionId,
+      changedAt,
+    });
+    this.refreshBoardLater();
+    if (result !== "helped") {
+      return update(renderRaidMessage(updatedRaid, communityConfig.policies.attemptLimit));
+    }
+    const deleted = await this.deleteRaidMessage(raid.staffMessageId);
+    return ephemeral(
+      deleted
+        ? "Raid recorded as Helped."
+        : "Raid recorded as Helped, but its old details message could not be deleted.",
+    );
+  }
+
+  private async removeRequester(
+    interaction: DiscordMessageComponentInteraction,
+    raid: StaffBoardRaid,
+  ): Promise<Response> {
+    const { communityConfig, changedAt } = this.dependencies;
+    const updated = await this.repository.removeRequester({
+      groupId: raid.id,
+      requestId: this.requesterId(interaction),
+      actionKey: interaction.interactionId,
+      changedAt,
+    });
+    this.refreshBoardLater();
+    if (updated.state !== "canceled") {
+      return update(
+        await raidDetailMessage({
+          raid: updated,
+          repository: this.repository,
+          communityConfig,
+        }),
+      );
+    }
+    const deleted = await this.deleteRaidMessage(raid.staffMessageId);
+    return ephemeral(
+      deleted
+        ? "Requester removed. The empty raid was closed."
+        : "Requester removed and the empty raid was closed, but its old details message could not be deleted.",
+    );
+  }
+
+  private async postponeRequester(
+    interaction: DiscordMessageComponentInteraction,
+    raid: StaffBoardRaid,
+  ): Promise<Response> {
+    const { communityConfig, changedAt } = this.dependencies;
+    const postponed = await this.repository.postponeRequester({
+      groupId: raid.id,
+      requestId: this.requesterId(interaction),
+      actionKey: interaction.interactionId,
+      changedAt,
+    });
+    this.refreshBoardLater();
+    if (postponed.source.state !== "canceled") {
+      return update(
+        await raidDetailMessage({
+          raid: postponed.source,
+          repository: this.repository,
+          communityConfig,
+        }),
+      );
+    }
+    const deleted = await this.deleteRaidMessage(raid.staffMessageId);
+    return ephemeral(
+      deleted
+        ? "Requester postponed to the next raid. The empty raid was closed."
+        : "Requester postponed and the empty raid was closed, but its old details message could not be deleted.",
+    );
+  }
+
+  private async handleRaidAction(
+    interaction: DiscordMessageComponentInteraction,
+    action: RaidMessageAction,
+  ): Promise<Response> {
+    const { communityConfig } = this.dependencies;
+    const raid = await this.repository.getRaid(action.raidId);
+    if (raid === undefined) throw new RepositoryInvariantError("That raid no longer exists.");
+    const isStreamer = interaction.discordUserId === communityConfig.discord.streamerUserId;
+    if (action.action === "cancel") return this.cancelReview(interaction, raid);
+    if (action.action === "pull_candidates") return this.showPullCandidates(raid);
+    if (action.action === "pull") return this.pullRequester(interaction, action, raid);
+    if (action.action === "call") return this.callRaid(interaction, raid, isStreamer);
+
+    const isReviewedPlanned = this.assertRaidControlAccess(interaction, raid, isStreamer);
+    if (isReviewedPlanned && action.action === "result") {
+      throw new RepositoryInvariantError("Call and start this raid before recording a result.");
+    }
+    if (action.action === "result") return this.recordRaidResult(interaction, raid);
+    if (action.action === "remove") return this.removeRequester(interaction, raid);
+    return this.postponeRequester(interaction, raid);
+  }
+
   async handle(interaction: DiscordMessageComponentInteraction): Promise<Response> {
     const { communityConfig, changedAt } = this.dependencies;
     if (!hasAccess(interaction, communityConfig)) {
@@ -480,211 +747,12 @@ class StaffBoardHandler {
     }
     try {
       if (boardAction?.action === "review") {
-        const raidId = Number(selectedValue(interaction));
-        if (!Number.isSafeInteger(raidId) || raidId < 1) {
-          throw new RepositoryInvariantError("Choose a current raid to review.");
-        }
-        const reviewed = await this.repository.reviewRaid({ groupId: raidId, changedAt });
-        const messageId = await this.ensureReviewMessage(reviewed, interaction.discordUserId);
-        this.refreshBoardLater();
-        if (messageId === undefined) {
-          return ephemeral(
-            "That review message was deleted. The raid is back on the board. Review it again to open new details.",
-          );
-        }
-        return ephemeral(
-          `[Open raid details](${discordMessageUrl(
-            communityConfig.discord.guildId,
-            communityConfig.discord.staffChannelId,
-            messageId,
-          )})`,
-        );
+        return await this.reviewRaid(interaction);
       }
-      const raid = await this.repository.getRaid(raidAction?.raidId ?? 0);
-      if (raid === undefined) throw new RepositoryInvariantError("That raid no longer exists.");
-      const isStreamer = interaction.discordUserId === communityConfig.discord.streamerUserId;
-      if (raidAction?.action === "cancel") {
-        if (interaction.messageId === undefined) {
-          throw new RepositoryInvariantError("That review control is out of date.");
-        }
-        const dismissed = await this.repository.dismissRaidReview({
-          groupId: raid.id,
-          expectedMessageId: interaction.messageId,
-          changedAt,
-        });
-        if (!dismissed) {
-          throw new RepositoryInvariantError("That review is no longer available to cancel.");
-        }
-        const deleted = await this.deleteRaidMessage(interaction.messageId);
-        if (!deleted) {
-          await this.repository.compareAndSetRaidStaffMessage({
-            groupId: raid.id,
-            messageId: interaction.messageId,
-            changedAt,
-          });
-          throw new RepositoryInvariantError(
-            "Discord could not close that review. Try Cancel review again.",
-          );
-        }
-        this.refreshBoardLater();
-        return ephemeral("Review closed. The raid is still on the board.");
+      if (raidAction === undefined) {
+        return new Response("Unsupported component", { status: 400 });
       }
-      if (raidAction?.action === "pull_candidates") {
-        const candidates = await this.repository.getPullRequesterCandidates(raid.id);
-        if (candidates === undefined) {
-          return ephemeral("No later requester is available for this raid.");
-        }
-        return ephemeralMessage(renderPullRequesterSelector(raid, candidates.source));
-      }
-      if (raidAction?.action === "pull") {
-        const requestId = Number(selectedValue(interaction));
-        if (!Number.isSafeInteger(requestId) || requestId < 1) {
-          throw new RepositoryInvariantError("Choose a current requester.");
-        }
-        const pulled = await this.repository.pullRequester({
-          destinationGroupId: raid.id,
-          sourceGroupId: raidAction.sourceRaidId,
-          requestId,
-          actionKey: interaction.interactionId,
-          changedAt,
-        });
-        await this.refreshPulledRaidMessage(pulled.destination);
-        this.refreshBoardLater();
-        let result = "Requester pulled up. The remaining source raid stayed in place.";
-        if (pulled.sourceDisposition === "closed") {
-          result = "Requester pulled up. The empty source raid was closed.";
-        } else if (pulled.sourceDisposition === "pushed") {
-          result =
-            "Requester pulled up. The remaining source requesters moved to the next compatible raid.";
-        }
-        return ephemeral(result);
-      }
-      if (raidAction?.action === "call") {
-        if (raid.state !== "planned" || raid.staffMessageId === undefined) {
-          throw new RepositoryInvariantError("That raid is no longer available to start.");
-        }
-        if (
-          raid.leaderDiscordUserId !== undefined &&
-          !isStreamer &&
-          raid.leaderDiscordUserId !== interaction.discordUserId
-        ) {
-          throw new RepositoryInvariantError(
-            "Only the reserved leader or streamer can start this postponed raid.",
-          );
-        }
-        let started = await this.repository.startRaid({
-          groupId: raid.id,
-          leaderDiscordUserId: interaction.discordUserId,
-          leaderType: isStreamer ? "streamer" : "volunteer",
-          requestTwitchCall: isStreamer,
-          canOverrideReservedLeader: isStreamer,
-          changedAt,
-        });
-        await sendRaidCalls(started, this.dependencies, this.repository);
-        started = (await this.repository.getRaid(raid.id)) ?? started;
-        this.refreshBoardLater();
-        return update(renderRaidMessage(started, communityConfig.policies.attemptLimit));
-      }
-      const isReviewedPlanned =
-        raid.state === "planned" && !raid.automaticFill && raid.staffMessageId !== undefined;
-      if (
-        !isReviewedPlanned &&
-        !isStreamer &&
-        interaction.discordUserId !== raid.leaderDiscordUserId
-      ) {
-        throw new RepositoryInvariantError("Only this raid's leader or the streamer can use it.");
-      }
-      if (isReviewedPlanned && raidAction?.action === "result") {
-        throw new RepositoryInvariantError("Call and start this raid before recording a result.");
-      }
-      if (raidAction?.action === "result") {
-        const result = selectedValue(interaction);
-        if (result !== "helped" && result !== "unsuccessful" && result !== "postpone_raid") {
-          throw new RepositoryInvariantError("Choose an available raid result.");
-        }
-        if (result === "postpone_raid") {
-          await this.repository.postponeRaid({
-            groupId: raid.id,
-            actionKey: interaction.interactionId,
-            changedAt,
-          });
-          const deleted = await this.deleteRaidMessage(raid.staffMessageId);
-          this.refreshBoardLater();
-          return ephemeral(
-            deleted
-              ? "Raid postponed to the end of the Priority queue."
-              : "Raid postponed to the end of the Priority queue, but its old details message could not be deleted.",
-          );
-        }
-        const updatedRaid = await this.repository.recordRaidResult({
-          groupId: raid.id,
-          outcome: result,
-          attemptLimit: communityConfig.policies.attemptLimit,
-          actionKey: interaction.interactionId,
-          changedAt,
-        });
-        this.refreshBoardLater();
-        if (result === "helped") {
-          const deleted = await this.deleteRaidMessage(raid.staffMessageId);
-          const confirmation = "Raid recorded as Helped.";
-          return ephemeral(
-            deleted
-              ? confirmation
-              : `${confirmation.slice(0, -1)}, but its old details message could not be deleted.`,
-          );
-        }
-        return update(renderRaidMessage(updatedRaid, communityConfig.policies.attemptLimit));
-      }
-      const requestId = Number(selectedValue(interaction));
-      if (!Number.isSafeInteger(requestId) || requestId < 1) {
-        throw new RepositoryInvariantError("Choose a current requester.");
-      }
-      if (raidAction?.action === "remove") {
-        const updated = await this.repository.removeRequester({
-          groupId: raid.id,
-          requestId,
-          actionKey: interaction.interactionId,
-          changedAt,
-        });
-        this.refreshBoardLater();
-        if (updated.state !== "canceled") {
-          return update(
-            await raidDetailMessage({
-              raid: updated,
-              repository: this.repository,
-              communityConfig,
-            }),
-          );
-        }
-        const deleted = await this.deleteRaidMessage(raid.staffMessageId);
-        return ephemeral(
-          deleted
-            ? "Requester removed. The empty raid was closed."
-            : "Requester removed and the empty raid was closed, but its old details message could not be deleted.",
-        );
-      }
-      const postponed = await this.repository.postponeRequester({
-        groupId: raid.id,
-        requestId,
-        actionKey: interaction.interactionId,
-        changedAt,
-      });
-      this.refreshBoardLater();
-      if (postponed.source.state === "canceled") {
-        const deleted = await this.deleteRaidMessage(raid.staffMessageId);
-        return ephemeral(
-          deleted
-            ? "Requester postponed to the next raid. The empty raid was closed."
-            : "Requester postponed and the empty raid was closed, but its old details message could not be deleted.",
-        );
-      }
-      return update(
-        await raidDetailMessage({
-          raid: postponed.source,
-          repository: this.repository,
-          communityConfig,
-        }),
-      );
+      return await this.handleRaidAction(interaction, raidAction);
     } catch (error) {
       if (error instanceof RepositoryInvariantError) return ephemeral(error.message);
       throw error;
