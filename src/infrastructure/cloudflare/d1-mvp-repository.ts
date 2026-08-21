@@ -126,6 +126,22 @@ interface MaterializedGroup extends OpenGroupRow {
   actionKey?: string;
 }
 
+interface NewMaterializedGroup {
+  actionKey: string;
+  isPriority: number;
+  gameMode: number;
+  mapId: string;
+  capacity: number;
+  sortKey: number;
+}
+
+interface MaterializedAssignment {
+  requestId: number;
+  groupId: number | null;
+  actionKey: string | null;
+  memberPosition: number;
+}
+
 interface QueueSelectionRow {
   gameMode: GameMode;
   requestId: number;
@@ -180,62 +196,70 @@ function requestProjection(): string {
                      WHEN 2 THEN 'completed' ELSE 'canceled' END AS state`;
 }
 
+function raidFromRow(row: RaidRow): StaffBoardRaid {
+  return {
+    gameMode: row.gameMode,
+    id: row.id,
+    queueKind: row.queueKind,
+    mapId: row.mapId,
+    state: row.state,
+    ...(row.outcome === null ? {} : { outcome: row.outcome }),
+    requesterCapacity: row.requesterCapacity,
+    sortKey: row.sortKey,
+    ...(row.leaderDiscordUserId === null ? {} : { leaderDiscordUserId: row.leaderDiscordUserId }),
+    ...(row.leaderType === null ? {} : { leaderType: row.leaderType }),
+    automaticFill: row.automaticFill === 1,
+    attemptCount: row.attemptCount,
+    discordCallStatus: row.discordCallStatus,
+    twitchCallStatus: row.twitchCallStatus,
+    ...(row.staffMessageId === null ? {} : { staffMessageId: row.staffMessageId }),
+    members: [],
+  };
+}
+
+function rowMemberMatchesRaid(row: RaidRow, raid: StaffBoardRaid): boolean {
+  if (raid.state === "planned" || raid.state === "active") {
+    return row.memberState === MEMBER_STATE.planned;
+  }
+  if (raid.outcome === "helped") {
+    return row.memberState === MEMBER_STATE.completed;
+  }
+  return row.memberState !== MEMBER_STATE.removed;
+}
+
+function memberFromRow(row: RaidRow): StaffBoardMember | undefined {
+  if (
+    row.memberId === null ||
+    row.requestId === null ||
+    row.twitchLogin === null ||
+    row.inGameName === null ||
+    row.objective === null ||
+    row.memberPosition === null
+  ) {
+    return undefined;
+  }
+  return {
+    id: row.memberId,
+    requestId: row.requestId,
+    twitchLogin: row.twitchLogin,
+    inGameName: row.inGameName,
+    ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
+    objective: row.objective,
+    ...(row.notes === null ? {} : { notes: row.notes }),
+    position: row.memberPosition,
+  };
+}
+
 function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
   const raids = new Map<number, StaffBoardRaid>();
   for (const row of rows) {
     let raid = raids.get(row.id);
     if (raid === undefined) {
-      raid = {
-        gameMode: row.gameMode,
-        id: row.id,
-        queueKind: row.queueKind,
-        mapId: row.mapId,
-        state: row.state,
-        ...(row.outcome === null ? {} : { outcome: row.outcome }),
-        requesterCapacity: row.requesterCapacity,
-        sortKey: row.sortKey,
-        ...(row.leaderDiscordUserId === null
-          ? {}
-          : { leaderDiscordUserId: row.leaderDiscordUserId }),
-        ...(row.leaderType === null ? {} : { leaderType: row.leaderType }),
-        automaticFill: row.automaticFill === 1,
-        attemptCount: row.attemptCount,
-        discordCallStatus: row.discordCallStatus,
-        twitchCallStatus: row.twitchCallStatus,
-        ...(row.staffMessageId === null ? {} : { staffMessageId: row.staffMessageId }),
-        members: [],
-      };
+      raid = raidFromRow(row);
       raids.set(row.id, raid);
     }
-    let memberStateMatches: boolean;
-    if (raid.state === "planned" || raid.state === "active") {
-      memberStateMatches = row.memberState === MEMBER_STATE.planned;
-    } else if (raid.outcome === "helped") {
-      memberStateMatches = row.memberState === MEMBER_STATE.completed;
-    } else {
-      memberStateMatches = row.memberState !== MEMBER_STATE.removed;
-    }
-    const includeMember =
-      row.memberId !== null &&
-      row.requestId !== null &&
-      row.twitchLogin !== null &&
-      row.inGameName !== null &&
-      row.objective !== null &&
-      row.memberPosition !== null &&
-      memberStateMatches;
-    if (includeMember) {
-      const member: StaffBoardMember = {
-        id: row.memberId as number,
-        requestId: row.requestId as number,
-        twitchLogin: row.twitchLogin as string,
-        inGameName: row.inGameName as string,
-        ...(row.discordUserId === null ? {} : { discordUserId: row.discordUserId }),
-        objective: row.objective as string,
-        ...(row.notes === null ? {} : { notes: row.notes }),
-        position: row.memberPosition as number,
-      };
-      raid.members.push(member);
-    }
+    const member = memberFromRow(row);
+    if (member !== undefined && rowMemberMatchesRaid(row, raid)) raid.members.push(member);
   }
   return [...raids.values()];
 }
@@ -336,6 +360,96 @@ function pullSourceIdSql(requireStaffMessage = true): string {
             FROM destination
           )
           SELECT groupId FROM selected WHERE groupId IS NOT NULL`;
+}
+
+function materializationBucketKey(row: {
+  isPriority: number;
+  gameMode: number;
+  mapId: string;
+}): string {
+  return `${row.isPriority}:${row.gameMode}:${row.mapId}`;
+}
+
+function availableMaterializationGroups(
+  rows: readonly OpenGroupRow[],
+): Map<string, { groups: MaterializedGroup[]; index: number }> {
+  const buckets = new Map<string, { groups: MaterializedGroup[]; index: number }>();
+  for (const row of rows) {
+    if (row.memberCount >= row.requesterCapacity) continue;
+    const key = materializationBucketKey(row);
+    const bucket = buckets.get(key) ?? { groups: [], index: 0 };
+    bucket.groups.push({ ...row });
+    buckets.set(key, bucket);
+  }
+  return buckets;
+}
+
+function nextMaterializationSortKey(
+  request: WaitingRow,
+  maxima: { priority: number; ordinary: number },
+): number {
+  if (request.isPriority === 1) {
+    maxima.priority += SORT_STEP;
+    return maxima.priority;
+  }
+  maxima.ordinary += SORT_STEP;
+  return maxima.ordinary;
+}
+
+function createMaterializedGroup(
+  request: WaitingRow,
+  maxima: { priority: number; ordinary: number },
+  capacityForMap: (mapId: string) => number,
+): MaterializedGroup {
+  return {
+    groupId: 0,
+    actionKey: `materialize:${request.requestId}`,
+    gameMode: request.gameMode,
+    mapId: request.mapId,
+    isPriority: request.isPriority,
+    sortKey: nextMaterializationSortKey(request, maxima),
+    requesterCapacity: capacityForMap(request.mapId),
+    memberCount: 0,
+  };
+}
+
+function planMaterialization(
+  waiting: readonly WaitingRow[],
+  existing: readonly OpenGroupRow[],
+  initialMaxima: { priority: number; ordinary: number },
+  capacityForMap: (mapId: string) => number,
+): { newGroups: NewMaterializedGroup[]; assignments: MaterializedAssignment[] } {
+  const buckets = availableMaterializationGroups(existing);
+  const maxima = { ...initialMaxima };
+  const newGroups: NewMaterializedGroup[] = [];
+  const assignments: MaterializedAssignment[] = [];
+  for (const request of waiting) {
+    const bucketKey = materializationBucketKey(request);
+    const bucket = buckets.get(bucketKey) ?? { groups: [], index: 0 };
+    let group = bucket.groups[bucket.index];
+    if (group === undefined) {
+      group = createMaterializedGroup(request, maxima, capacityForMap);
+      bucket.groups.push(group);
+      buckets.set(bucketKey, bucket);
+      newGroups.push({
+        actionKey: `materialize:${request.requestId}`,
+        isPriority: request.isPriority,
+        gameMode: request.gameMode,
+        mapId: request.mapId,
+        capacity: group.requesterCapacity,
+        sortKey: group.sortKey,
+      });
+    }
+    group.memberCount += 1;
+    assignments.push({
+      requestId: request.requestId,
+      groupId: group.groupId === 0 ? null : group.groupId,
+      actionKey: group.actionKey ?? null,
+      memberPosition: group.memberCount,
+    });
+    if (group.memberCount >= group.requesterCapacity) bucket.index += 1;
+  }
+  return { newGroups, assignments };
 }
 
 export interface TwitchReplyReceipt {
@@ -587,75 +701,15 @@ export class D1MvpRepository
         .first<{ priorityMax: number; ordinaryMax: number }>(),
     ]);
 
-    const availableByQueueAndMap = new Map<
-      string,
-      { groups: MaterializedGroup[]; index: number }
-    >();
-    for (const row of existing.results) {
-      if (row.memberCount >= row.requesterCapacity) continue;
-      const key = `${row.isPriority}:${row.gameMode}:${row.mapId}`;
-      const bucket = availableByQueueAndMap.get(key) ?? { groups: [], index: 0 };
-      bucket.groups.push({ ...row });
-      availableByQueueAndMap.set(key, bucket);
-    }
-    let priorityMax = Number(maxima?.priorityMax ?? 0);
-    let ordinaryMax = Number(maxima?.ordinaryMax ?? 0);
-    const newGroups: Array<{
-      actionKey: string;
-      isPriority: number;
-      gameMode: number;
-      mapId: string;
-      capacity: number;
-      sortKey: number;
-    }> = [];
-    const assignments: Array<{
-      requestId: number;
-      groupId: number | null;
-      actionKey: string | null;
-      memberPosition: number;
-    }> = [];
-    for (const request of waiting.results) {
-      const bucketKey = `${request.isPriority}:${request.gameMode}:${request.mapId}`;
-      const bucket = availableByQueueAndMap.get(bucketKey) ?? { groups: [], index: 0 };
-      let group = bucket.groups[bucket.index];
-      if (group === undefined) {
-        const actionKey = `materialize:${request.requestId}`;
-        if (request.isPriority === 1) {
-          priorityMax += SORT_STEP;
-        } else {
-          ordinaryMax += SORT_STEP;
-        }
-        const sortKey = request.isPriority === 1 ? priorityMax : ordinaryMax;
-        group = {
-          groupId: 0,
-          actionKey,
-          gameMode: request.gameMode,
-          mapId: request.mapId,
-          isPriority: request.isPriority,
-          sortKey,
-          requesterCapacity: this.requesterCapacity(request.mapId, input.recipientLimit),
-          memberCount: 0,
-        };
-        bucket.groups.push(group);
-        availableByQueueAndMap.set(bucketKey, bucket);
-        newGroups.push({
-          actionKey,
-          isPriority: request.isPriority,
-          gameMode: request.gameMode,
-          mapId: request.mapId,
-          capacity: group.requesterCapacity,
-          sortKey,
-        });
-      }
-      group.memberCount += 1;
-      assignments.push({
-        requestId: request.requestId,
-        groupId: group.groupId === 0 ? null : group.groupId,
-        actionKey: group.actionKey ?? null,
-        memberPosition: group.memberCount,
-      });
-      if (group.memberCount >= group.requesterCapacity) bucket.index += 1;
-    }
+    const { newGroups, assignments } = planMaterialization(
+      waiting.results,
+      existing.results,
+      {
+        priority: Number(maxima?.priorityMax ?? 0),
+        ordinary: Number(maxima?.ordinaryMax ?? 0),
+      },
+      (mapId) => this.requesterCapacity(mapId, input.recipientLimit),
+    );
     const timestamp = epoch(input.changedAt);
     const groupJson = JSON.stringify(newGroups);
     const assignmentJson = JSON.stringify(assignments);
