@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { trustedGitExecutable } from "./trusted-git.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CONFIG_PATH = path.join(ROOT, "benchmark", "wrangler.local.jsonc");
@@ -42,7 +43,10 @@ function validateLocalConfiguration() {
 }
 
 function gitCommit() {
-  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" });
+  const result = spawnSync(trustedGitExecutable(), ["rev-parse", "HEAD"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
   return result.status === 0 ? result.stdout.trim() : "unknown";
 }
 

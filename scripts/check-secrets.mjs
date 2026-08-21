@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { trustedGitExecutable } from "./trusted-git.mjs";
 
 const trackedOrPending = execFileSync(
-  "git",
+  trustedGitExecutable(),
   ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
   { encoding: "utf8" },
 )
