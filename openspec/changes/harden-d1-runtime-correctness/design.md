@@ -130,3 +130,37 @@ Board synchronization acquires the lease before it hydrates raid details. The le
 Migration `0007` adds Discord and Twitch claim metadata without changing migration `0006`. Discord retains the signed interaction time as receipt metadata but uses server wall-clock time for expiry. Completion and release require the random claim token.
 
 Twitch claims a new or expired processing receipt before command-side D1 work. Completing that claim stores the reply. A separate random send token permits one external send. Explicit Twitch API rejection clears the send token into retryable failure. An ambiguous network failure or a successful Twitch POST followed by failed D1 acknowledgement keeps the send token and is not retried automatically, favoring at-most-once chat delivery over duplicate messages.
+
+## Final Evidence-Based Corrections
+
+### Raid calls remain concurrent, best-effort background work
+
+Starting a raid commits its D1 state before platform delivery. The Discord interaction response is returned without waiting for either platform. Discord and Twitch call attempts then run concurrently through the existing tracked `waitUntil()` context. The system does not add an outbox or retry a failed, canceled, timed-out, or ambiguous call.
+
+Each platform send determines `sent` or `failed` independently. Its D1 status write runs in separate error handling and is telemetry only: a successful platform POST cannot be relabeled `failed` because the later status write failed. A status-write failure is logged safely and does not cause another platform POST. Twitch command replies retain their deliberate best-effort, at-most-once send-token policy.
+
+### Manual Refresh performs one serialized canonical write
+
+`Refresh` marks the board dirty, schedules the existing leased drain, and returns a caller-only acknowledgement. It does not also return a Discord type-7 canonical-message replacement. The leased drain is the only writer of canonical board content, so the interaction response cannot race a background REST PATCH.
+
+Discord REST requests use a timeout shorter than the 30-second board lease. Creation and 404 replacement clean up a newly posted Discord message if D1 cannot record it or the compare-and-set loses. Cleanup is best effort and never acknowledges an unrecorded message as canonical.
+
+### Legacy candidates are bounded before hydration
+
+The selected legacy page remains limited to 80 waiting requests. Candidate raids are fetched with one indexed, parameterized `LIMIT` per represented priority, game-mode, and map demand bucket, issued in one D1 batch. The Worker therefore hydrates at most 80 candidate raids across the pass instead of ranking every compatible open raid before applying the demand limit.
+
+Pull and postpone cost is measured with 10,000 removed memberships attached to the relevant raid before a new index or summary table is accepted. Any retained optimization must keep request order and follow-up reuse behavior unchanged and must demonstrate that its read reduction is worth its additional index writes and storage.
+
+### Stable Twitch observations are time-monotonic
+
+Forward-only migration `0008` records the latest accepted Twitch observation time on each mapping. Identity observation and Twitch request intake apply stable-ID moves and profile merges only when the incoming authenticated event is not older than the stored observation. A delayed older event cannot rename an identity or active requests back to a stale login. Equal timestamps remain idempotent.
+
+### Benchmark evidence is tied to the measured Worker
+
+The benchmark source digest includes production `src/**`, lockfiles, runtime pins, migrations, benchmark fixtures and configuration, and the exact rewritable baseline. Updating the baseline writes it before calculating the final report digest. Instrumentation counts a D1 binding attempt before awaiting it, including rejected standalone calls.
+
+Maximum cost approvals are operation-family-specific instead of one permissive global ceiling. Assignment-work guards use stable production query IDs and fail if the benchmark captures no assignment query at all. Aggregate scenarios cover competing board drains, overlapping Twitch deliveries, expired leases, and pull/postpone with extensive removed-member history. CI uploads benchmark evidence only after the current benchmark succeeds and does not include a stale comparison document.
+
+### Explicitly excluded mechanisms
+
+This correction does not add a durable raid-call outbox, raid-call retries, a receipt-cleanup Cron Trigger, fencing around every business mutation, or billing claims based on D1 binding-call counts. These mechanisms do not match the accepted best-effort delivery policy or lack evidence that their added complexity and invocation cost are justified.

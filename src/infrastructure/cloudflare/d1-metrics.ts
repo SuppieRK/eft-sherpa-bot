@@ -89,8 +89,8 @@ class InstrumentedStatement implements D1PreparedStatement {
   }
 
   async first<T = unknown>(columnName?: string): Promise<T | null> {
-    const result = await this.statement.all<Record<string, unknown>>();
     this.metrics.recordBindingCall();
+    const result = await this.statement.all<Record<string, unknown>>();
     this.metrics.record(result, this.queryId);
     const row = result.results[0];
     if (row === undefined) {
@@ -106,15 +106,15 @@ class InstrumentedStatement implements D1PreparedStatement {
   }
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    const result = await this.statement.run<T>();
     this.metrics.recordBindingCall();
+    const result = await this.statement.run<T>();
     this.metrics.record(result, this.queryId);
     return result;
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    const result = await this.statement.all<T>();
     this.metrics.recordBindingCall();
+    const result = await this.statement.all<T>();
     this.metrics.record(result, this.queryId);
     return result;
   }
@@ -122,8 +122,8 @@ class InstrumentedStatement implements D1PreparedStatement {
   raw<T = unknown[]>(options: { columnNames: true }): Promise<[string[], ...T[]]>;
   raw<T = unknown[]>(options?: { columnNames?: false }): Promise<T[]>;
   async raw<T = unknown[]>(options?: { columnNames?: boolean }): Promise<T[] | [string[], ...T[]]> {
-    const result = await this.statement.all<Record<string, unknown>>();
     this.metrics.recordBindingCall();
+    const result = await this.statement.all<Record<string, unknown>>();
     this.metrics.record(result, this.queryId);
     const columnNames = Object.keys(result.results[0] ?? {});
     const rows = result.results.map((row) => columnNames.map((column) => row[column])) as T[];

@@ -1104,6 +1104,55 @@ describe("schedule-independent dual queues", () => {
     });
   });
 
+  it("keeps requester postponement bounded with 10,000 removed source memberships", async () => {
+    const repo = repository();
+    const retainedRequest = await createRequest(repo, 1, "customs", "pve", 4);
+    const postponedRequest = await createRequest(repo, 2, "customs", "pve", 4);
+    const source = await start(
+      repo,
+      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+    );
+    await seedWaitingRequests(10_000, { offset: 100_000 });
+    await env.DB.prepare(
+      `UPDATE help_requests SET state = 3
+       WHERE source_delivery_id LIKE 'bulk-delivery-%'`,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO raid_group_members
+         (group_id, request_id, position, state, created_at, updated_at)
+       SELECT ?, id, id + 100, 2, ?, ? FROM help_requests
+       WHERE source_delivery_id LIKE 'bulk-delivery-%'`,
+    )
+      .bind(source.id, now.getTime() - 1, now.getTime() - 1)
+      .run();
+    const openRaidOrdinals = JSON.stringify(
+      Array.from({ length: 10_000 }, (_, index) => index + 1),
+    );
+    await env.DB.prepare(
+      `INSERT INTO raid_groups
+         (is_priority, game_mode, sort_key, map_id, requester_capacity,
+          automatic_fill, state, created_at, updated_at)
+       SELECT 0, 1, source.sort_key + value * 1000000, 'factory', 4, 1, 0, ?, ?
+       FROM json_each(?)
+       JOIN raid_groups AS source ON source.id = ?`,
+    )
+      .bind(now.getTime(), now.getTime(), openRaidOrdinals, source.id)
+      .run();
+    const metrics = new D1Metrics(true);
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+
+    const result = await measured.postponeRequester({
+      groupId: source.id,
+      requestId: postponedRequest,
+      actionKey: "postpone-with-history",
+      changedAt: now,
+    });
+
+    expect(result.source.members.map((member) => member.requestId)).toEqual([retainedRequest]);
+    expect(result.dedicated.members.map((member) => member.requestId)).toEqual([postponedRequest]);
+    expect(metrics.snapshot().rowsRead).toBeLessThan(200);
+  }, 20_000);
+
   it("creates another follow-up after a source-linked follow-up becomes full", async () => {
     const repo = repository();
     const retainedRequest = await createRequest(repo, 1);
@@ -1606,6 +1655,34 @@ describe("schedule-independent dual queues", () => {
     expect(metrics.snapshot().rowsRead).toBeLessThan(2_500);
   }, 20_000);
 
+  it("limits compatible legacy candidates before hydrating a large raid population", async () => {
+    await ensureCommunityState();
+    await seedWaitingRequests(80);
+    const candidates = JSON.stringify(Array.from({ length: 10_000 }, (_, index) => index + 1));
+    await env.DB.prepare(
+      `INSERT INTO raid_groups
+         (is_priority, game_mode, sort_key, map_id, requester_capacity,
+          automatic_fill, state, created_at, updated_at)
+       SELECT 0, 2, value * 1000000, 'customs', 3, 1, 0, ?, ?
+       FROM json_each(?)`,
+    )
+      .bind(now.getTime(), now.getTime(), candidates)
+      .run();
+    const metrics = new D1Metrics(true);
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+
+    await expect(
+      measured.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).resolves.toEqual({ repaired: 80, hasMore: false });
+
+    const candidateUsage = metrics
+      .statementDetails()
+      .filter((statement) => statement.queryId === "assignment.legacy_candidates");
+    expect(candidateUsage).toHaveLength(1);
+    expect(candidateUsage[0]?.rowsRead).toBeLessThan(200);
+    expect(metrics.snapshot().rowsRead).toBeLessThan(2_500);
+  }, 20_000);
+
   it("reserves every non-empty queue-kind and mode pair outside the FIFO batch", async () => {
     await seedWaitingRequests(600, {
       gameMode: (index) => {
@@ -1951,7 +2028,7 @@ describe("schedule-independent dual queues", () => {
     ).resolves.toMatchObject({ replyText: "Current reply", replyStatus: "pending" });
   });
 
-  it("does not rewrite an unchanged Twitch-only identity observation", async () => {
+  it("advances the observation time without changing an unchanged Twitch identity", async () => {
     const repo = repository();
     await repo.observeTwitchIdentity({
       twitchLogin: "same_viewer",
@@ -1966,13 +2043,18 @@ describe("schedule-independent dual queues", () => {
       observedAt: new Date(now.getTime() + 60_000),
     });
 
-    expect(metrics.snapshot()).toMatchObject({ statements: 2, rowsWritten: 0 });
+    expect(metrics.snapshot()).toMatchObject({ statements: 3 });
     await expect(
       env.DB.prepare(
-        `SELECT twitch_user_id AS twitchUserId, updated_at AS updatedAt
+        `SELECT twitch_user_id AS twitchUserId, updated_at AS updatedAt,
+                twitch_observed_at AS twitchObservedAt
          FROM user_mappings WHERE twitch_login = 'same_viewer'`,
       ).first(),
-    ).resolves.toEqual({ twitchUserId: "same-twitch-id", updatedAt: now.getTime() });
+    ).resolves.toEqual({
+      twitchUserId: "same-twitch-id",
+      updatedAt: now.getTime() + 60_000,
+      twitchObservedAt: now.getTime() + 60_000,
+    });
   });
 
   it("moves a conflicting Twitch platform ID to its newly observed login", async () => {
@@ -1995,6 +2077,89 @@ describe("schedule-independent dual queues", () => {
     expect(mappings.results).toEqual([
       { twitchLogin: "new_login", twitchUserId: "shared-twitch-id" },
     ]);
+  });
+
+  it("ignores a delayed identity observation after a newer login move", async () => {
+    const repo = repository();
+    const first = new Date(now.getTime() + 1_000);
+    const latest = new Date(now.getTime() + 3_000);
+    await repo.observeTwitchIdentity({
+      twitchLogin: "identity_old",
+      twitchUserId: "monotonic-stable-id",
+      observedAt: first,
+    });
+    const created = await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "monotonic-original-request",
+      twitchUserId: "monotonic-stable-id",
+      twitchLogin: "identity_old",
+      gameMode: "pve",
+      inGameName: "Monotonic PMC",
+      mapId: "customs",
+      objective: "Keep the newest login",
+      recipientLimit: 4,
+      observedAt: first,
+    });
+    await repo.observeTwitchIdentity({
+      twitchLogin: "identity_new",
+      twitchUserId: "monotonic-stable-id",
+      observedAt: latest,
+    });
+
+    await repo.observeTwitchIdentity({
+      twitchLogin: "identity_old",
+      twitchUserId: "monotonic-stable-id",
+      observedAt: new Date(now.getTime() + 2_000),
+    });
+
+    await expect(
+      env.DB.prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_observed_at AS twitchObservedAt
+         FROM user_mappings WHERE twitch_user_id = 'monotonic-stable-id'`,
+      ).first(),
+    ).resolves.toEqual({ twitchLogin: "identity_new", twitchObservedAt: latest.getTime() });
+    await expect(
+      env.DB.prepare(`SELECT twitch_login AS twitchLogin FROM help_requests WHERE id = ?`)
+        .bind(created.request.id)
+        .first(),
+    ).resolves.toEqual({ twitchLogin: "identity_new" });
+  });
+
+  it("uses the newest stable login for delayed Twitch request intake", async () => {
+    const repo = repository();
+    await repo.observeTwitchIdentity({
+      twitchLogin: "request_new_login",
+      twitchUserId: "request-monotonic-id",
+      observedAt: new Date(now.getTime() + 5_000),
+    });
+
+    const created = await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "delayed-twitch-request",
+      twitchUserId: "request-monotonic-id",
+      twitchLogin: "request_old_login",
+      gameMode: "pve",
+      inGameName: "Delayed PMC",
+      mapId: "woods",
+      objective: "Process without reverting identity",
+      recipientLimit: 4,
+      observedAt: new Date(now.getTime() + 4_000),
+    });
+
+    await expect(
+      env.DB.prepare(`SELECT twitch_login AS twitchLogin FROM help_requests WHERE id = ?`)
+        .bind(created.request.id)
+        .first(),
+    ).resolves.toEqual({ twitchLogin: "request_new_login" });
+    await expect(
+      env.DB.prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_observed_at AS twitchObservedAt
+         FROM user_mappings WHERE twitch_user_id = 'request-monotonic-id'`,
+      ).first(),
+    ).resolves.toEqual({
+      twitchLogin: "request_new_login",
+      twitchObservedAt: now.getTime() + 5_000,
+    });
   });
 
   it("does not transfer profile data when a verified Twitch login is recycled", async () => {
@@ -2317,6 +2482,49 @@ describe("requester pull-up", () => {
     expect(history.results.filter((member) => member.state === 2)).toHaveLength(3);
     expect(history.results.filter((member) => member.state === 0)).toHaveLength(3);
   });
+
+  it("keeps pull and push bounded with 10,000 removed source memberships", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
+    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const destination = await review(repo, first as StaffBoardRaid, "history-pull-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "history-open-destination",
+      changedAt: now,
+    });
+    await seedWaitingRequests(10_000, { offset: 200_000 });
+    await env.DB.prepare(
+      `UPDATE help_requests SET state = 3
+       WHERE source_delivery_id LIKE 'bulk-delivery-%'`,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO raid_group_members
+         (group_id, request_id, position, state, created_at, updated_at)
+       SELECT ?, id, id + 100, 2, ?, ? FROM help_requests
+       WHERE source_delivery_id LIKE 'bulk-delivery-%'`,
+    )
+      .bind(source?.id, now.getTime() - 1, now.getTime() - 1)
+      .run();
+    const selected = source?.members[0]?.requestId as number;
+    const metrics = new D1Metrics(true);
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+
+    const result = await measured.pullRequester({
+      destinationGroupId: destination.id,
+      sourceGroupId: source?.id as number,
+      requestId: selected,
+      actionKey: "history-pull",
+      changedAt: now,
+    });
+
+    expect(result.destination.members.map((member) => member.requestId)).toContain(selected);
+    expect(
+      metrics.snapshot().rowsRead,
+      JSON.stringify(metrics.statementDetails(), null, 2),
+    ).toBeLessThan(300);
+  }, 20_000);
 
   it("retains the complete source party when the immediate successor cannot fit it", async () => {
     const repo = repository();

@@ -87,3 +87,15 @@
 - [x] 10.6 Claim Twitch processing before command work, recover expired processing claims, fence one at-most-once send, and distinguish explicit API failure from ambiguous acknowledgement failure.
 - [x] 10.7 Extend local D1 and concurrency tests for recycled identities, position gaps, board races, abandoned claims, exact overlapping Twitch deliveries, and ambiguous send acknowledgement.
 - [x] 10.8 Run formatting, static analysis, type checking, migration checks, tests, build, strict OpenSpec validation, and the complete fully local D1 benchmark; update evidence only from local D1.
+
+## 11. Final Evidence-Based Corrections
+
+- [x] 11.1 Make manual `Refresh` return a caller-only acknowledgement and route the canonical update only through the leased drain; add a race regression test that proves one canonical writer.
+- [x] 11.2 Start Discord and Twitch raid-call sends concurrently in tracked `waitUntil()` work, separate platform outcome from best-effort status persistence, and cover successful-send/status-write-failure behavior without retries or an outbox.
+- [x] 11.3 Add a Discord REST timeout below the board lease and clean up newly posted canonical messages when D1 recording fails or loses its compare-and-set; cover timeout and orphan cleanup.
+- [x] 11.4 Bound legacy candidate selection before ranking or hydration so one 80-request repair page returns at most its per-bucket demand; cover a large unrelated compatible-raid population.
+- [x] 11.5 Benchmark pull and postpone against 10,000 removed memberships, retain only a measured history optimization, and cover preserved follow-up reuse and requester order.
+- [x] 11.6 Add forward-only migration `0008` for monotonic Twitch identity observation and cover delayed rename, delayed request intake, equal timestamps, and active-request continuity.
+- [x] 11.7 Count failed standalone D1 binding attempts, activate assignment query guards, include production source/runtime/baseline inputs in the digest, and replace broad maximums with reviewed operation-family budgets.
+- [x] 11.8 Add aggregate local scenarios for 10/100 board drains, Twitch overlaps, expired leases, and pull/postpone history; upload only current successful benchmark evidence.
+- [x] 11.9 Run formatting, static analysis, type checking, migration checks, tests, build, strict OpenSpec validation, and the complete fully local D1 benchmark.

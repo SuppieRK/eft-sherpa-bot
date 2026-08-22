@@ -1,15 +1,84 @@
 {
-  "schemaVersion": 1,
-  "operation": {
-    "bindingCalls": 50,
-    "statements": 50,
-    "rowsRead": 1000,
-    "rowsWritten": 200
+  "schemaVersion": 2,
+  "operationFamilies": {
+    "discord:request": { "bindingCalls": 8, "statements": 20, "rowsRead": 350, "rowsWritten": 40 },
+    "discord:queue": { "bindingCalls": 8, "statements": 12, "rowsRead": 200, "rowsWritten": 0 },
+    "discord:link-twitch": {
+      "bindingCalls": 6,
+      "statements": 8,
+      "rowsRead": 20,
+      "rowsWritten": 10
+    },
+    "twitch:request": { "bindingCalls": 16, "statements": 30, "rowsRead": 500, "rowsWritten": 120 },
+    "twitch:queue": { "bindingCalls": 16, "statements": 20, "rowsRead": 220, "rowsWritten": 10 },
+    "board:create": { "bindingCalls": 10, "statements": 12, "rowsRead": 260, "rowsWritten": 8 },
+    "board:open": { "bindingCalls": 8, "statements": 10, "rowsRead": 250, "rowsWritten": 4 },
+    "board:refresh": { "bindingCalls": 10, "statements": 12, "rowsRead": 275, "rowsWritten": 10 },
+    "board:burst": {
+      "bindingCalls": 250,
+      "statements": 260,
+      "rowsRead": 700,
+      "rowsWritten": 150
+    },
+    "raid:review": { "bindingCalls": 16, "statements": 18, "rowsRead": 280, "rowsWritten": 15 },
+    "raid:expired-lease": {
+      "bindingCalls": 140,
+      "statements": 155,
+      "rowsRead": 700,
+      "rowsWritten": 90
+    },
+    "raid:cancel-review": {
+      "bindingCalls": 14,
+      "statements": 16,
+      "rowsRead": 275,
+      "rowsWritten": 12
+    },
+    "raid:call-start": { "bindingCalls": 22, "statements": 24, "rowsRead": 325, "rowsWritten": 20 },
+    "raid:result": { "bindingCalls": 20, "statements": 24, "rowsRead": 375, "rowsWritten": 40 },
+    "raid:postpone-requester": {
+      "bindingCalls": 24,
+      "statements": 30,
+      "rowsRead": 350,
+      "rowsWritten": 40
+    },
+    "raid:remove-requester": {
+      "bindingCalls": 20,
+      "statements": 24,
+      "rowsRead": 300,
+      "rowsWritten": 24
+    },
+    "raid:pull-requester": {
+      "bindingCalls": 26,
+      "statements": 34,
+      "rowsRead": 450,
+      "rowsWritten": 55
+    },
+    "raid:removed-history": {
+      "bindingCalls": 26,
+      "statements": 35,
+      "rowsRead": 450,
+      "rowsWritten": 55
+    },
+    "twitch:overlap": {
+      "bindingCalls": 50,
+      "statements": 65,
+      "rowsRead": 400,
+      "rowsWritten": 50
+    },
+    "discord:stats": { "bindingCalls": 3, "statements": 4, "rowsRead": 20, "rowsWritten": 0 },
+    "discord:users-page": { "bindingCalls": 3, "statements": 3, "rowsRead": 20, "rowsWritten": 0 },
+    "discord:users-complete": {
+      "bindingCalls": 6,
+      "statements": 6,
+      "rowsRead": 20,
+      "rowsWritten": 10
+    },
+    "operator:status": { "bindingCalls": 3, "statements": 5, "rowsRead": 80, "rowsWritten": 0 }
   },
   "databaseBytes": {
-    "100": 300000,
-    "1000": 1200000,
-    "10000": 9000000,
-    "100000": 80000000
+    "100": 350000,
+    "1000": 1400000,
+    "10000": 10000000,
+    "100000": 90000000
   }
 }

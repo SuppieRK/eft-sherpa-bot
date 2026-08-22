@@ -46,6 +46,7 @@ function jsonRows<T>(rows: readonly T[]): string {
 
 async function clearDatabase(): Promise<void> {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM raid_group_follow_ups"),
     env.DB.prepare("DELETE FROM raid_group_members"),
     env.DB.prepare("DELETE FROM raid_groups"),
     env.DB.prepare("DELETE FROM help_requests"),
@@ -196,6 +197,9 @@ export async function seedDatabase(scale: number): Promise<SeedState> {
 
 export async function resetOperationFixture(seed: SeedState): Promise<void> {
   await env.DB.batch([
+    env.DB.prepare(
+      "DELETE FROM raid_group_follow_ups WHERE source_group_id > ? OR target_group_id > ?",
+    ).bind(seed.groupCount, seed.groupCount),
     env.DB.prepare("DELETE FROM raid_group_members WHERE request_id > ? OR group_id > ?").bind(
       seed.scale,
       seed.groupCount,
@@ -240,9 +244,13 @@ export async function seedExpiredReceiptBacklog(count: number): Promise<void> {
   }
 }
 
-export async function seedRemovedMembershipHistory(seed: SeedState, count: number): Promise<void> {
+export async function seedRemovedMembershipHistory(
+  seed: SeedState,
+  count: number,
+  groupId = 1,
+): Promise<void> {
   const timestamp = Date.now();
-  const requestId = seed.scale + 1;
+  const requestId = seed.scale + 1_000_000;
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO user_mappings
@@ -263,7 +271,7 @@ export async function seedRemovedMembershipHistory(seed: SeedState, count: numbe
       const ordinal = start + offset;
       return {
         ordinal,
-        memberId: seed.membershipCount + ordinal + 1,
+        memberId: seed.membershipCount + 1_000_000 + ordinal,
         position: ordinal + 10,
       };
     });
@@ -272,11 +280,11 @@ export async function seedRemovedMembershipHistory(seed: SeedState, count: numbe
     await env.DB.prepare(
       `INSERT INTO raid_group_members
          (id, group_id, request_id, position, state, created_at, updated_at)
-       SELECT json_extract(value, '$.memberId'), 1, ?,
+       SELECT json_extract(value, '$.memberId'), ?, ?,
               json_extract(value, '$.position'), 2, ?, ?
        FROM json_each(?)`,
     )
-      .bind(requestId, timestamp, timestamp, json)
+      .bind(groupId, requestId, timestamp, timestamp, json)
       .run();
   }
 }
@@ -570,5 +578,8 @@ export async function runWorkerRequest(
     context,
   );
   await waitOnExecutionContext(context);
-  return { response, wallMs: Number((performance.now() - startedAt).toFixed(3)) };
+  return {
+    response,
+    wallMs: Number(Math.max(0, performance.now() - startedAt).toFixed(3)),
+  };
 }

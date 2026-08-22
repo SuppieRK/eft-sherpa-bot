@@ -15,8 +15,8 @@ async function insertMapping(login: string, id: string): Promise<void> {
     .run();
 }
 
-describe("eight-table dual-queue schema", () => {
-  it("contains the six operational tables and two statistics rollup tables", async () => {
+describe("nine-table dual-queue schema", () => {
+  it("contains the seven operational tables and two statistics rollup tables", async () => {
     const result = await env.DB.prepare(
       `SELECT name FROM sqlite_schema
        WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'
@@ -27,6 +27,7 @@ describe("eight-table dual-queue schema", () => {
       [
         "event_receipts",
         "help_requests",
+        "raid_group_follow_ups",
         "raid_group_members",
         "raid_groups",
         "staff_leader_statistics",

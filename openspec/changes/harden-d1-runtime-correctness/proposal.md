@@ -16,6 +16,11 @@ The current Worker can lose a viewer's active request after a Twitch login renam
 - Allocate new raid memberships after the highest active position so removed-position gaps cannot block later intake, repair, or postponement.
 - Reject cross-user Twitch login collisions instead of transferring Discord or EFT identity details between stable Twitch IDs.
 - Fence canonical-board creation, replacement, completion, and bounded follow-up work with the exact rendered snapshot version.
+- Route manual board refresh through the same leased canonical update as background synchronization, with no second interaction-response write.
+- Keep raid-call delivery explicitly best effort: return the interaction response first, send Discord and Twitch calls concurrently in tracked background work, do not retry, and record delivery status without changing the platform outcome when the status write fails.
+- Bound legacy repair before candidate ranking and measure pull/postpone behavior against extensive removed-member history before adding any history index or summary structure.
+- Reject older Twitch identity observations after a newer stable-identity observation has committed.
+- Make local benchmark evidence cover the actual Worker source and failure paths, use operation-family budgets, and upload only evidence produced by the successful current run.
 
 ## Capabilities
 
@@ -32,4 +37,4 @@ None.
 
 ## Impact
 
-The change affects the D1 schema and repository queries, Discord and Twitch webhook handlers, board synchronization, Worker telemetry, local Miniflare benchmarks, deployment verification, and regression tests. It does not change public viewer commands or staff workflow wording. The follow-up hardening work uses additive migration `0007` and leaves applied migrations unchanged.
+The change affects the D1 schema and repository queries, Discord and Twitch webhook handlers, board synchronization, Worker telemetry, local Miniflare benchmarks, deployment verification, and regression tests. It does not change public viewer commands or staff workflow wording. The follow-up hardening work uses additive migrations `0007` and `0008` and leaves applied migrations unchanged. Raid-call and Twitch reply delivery remain intentionally best effort and at most once; this change does not add an outbox, retries, or a cleanup Cron Trigger.

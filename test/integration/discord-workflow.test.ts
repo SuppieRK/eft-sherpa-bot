@@ -6,6 +6,7 @@ import { createWorker } from "../../src";
 import type { StaffBoardRaid } from "../../src/domain/staff-board";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
+import { synchronizeCanonicalBoard } from "../../src/infrastructure/discord/staff-board-handler";
 import { testCommunityConfig } from "../fixtures/community";
 
 const callbackUrl = "https://example.com/webhooks/discord/interactions";
@@ -20,6 +21,8 @@ let createResponseStatus = 200;
 let messagePatchStatuses = new Map<string, number>();
 let createBarrierTarget = 0;
 let createBarrierResolvers: Array<() => void> = [];
+let raidCallGate: Promise<void> | undefined;
+let recordRaidCallStart: ((platform: "discord" | "twitch") => void) | undefined;
 let outbound: Array<{ method: string; url: string; body: Record<string, unknown> }> = [];
 
 const discordFetcher = {
@@ -40,6 +43,14 @@ const discordFetcher = {
     }
     if (request.method === "POST" && createResponseStatus !== 200) {
       return new Response(null, { status: createResponseStatus });
+    }
+    if (
+      request.method === "POST" &&
+      request.url.includes(`/channels/${config.discord.requestChannelId}/messages`) &&
+      raidCallGate !== undefined
+    ) {
+      recordRaidCallStart?.("discord");
+      await raidCallGate;
     }
     if (request.method === "POST" && createBarrierTarget > 0) {
       await new Promise<void>((resolve) => {
@@ -295,6 +306,8 @@ beforeEach(() => {
   messagePatchStatuses = new Map();
   createBarrierTarget = 0;
   createBarrierResolvers = [];
+  raidCallGate = undefined;
+  recordRaidCallStart = undefined;
 });
 
 describe("Discord progressive raid workflow", () => {
@@ -718,8 +731,17 @@ describe("Discord progressive raid workflow", () => {
       changedAt,
     });
 
+    outbound = [];
     const response = await refreshBoard("refresh-old-controls");
-    const body = JSON.stringify(await response.json());
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { content: "Refreshing the sherpa board.", flags: 64 },
+    });
+    const canonicalWrites = outbound.filter(
+      (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
+    );
+    expect(canonicalWrites).toHaveLength(1);
+    const body = JSON.stringify(canonicalWrites[0]?.body);
     expect(body).toContain("board:v6:refresh");
     expect(body).toContain("board:v6:review");
     expect(body).toContain("Review a raid");
@@ -786,6 +808,7 @@ describe("Discord progressive raid workflow", () => {
         testEnvironment,
         createExecutionContext(),
       );
+      const callContext = createExecutionContext();
       const response = await worker.fetch(
         await signedRequest(
           context({
@@ -796,9 +819,20 @@ describe("Discord progressive raid workflow", () => {
           }),
         ),
         testEnvironment,
-        createExecutionContext(),
+        callContext,
       );
       expect(response.status).toBe(200);
+      expect(await response.clone().json()).toMatchObject({
+        type: 7,
+        data: {
+          embeds: [
+            expect.objectContaining({
+              description: expect.stringContaining("Calls: Discord pending"),
+            }),
+          ],
+        },
+      });
+      await waitOnExecutionContext(callContext);
       const discordCall = outbound.find((request) =>
         request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
       );
@@ -855,6 +889,7 @@ describe("Discord progressive raid workflow", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(Response.json({ data: [{ message_id: "partial-call", is_sent: true }] }));
 
+    const callContext = createExecutionContext();
     const response = await worker.fetch(
       await signedRequest(
         context({
@@ -865,7 +900,7 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      callContext,
     );
 
     expect(await response.json()).toMatchObject({
@@ -873,11 +908,12 @@ describe("Discord progressive raid workflow", () => {
       data: {
         embeds: [
           expect.objectContaining({
-            description: expect.stringContaining("Discord failed · Twitch sent"),
+            description: expect.stringContaining("Discord pending · Twitch pending"),
           }),
         ],
       },
     });
+    await waitOnExecutionContext(callContext);
     expect(await repo.getRaid(raid.id)).toMatchObject({
       state: "active",
       leaderDiscordUserId: config.discord.streamerUserId,
@@ -885,6 +921,141 @@ describe("Discord progressive raid workflow", () => {
       twitchCallStatus: "sent",
     });
     twitchFetch.mockRestore();
+  });
+
+  it("returns before concurrent best-effort raid calls finish", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("concurrent-call-request")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const staff = {
+      channel_id: config.discord.staffChannelId,
+      member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+    };
+    await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "concurrent-call-review",
+          type: 3,
+          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const startedPlatforms: string[] = [];
+    let releaseCalls = () => {};
+    raidCallGate = new Promise<void>((resolve) => {
+      releaseCalls = resolve;
+    });
+    recordRaidCallStart = (platform) => startedPlatforms.push(platform);
+    const twitchFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      recordRaidCallStart?.("twitch");
+      await raidCallGate;
+      return Response.json({ data: [{ message_id: "concurrent-call", is_sent: true }] });
+    });
+    const executionContext = createExecutionContext();
+
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "concurrent-call-start",
+          type: 3,
+          data: { custom_id: `raid:v2:call:${raid.id}`, values: [] },
+        }),
+      ),
+      testEnvironment,
+      executionContext,
+    );
+
+    expect(await response.json()).toMatchObject({
+      type: 7,
+      data: {
+        embeds: [
+          expect.objectContaining({
+            description: expect.stringContaining("Discord pending · Twitch pending"),
+          }),
+        ],
+      },
+    });
+    await vi.waitFor(() => expect(startedPlatforms.sort()).toEqual(["discord", "twitch"]));
+    releaseCalls();
+    await waitOnExecutionContext(executionContext);
+    expect(await repo.getRaid(raid.id)).toMatchObject({
+      discordCallStatus: "sent",
+      twitchCallStatus: "sent",
+    });
+    raidCallGate = undefined;
+    recordRaidCallStart = undefined;
+    twitchFetch.mockRestore();
+  });
+
+  it("does not relabel sent calls when best-effort status storage fails", async () => {
+    await worker.fetch(
+      await signedRequest(requestModal("call-status-write-request")),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const repo = new D1MvpRepository(env.DB);
+    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const staff = {
+      channel_id: config.discord.staffChannelId,
+      member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
+    };
+    await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "call-status-write-review",
+          type: 3,
+          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+        }),
+      ),
+      testEnvironment,
+      createExecutionContext(),
+    );
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ data: [{ message_id: "status-write", is_sent: true }] }));
+    const statusWrite = vi
+      .spyOn(D1MvpRepository.prototype, "updateCallStatus")
+      .mockRejectedValue(new Error("d1_status_write_failed"));
+    const executionContext = createExecutionContext();
+
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "call-status-write-start",
+          type: 3,
+          data: { custom_id: `raid:v2:call:${raid.id}`, values: [] },
+        }),
+      ),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+
+    expect(response.status).toBe(200);
+    expect(statusWrite.mock.calls.map((call) => call.slice(1, 3))).toEqual(
+      expect.arrayContaining([
+        ["discord", "sent"],
+        ["twitch", "sent"],
+      ]),
+    );
+    expect(statusWrite.mock.calls.some((call) => call[2] === "failed")).toBe(false);
+    expect(
+      outbound.some((request) =>
+        request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+      ),
+    ).toBe(true);
+    twitchFetch.mockRestore();
+    statusWrite.mockRestore();
   });
 
   it("deletes the obsolete details message after recording Helped", async () => {
@@ -998,7 +1169,7 @@ describe("Discord progressive raid workflow", () => {
     messagePatchStatuses.set("deleted-detail", 404);
 
     const response = await refreshBoard("refresh-deleted");
-    expect(await response.json()).toMatchObject({ type: 7 });
+    expect(await response.json()).toMatchObject({ type: 4, data: { flags: 64 } });
 
     const repaired = await repo.getRaid(raid.id);
     expect(repaired).toMatchObject({
@@ -1552,19 +1723,45 @@ describe("Discord progressive raid workflow", () => {
     expect((await repo.getRaid(raid.id))?.staffMessageId).toBe("dead-detail");
   });
 
-  it("keeps one replacement and deletes the duplicate when refreshes overlap", async () => {
+  it("serializes overlapping refreshes before replacing a missing raid message", async () => {
     const { repo, raid } = await seedActiveRaid({ interactionId: "concurrent-repair" });
-    createBarrierTarget = 2;
 
     await Promise.all([refreshBoard("refresh-one"), refreshBoard("refresh-two")]);
 
     const creates = outbound.filter((request) => request.method === "POST");
     const deletes = outbound.filter((request) => request.method === "DELETE");
-    expect(creates).toHaveLength(2);
-    expect(deletes).toHaveLength(1);
+    expect(creates).toHaveLength(1);
+    expect(deletes).toHaveLength(0);
     const retainedMessageId = (await repo.getRaid(raid.id))?.staffMessageId;
-    expect(retainedMessageId).toMatch(/^message-[12]$/);
-    expect(deletes[0]?.url).not.toContain(`/${retainedMessageId}`);
+    expect(retainedMessageId).toBe("message-1");
+  });
+
+  it("deletes a newly created canonical board when D1 cannot record it", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    await repo.markBoardDirty(changedAt);
+    await env.DB.prepare(
+      `CREATE TRIGGER reject_canonical_board_record
+       BEFORE UPDATE OF staff_board_message_id ON community_state
+       WHEN NEW.staff_board_message_id IS NOT NULL
+       BEGIN SELECT RAISE(ABORT, 'forced board record failure'); END`,
+    ).run();
+    outbound = [];
+
+    try {
+      await expect(
+        synchronizeCanonicalBoard({
+          environment: testEnvironment,
+          communityConfig: config,
+          changedAt,
+          createIfMissing: true,
+        }),
+      ).rejects.toThrow("forced board record failure");
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER reject_canonical_board_record`).run();
+    }
+
+    expect(outbound.map((request) => request.method)).toEqual(["POST", "DELETE"]);
+    await expect(repo.getCanonicalBoardMessageId()).resolves.toBeUndefined();
   });
 
   it("deletes an empty raid message after postponing its last requester", async () => {

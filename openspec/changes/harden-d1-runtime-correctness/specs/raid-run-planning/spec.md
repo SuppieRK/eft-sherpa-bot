@@ -64,3 +64,26 @@ Every committed queue change SHALL increment a monotonic board dirty version. Ca
 #### Scenario: Work remains after one bounded drain
 - **WHEN** a newer dirty version still exists after three render attempts
 - **THEN** the tracked execution context schedules another bounded drain and final telemetry includes that follow-up
+
+#### Scenario: Manual Refresh is acknowledged
+- **WHEN** staff select `Refresh`
+- **THEN** the interaction returns a caller-only acknowledgement and only the leased canonical drain writes board content
+
+#### Scenario: Discord board request exceeds its deadline
+- **WHEN** a canonical Discord REST request does not finish before the timeout shorter than the board lease
+- **THEN** the request is canceled without acknowledging the dirty version as rendered
+
+#### Scenario: Canonical message cannot be recorded
+- **WHEN** Discord creates a board message but D1 fails or loses the compare-and-set that records it
+- **THEN** the Worker attempts to delete the unrecorded Discord message and leaves board work dirty
+
+### Requirement: Follow-up and legacy candidate work is demand-bounded
+One legacy repair pass SHALL fetch at most the candidate count required by its selected 80-request page before candidate hydration. Pull and postpone behavior SHALL preserve requester order and follow-up reuse while its D1 cost is tested against at least 10,000 removed memberships on the relevant raid. A history index or summary structure SHALL be retained only with local evidence that its read reduction justifies its write and storage cost.
+
+#### Scenario: Many compatible raids exceed selected legacy demand
+- **WHEN** a selected repair bucket needs two raids and thousands of compatible partial raids exist
+- **THEN** candidate hydration returns at most two indexed raids for that bucket
+
+#### Scenario: Removed history is extensive
+- **WHEN** staff pull or postpone a requester from a raid with 10,000 removed memberships
+- **THEN** the operation preserves the same destination and order semantics and remains within its reviewed operation-family budget
