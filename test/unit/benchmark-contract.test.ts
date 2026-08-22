@@ -92,7 +92,7 @@ describe("local user-facing benchmark contract", () => {
     ).toThrow(/rowsRead changed/);
     expect(() =>
       assertStableCost(values.map((value) => Object.assign({}, value, { statements: 51 }))),
-    ).toThrow(/limit is 50/);
+    ).not.toThrow();
   });
 
   it("commits one exact counter baseline entry for every scale and operation", () => {

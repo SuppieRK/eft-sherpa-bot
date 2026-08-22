@@ -26,3 +26,14 @@ The database SHALL enforce at most one waiting or planned request per stable Twi
 #### Scenario: Twitch reassigns a login held by another stable identity
 - **WHEN** an authenticated Twitch user ID appears under a login mapped to a different non-null Twitch user ID
 - **THEN** the system rejects automatic identity merging and does not transfer either user's Discord or EFT details
+
+### Requirement: Twitch identity observations are time-monotonic
+The system SHALL store the latest accepted authenticated Twitch observation time for a stable identity. Identity observation and Twitch request intake SHALL NOT move or merge that identity from an event older than the stored observation. Equal timestamps SHALL remain idempotent.
+
+#### Scenario: Delayed old login observation arrives
+- **WHEN** a newer authenticated event has moved a stable Twitch identity to a new login and an older event later reports the previous login
+- **THEN** the mapping, active requests, and Twitch mention login remain on the newer login
+
+#### Scenario: Delayed request delivery arrives
+- **WHEN** a delayed valid Twitch request carries an identity observation older than the stored mapping observation
+- **THEN** request intake applies active-request rules without reverting the stable identity to the older login

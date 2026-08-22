@@ -10,6 +10,7 @@ beforeEach(async () => {
   const testEnvironment = env as TestEnvironment;
   await applyD1Migrations(testEnvironment.DB, testEnvironment.TEST_MIGRATIONS);
   await testEnvironment.DB.batch([
+    testEnvironment.DB.prepare("DELETE FROM raid_group_follow_ups"),
     testEnvironment.DB.prepare("DELETE FROM raid_group_members"),
     testEnvironment.DB.prepare("DELETE FROM raid_groups"),
     testEnvironment.DB.prepare("DELETE FROM help_requests"),

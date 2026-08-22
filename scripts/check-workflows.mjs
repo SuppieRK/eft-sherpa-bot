@@ -182,7 +182,7 @@ const benchmarkCondition = "github.event_name == 'pull_request' || github.ref ==
 if (
   benchmarkStep?.run !== "npm run benchmark:d1" ||
   benchmarkStep.if !== benchmarkCondition ||
-  benchmarkArtifactStep?.if !== `always() && (${benchmarkCondition})`
+  benchmarkArtifactStep?.if !== `success() && (${benchmarkCondition})`
 ) {
   failures.push(`${workflowDirectory}/ci.yml: CI must generate local D1 benchmark evidence`);
 }

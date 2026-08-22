@@ -7,6 +7,7 @@ import { isStaffBoardMember, type StaffBoardRaid } from "../../domain/staff-boar
 import { type BoardDrainLease, D1MvpRepository } from "../cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../cloudflare/environment";
 import type { TrackedExecutionContext } from "../cloudflare/telemetry";
+import { logDiagnostic } from "../cloudflare/diagnostics";
 import { sendTwitchChatMessage } from "../twitch/twitch-api";
 import {
   DISCORD_EPHEMERAL_MESSAGE_FLAG,
@@ -175,13 +176,23 @@ async function createCanonicalBoardMessage(input: {
     input.communityConfig.discord.staffChannelId,
     input.message,
   );
-  const completion = await input.repository.completeBoardDrain({
-    token: input.token,
-    renderedVersion: input.renderedVersion,
-    expectedMessageId: input.expectedMessageId,
-    messageId: created.id,
-    changedAt: new Date(),
-  });
+  let completion: Awaited<ReturnType<D1MvpRepository["completeBoardDrain"]>>;
+  try {
+    completion = await input.repository.completeBoardDrain({
+      token: input.token,
+      renderedVersion: input.renderedVersion,
+      expectedMessageId: input.expectedMessageId,
+      messageId: created.id,
+      changedAt: new Date(),
+    });
+  } catch (error) {
+    await deleteDuplicateRaidMessage({
+      environment: input.environment,
+      channelId: input.communityConfig.discord.staffChannelId,
+      messageId: created.id,
+    });
+    throw error;
+  }
   if (!completion.applied) {
     await deleteDuplicateRaidMessage({
       environment: input.environment,
@@ -235,11 +246,13 @@ async function drainCanonicalBoardLease(input: {
   lease: BoardDrainLease;
   reusableSnapshot: BoardSnapshot | undefined;
   captureSnapshot?: (snapshot: BoardSnapshot) => void;
+  beforeRender?: (snapshot: BoardSnapshot) => Promise<void>;
 }): Promise<BoardDrainStepResult> {
   const snapshot =
     input.reusableSnapshot?.boardVersion === input.lease.dirtyVersion
       ? input.reusableSnapshot
       : await input.repository.getBoardSnapshot(input.changedAt);
+  await input.beforeRender?.(snapshot);
   input.captureSnapshot?.(snapshot);
   const message = boardMessage(snapshot, input.communityConfig);
   const renderedVersion = snapshot.boardVersion ?? input.lease.dirtyVersion;
@@ -272,6 +285,7 @@ export async function synchronizeCanonicalBoard(input: {
   context?: ExecutionContext | TrackedExecutionContext;
   snapshot?: BoardSnapshot;
   captureSnapshot?: (snapshot: BoardSnapshot) => void;
+  beforeRender?: (snapshot: BoardSnapshot) => Promise<void>;
 }): Promise<string | undefined> {
   const repository = new D1MvpRepository(input.environment.DB);
   const token = crypto.randomUUID();
@@ -286,8 +300,9 @@ export async function synchronizeCanonicalBoard(input: {
       createIfMissing: input.createIfMissing,
     });
     if (lease === undefined) {
+      if (!input.createIfMissing) return canonicalMessageId;
       const storedMessageId = canonicalMessageId ?? (await repository.getCanonicalBoardMessageId());
-      if (storedMessageId !== undefined || !input.createIfMissing || attempt === 2) {
+      if (storedMessageId !== undefined || attempt === 2) {
         return storedMessageId;
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -318,6 +333,7 @@ export async function synchronizeCanonicalBoard(input: {
           communityConfig: input.communityConfig,
           changedAt: new Date(),
           createIfMissing: input.createIfMissing,
+          ...(input.beforeRender === undefined ? {} : { beforeRender: input.beforeRender }),
           ...(input.context === undefined ? {} : { context: input.context }),
         });
       },
@@ -431,6 +447,7 @@ async function reconcileVisibleRaidMessages(input: {
   changedAt: Date;
   context?: ExecutionContext | TrackedExecutionContext;
   snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
+  skipCanonicalUpdate?: boolean;
 }): Promise<void> {
   const repository = new D1MvpRepository(input.environment.DB);
   const visibleRaids = [...input.snapshot.priorityRaids, ...input.snapshot.ordinaryRaids].filter(
@@ -464,14 +481,16 @@ async function reconcileVisibleRaidMessages(input: {
     if (result.value === null) delete raid.staffMessageId;
     else raid.staffMessageId = result.value;
   }
-  await synchronizeCanonicalBoard({
-    environment: input.environment,
-    communityConfig: input.communityConfig,
-    changedAt: input.changedAt,
-    createIfMissing: false,
-    snapshot: input.snapshot,
-    ...(input.context === undefined ? {} : { context: input.context }),
-  });
+  if (!input.skipCanonicalUpdate) {
+    await synchronizeCanonicalBoard({
+      environment: input.environment,
+      communityConfig: input.communityConfig,
+      changedAt: input.changedAt,
+      createIfMissing: false,
+      snapshot: input.snapshot,
+      ...(input.context === undefined ? {} : { context: input.context }),
+    });
+  }
 }
 
 async function sendRaidCalls(
@@ -495,18 +514,32 @@ async function sendRaidCalls(
     .map((member) => `@${member.twitchLogin}`);
   const discordMentions = [...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ");
   const twitchMentions = raid.members.map((member) => `@${member.twitchLogin}`).join(" ");
-  try {
-    await createDiscordMessage(environment, communityConfig.discord.requestChannelId, {
-      content: appendRaidBringSuffix(`Starting ${raidName}: ${discordMentions}`, resolvedMap),
-      allowed_mentions: { parse: [], users: uniqueUsers },
-    });
-    await repository.updateCallStatus(raid.id, "discord", "sent", changedAt);
-  } catch {
-    await repository.updateCallStatus(raid.id, "discord", "failed", changedAt);
-  }
-  if (raid.twitchCallStatus !== "pending") return;
-  try {
-    await sendTwitchChatMessage(
+  const persistStatus = async (
+    platform: "discord" | "twitch",
+    outcome: "sent" | "failed",
+  ): Promise<void> => {
+    try {
+      await repository.updateCallStatus(raid.id, platform, outcome, changedAt);
+    } catch {
+      logDiagnostic("warn", "raid_call_status_write_failed", { platform, outcome });
+    }
+  };
+  const sendDiscord = async (): Promise<void> => {
+    const outcome = await createDiscordMessage(
+      environment,
+      communityConfig.discord.requestChannelId,
+      {
+        content: appendRaidBringSuffix(`Starting ${raidName}: ${discordMentions}`, resolvedMap),
+        allowed_mentions: { parse: [], users: uniqueUsers },
+      },
+    )
+      .then(() => "sent" as const)
+      .catch(() => "failed" as const);
+    await persistStatus("discord", outcome);
+  };
+  const sendTwitch = async (): Promise<void> => {
+    if (raid.twitchCallStatus !== "pending") return;
+    const outcome = await sendTwitchChatMessage(
       environment,
       {
         clientId: communityConfig.twitch.clientId,
@@ -519,11 +552,12 @@ async function sendRaidCalls(
           resolvedMap,
         ),
       },
-    );
-    await repository.updateCallStatus(raid.id, "twitch", "sent", changedAt);
-  } catch {
-    await repository.updateCallStatus(raid.id, "twitch", "failed", changedAt);
-  }
+    )
+      .then(() => "sent" as const)
+      .catch(() => "failed" as const);
+    await persistStatus("twitch", outcome);
+  };
+  await Promise.all([sendDiscord(), sendTwitch()]);
 }
 
 class StaffBoardHandler {
@@ -840,7 +874,7 @@ class StaffBoardHandler {
         "Only the reserved leader or streamer can start this postponed raid.",
       );
     }
-    let started = await this.repository.startRaid({
+    const started = await this.repository.startRaid({
       groupId: raid.id,
       leaderDiscordUserId: interaction.discordUserId,
       leaderType: isStreamer ? "streamer" : "volunteer",
@@ -848,8 +882,18 @@ class StaffBoardHandler {
       canOverrideReservedLeader: isStreamer,
       changedAt,
     });
-    await sendRaidCalls(started, this.dependencies, this.repository);
-    started = (await this.repository.getRaid(raid.id)) ?? started;
+    scheduleBackground(
+      this.dependencies.context,
+      "discord.raid_calls",
+      this.dependencies.environment,
+      async (environment) => {
+        await sendRaidCalls(
+          started,
+          { ...this.dependencies, environment },
+          new D1MvpRepository(environment.DB),
+        );
+      },
+    );
     this.refreshBoardLater();
     return update(renderRaidMessage(started, communityConfig.policies.attemptLimit));
   }
@@ -1008,10 +1052,31 @@ class StaffBoardHandler {
     }
     if (boardAction?.action === "refresh") {
       await this.repository.markBoardDirty(changedAt);
-      const snapshot = await this.repository.getBoardSnapshot(changedAt);
-      const message = boardMessage(snapshot, communityConfig);
-      this.reconcileBoardLater(snapshot);
-      return update(message);
+      scheduleBackground(
+        this.dependencies.context,
+        "discord.board_reconciliation",
+        this.dependencies.environment,
+        async (environment) => {
+          await synchronizeCanonicalBoard({
+            environment,
+            communityConfig: this.dependencies.communityConfig,
+            changedAt,
+            createIfMissing: false,
+            ...(this.dependencies.context === undefined
+              ? {}
+              : { context: this.dependencies.context }),
+            beforeRender: async (snapshot) => {
+              await reconcileVisibleRaidMessages({
+                ...this.dependencies,
+                environment,
+                snapshot,
+                skipCanonicalUpdate: true,
+              });
+            },
+          });
+        },
+      );
+      return ephemeral("Refreshing the sherpa board.");
     }
     const claimToken = await this.claimMutation(
       interaction.interactionId,

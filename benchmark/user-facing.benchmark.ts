@@ -47,6 +47,10 @@ interface ExternalCall {
 
 interface PreparedOperation {
   request: Request;
+  execute?(
+    worker: ReturnType<typeof createWorker>,
+    environment: CloudflareEnvironment,
+  ): Promise<{ response: Response; wallMs: number }>;
   verify(response: Response): Promise<void> | void;
 }
 
@@ -124,6 +128,23 @@ function ordinal(value: number): string {
 
 async function responseText(response: Response): Promise<string> {
   return JSON.stringify(await response.json());
+}
+
+async function runConcurrentWorkerRequests(
+  worker: ReturnType<typeof createWorker>,
+  environment: CloudflareEnvironment,
+  requests: readonly Request[],
+): Promise<{ response: Response; wallMs: number }> {
+  const startedAt = performance.now();
+  const executions = await Promise.all(
+    requests.map((request) => runWorkerRequest(worker, environment, request)),
+  );
+  const response = executions[0]?.response;
+  if (response === undefined) throw new Error("Concurrent benchmark requires one request.");
+  return {
+    response,
+    wallMs: Number(Math.max(0, performance.now() - startedAt).toFixed(3)),
+  };
 }
 
 function operationDefinitions(input: {
@@ -457,6 +478,38 @@ function operationDefinitions(input: {
       },
     },
     {
+      id: "twitch.request.concurrent-exact-10",
+      label: "Ten overlapping copies of one Twitch request delivery",
+      async prepare(_seed, sample) {
+        const request = await twitch({
+          text: "!request pve customs overlapping objective",
+          deliveryId: `${OPERATION_PREFIX}twitch-overlap-${sample}`,
+          twitchUserId: `${OPERATION_PREFIX}twitch-overlap`,
+          twitchLogin: "op_twitch_overlap",
+        });
+        const requests = Array.from({ length: 10 }, () => request.clone());
+        return {
+          request,
+          execute: (worker, environment) =>
+            runConcurrentWorkerRequests(worker, environment, requests),
+          async verify(response) {
+            expect(response.status).toBe(204);
+            await expect(
+              env.DB.prepare(
+                `SELECT count(*) AS count FROM help_requests
+                 WHERE twitch_user_id = ? AND state IN (0, 1)`,
+              )
+                .bind(`${OPERATION_PREFIX}twitch-overlap`)
+                .first(),
+            ).resolves.toEqual({ count: 1 });
+            expect(twitchCalls.filter((call) => call.url.includes("/chat/messages"))).toHaveLength(
+              1,
+            );
+          },
+        };
+      },
+    },
+    {
       id: "twitch.request.already-active",
       label: "Twitch !request (already active)",
       async prepare(seed, sample) {
@@ -614,6 +667,39 @@ function operationDefinitions(input: {
         };
       },
     },
+    ...([10, 100] as const).map<OperationDefinition>((count) => ({
+      id: `discord.board.refresh.concurrent-${count}`,
+      label: `${count} concurrent Discord board Refresh interactions`,
+      async prepare(_seed, sample) {
+        const requests = await Promise.all(
+          Array.from({ length: count }, (_, index) =>
+            component({
+              id: `${OPERATION_PREFIX}board-burst-${count}-${sample}-${index}`,
+              customId: "board:v6:refresh",
+            }),
+          ),
+        );
+        return {
+          request: requests[0] as Request,
+          execute: (worker, environment) =>
+            runConcurrentWorkerRequests(worker, environment, requests),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const state = await env.DB.prepare(
+              `SELECT board_dirty_version AS dirtyVersion,
+                      board_rendered_version AS renderedVersion
+               FROM community_state WHERE community_id = 'butcoffee'`,
+            ).first<{ dirtyVersion: number; renderedVersion: number }>();
+            expect(state?.renderedVersion).toBe(state?.dirtyVersion);
+            expect(
+              discordMock.calls.filter(
+                (call) => call.method === "PATCH" && call.url.endsWith("benchmark-canonical-board"),
+              ).length,
+            ).toBeLessThan(count);
+          },
+        };
+      },
+    })),
     {
       id: "discord.raid.review",
       label: "Discord planned raid review",
@@ -654,6 +740,62 @@ function operationDefinitions(input: {
               staffMessageId: `${OPERATION_PREFIX}message-1`,
             });
             expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.raid.review.expired-leases-10",
+      label: "Ten concurrent Discord reviews reclaiming expired leases",
+      async prepare(seed, sample) {
+        const raids = await Promise.all(
+          Array.from({ length: 10 }, (_, index) =>
+            seedOperationRaid({
+              seed,
+              suffix: `expired_review_${index}`,
+              fixtureOrdinal: index + 1,
+              memberCount: 1,
+              state: "planned",
+              streamerDiscordUserId: streamerId,
+              isPriority: true,
+              visibleFirst: true,
+            }),
+          ),
+        );
+        const deliveryIds = raids.map(
+          (_raid, index) => `${OPERATION_PREFIX}expired-review-${sample}-${index}`,
+        );
+        await env.DB.prepare(
+          `INSERT INTO event_receipts
+             (platform, delivery_id, event_type, received_at,
+              discord_mutation_status, discord_claim_until, discord_claim_token)
+           SELECT 0, value, 'raid:review', ?, 0, 0, 'abandoned'
+           FROM json_each(?)`,
+        )
+          .bind(Date.now() - 60_000, JSON.stringify(deliveryIds))
+          .run();
+        const requests = await Promise.all(
+          raids.map((raid, index) =>
+            component({
+              id: deliveryIds[index] as string,
+              customId: "board:v6:review",
+              values: [String(raid.groupId)],
+            }),
+          ),
+        );
+        return {
+          request: requests[0] as Request,
+          execute: (worker, environment) =>
+            runConcurrentWorkerRequests(worker, environment, requests),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const reviewed = await env.DB.prepare(
+              `SELECT count(*) AS count FROM raid_groups
+               WHERE id > ? AND automatic_fill = 0 AND staff_message_id IS NOT NULL`,
+            )
+              .bind(seed.groupCount)
+              .first<{ count: number }>();
+            expect(reviewed?.count).toBe(10);
           },
         };
       },
@@ -801,6 +943,32 @@ function operationDefinitions(input: {
       },
     },
     {
+      id: "discord.requester.pull.removed-history",
+      label: "Discord pull requester with 10,000 removed source memberships",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        await seedRemovedMembershipHistory(seed, 10_000, fixture.source.groupId);
+        const selectedRequestId = fixture.source.requestIds[0] as number;
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}pull-history-${sample}`,
+            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            values: [String(selectedRequestId)],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const current = await env.DB.prepare(
+              `SELECT count(*) AS count FROM raid_group_members
+               WHERE request_id = ? AND state = 0`,
+            )
+              .bind(selectedRequestId)
+              .first<{ count: number }>();
+            expect(current?.count).toBe(1);
+          },
+        };
+      },
+    },
+    {
       id: "discord.raid.result.helped",
       label: "Discord raid result Helped",
       async prepare(seed, sample) {
@@ -865,6 +1033,40 @@ function operationDefinitions(input: {
         };
       },
     })),
+    {
+      id: "discord.requester.postpone.removed-history",
+      label: "Discord postpone requester with 10,000 removed source memberships",
+      async prepare(seed, sample) {
+        const raid = await seedOperationRaid({
+          seed,
+          suffix: "postpone_history",
+          memberCount: 2,
+          state: "active",
+          streamerDiscordUserId: streamerId,
+          isPriority: true,
+          visibleFirst: true,
+        });
+        await seedRemovedMembershipHistory(seed, 10_000, raid.groupId);
+        const requestId = raid.requestIds[0] as number;
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}postpone-history-${sample}`,
+            customId: `raid:v2:postpone:${raid.groupId}`,
+            values: [String(requestId)],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const current = await env.DB.prepare(
+              `SELECT count(*) AS count FROM raid_group_members
+               WHERE request_id = ? AND state = 0`,
+            )
+              .bind(requestId)
+              .first<{ count: number }>();
+            expect(current?.count).toBe(1);
+          },
+        };
+      },
+    },
     ...([false, true] as const).map<OperationDefinition>((last) => ({
       id: last ? "discord.requester.remove.last" : "discord.requester.remove.remaining",
       label: `Discord remove requester (${last ? "last requester" : "source remains"})`,
@@ -1130,7 +1332,10 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
             TWITCH_API_BASE_URL: "https://twitch.benchmark.invalid/helix",
             TWITCH_AUTH_BASE_URL: "https://twitch.benchmark.invalid/oauth2",
           } satisfies CloudflareEnvironment;
-          const execution = await runWorkerRequest(worker, environment, prepared.request);
+          const execution =
+            prepared.execute === undefined
+              ? await runWorkerRequest(worker, environment, prepared.request)
+              : await prepared.execute(worker, environment);
           await prepared.verify(execution.response);
           if (sample >= sampling.warmups) {
             const usage = metrics.snapshot();
@@ -1147,7 +1352,12 @@ it("benchmarks every selected user-facing operation with fully local D1", async 
             });
           }
         }
-        assertStableCost(measurements);
+        try {
+          assertStableCost(measurements);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "unknown cost instability";
+          throw new Error(`${definition.id}: ${message}; samples=${JSON.stringify(measurements)}`);
+        }
         results.push({
           id: definition.id,
           label: definition.label,

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { assertExactD1Baseline, createD1CostBaseline } from "../benchmark/baseline.ts";
+import { OPERATION_FAMILY_BY_ID } from "../benchmark/contract.ts";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CONFIG_PATH = path.join(ROOT, "benchmark", "wrangler.local.jsonc");
@@ -47,6 +48,11 @@ function validateLocalConfiguration() {
 }
 
 function sourceDigest() {
+  const recursiveFiles = (relativeDirectory) =>
+    readdirSync(path.join(ROOT, relativeDirectory), { withFileTypes: true }).flatMap((entry) => {
+      const relativePath = path.posix.join(relativeDirectory, entry.name);
+      return entry.isDirectory() ? recursiveFiles(relativePath) : [relativePath];
+    });
   const relativePaths = [
     "benchmark/baseline.ts",
     "benchmark/contract.ts",
@@ -54,9 +60,14 @@ function sourceDigest() {
     "benchmark/support.ts",
     "benchmark/user-facing.benchmark.ts",
     "benchmark/d1-maximum-budget.json",
+    "benchmark/d1-cost-baseline.json",
     "benchmark/wrangler.local.jsonc",
     "scripts/run-d1-benchmark.mjs",
+    "package.json",
+    "package-lock.json",
+    ".node-version",
     "vitest.benchmark.config.ts",
+    ...recursiveFiles("src").sort((left, right) => left.localeCompare(right, "en")),
     ...readdirSync(path.join(ROOT, "migrations"))
       .filter((name) => name.endsWith(".sql"))
       .sort((left, right) => left.localeCompare(right, "en"))
@@ -75,10 +86,13 @@ function sourceDigest() {
 function assertMaximumBudget(report) {
   const budget = JSON.parse(readFileSync(MAXIMUM_BUDGET_PATH, "utf8"));
   for (const result of report.results) {
+    const family = OPERATION_FAMILY_BY_ID[result.id];
+    const familyBudget = budget.operationFamilies[family];
+    if (familyBudget === undefined) fail(`${result.id} has no reviewed ${family} family budget`);
     for (const counter of ["bindingCalls", "statements", "rowsRead", "rowsWritten"]) {
-      if (result.aggregate[counter].max > budget.operation[counter]) {
+      if (result.aggregate[counter].max > familyBudget[counter]) {
         fail(
-          `${result.id} ${counter} ${String(result.aggregate[counter].max)} exceeds reviewed maximum ${String(budget.operation[counter])}`,
+          `${result.id} ${counter} ${String(result.aggregate[counter].max)} exceeds reviewed ${family} maximum ${String(familyBudget[counter])}`,
         );
       }
     }
@@ -163,13 +177,13 @@ function markdown(report) {
   }
   lines.push(
     "",
-    "Focused adversarial scenarios add 600 expired receipts and 1,000, 10,000, and 100,000 removed membership rows outside the measured window. They exercise complete Worker command paths without changing the stable active-request seed matrix. Legacy unassigned-request recovery is covered by deterministic integration tests because it is an authenticated deployment operation, not a user-facing command.",
+    "Focused adversarial scenarios add 600 expired receipts, concurrent board and delivery bursts, expired Discord claims, and up to 100,000 removed membership rows outside the measured window. They exercise complete Worker command paths without changing the stable active-request seed matrix. Legacy unassigned-request recovery is covered by deterministic local D1 integration tests because it is an authenticated deployment operation, not a user-facing command.",
     "",
     "## Cost Invariants",
     "",
     "- Identical samples must have identical D1 binding-call, statement, row-read, and row-write counts.",
     "- The hand-reviewed maximum budget is separate from the rewritable exact baseline.",
-    "- One user operation must use no more than 50 D1 statements.",
+    "- Every operation must remain within its hand-reviewed operation-family maximums.",
     "- Statement and write counts must remain constant across scales.",
     "- Row reads must remain within the configured approximately-linear growth allowance.",
     "- Discord Queue must read fewer than 200 D1 rows at every scale and percentile.",
@@ -225,6 +239,13 @@ const combined = {
   seeds: scaleReports.flatMap((scaleReport) => scaleReport.seeds),
   results: scaleReports.flatMap((scaleReport) => scaleReport.results),
 };
+if (
+  !combined.results.some((result) =>
+    Object.keys(result.statementGroups ?? {}).some((group) => group.startsWith("assignment.")),
+  )
+) {
+  fail("no assignment.* production query ID was captured; the assignment guard is inactive");
+}
 for (const operationId of new Set(combined.results.map((result) => result.id))) {
   const operationResults = combined.results.filter((result) => result.id === operationId);
   const statements = new Set(operationResults.map((result) => result.aggregate.statements.median));
@@ -355,6 +376,20 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     }
   }
 }
+const biomePath = path.join(ROOT, "node_modules", "@biomejs", "biome", "bin", "biome");
+if (updateBaseline) {
+  writeFileSync(BASELINE_PATH, `${JSON.stringify(createD1CostBaseline(combined), null, 2)}\n`);
+  const baselineFormatting = spawnSync(
+    process.execPath,
+    [biomePath, "format", "--write", BASELINE_PATH],
+    { cwd: ROOT, encoding: "utf8" },
+  );
+  if (baselineFormatting.status !== 0) {
+    process.stdout.write(baselineFormatting.stdout ?? "");
+    process.stderr.write(baselineFormatting.stderr ?? "");
+    fail("Biome could not format the exact D1 baseline");
+  }
+}
 const report = {
   ...combined,
   generatedAt: new Date().toISOString(),
@@ -371,16 +406,10 @@ assertMaximumBudget(report);
 const jsonReportPath = path.join(ROOT, "reports", "d1-user-facing-benchmark.json");
 writeFileSync(jsonReportPath, `${JSON.stringify(report, null, 2)}\n`);
 writeFileSync(path.join(ROOT, "reports", "d1-user-facing-benchmark.md"), markdown(report));
-if (updateBaseline) {
-  writeFileSync(BASELINE_PATH, `${JSON.stringify(createD1CostBaseline(report), null, 2)}\n`);
-}
-const biomePath = path.join(ROOT, "node_modules", "@biomejs", "biome", "bin", "biome");
-const formattedPaths = updateBaseline ? [jsonReportPath, BASELINE_PATH] : [jsonReportPath];
-const formatting = spawnSync(
-  process.execPath,
-  [biomePath, "format", "--write", ...formattedPaths],
-  { cwd: ROOT, encoding: "utf8" },
-);
+const formatting = spawnSync(process.execPath, [biomePath, "format", "--write", jsonReportPath], {
+  cwd: ROOT,
+  encoding: "utf8",
+});
 if (formatting.status !== 0) {
   process.stdout.write(formatting.stdout ?? "");
   process.stderr.write(formatting.stderr ?? "");

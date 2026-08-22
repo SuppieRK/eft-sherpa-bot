@@ -46,7 +46,7 @@ const RECEIPT_CLEANUP_BATCH_SIZE = 100;
 const RECEIPT_CLEANUP_INTERVAL_MS = 15 * 60 * 1_000;
 const DISCORD_MUTATION_CLAIM_MS = 5 * 60 * 1_000;
 const TWITCH_COMMAND_CLAIM_MS = 2 * 60 * 1_000;
-const BOARD_DRAIN_LEASE_MS = 30 * 1_000;
+export const BOARD_DRAIN_LEASE_MS = 30 * 1_000;
 const BOARD_PRIORITY_RAID_LIMIT = 3;
 const BOARD_ORDINARY_RAID_LIMIT = 7;
 const MAX_REQUESTERS_PER_RAID = 4;
@@ -115,6 +115,7 @@ interface UserMappingRow {
   discordUserId: string | null;
   discordDisplayName: string | null;
   inGameName: string | null;
+  twitchObservedAt?: number;
 }
 
 function directoryEntry(row: UserMappingRow): StaffUserDirectoryEntry {
@@ -216,6 +217,7 @@ interface QueueRaidOrderRow {
 }
 
 interface RequesterFollowUpWindow {
+  isPriority: number;
   sourceSortKey: number;
   anchorSortKey: number;
   nextSortKey: number | null;
@@ -228,6 +230,16 @@ interface PostponeRequesterInput {
   requestId: number;
   actionKey: string;
   changedAt: Date;
+}
+
+interface ValidatedCreateRequest {
+  actionKey: string;
+  notes?: string;
+  objective: string;
+  platform: number;
+  requesterCapacity: number;
+  timestamp: number;
+  twitchLogin: string;
 }
 
 interface PullBoundaryRow {
@@ -618,32 +630,37 @@ export class D1MvpRepository
     discordDisplayName?: string;
     inGameName?: string;
     timestamp: number;
+    twitchObservationTimestamp?: number;
   }): D1PreparedStatement[] {
     const statements: D1PreparedStatement[] = [];
+    const twitchObservationTimestamp = input.twitchObservationTimestamp ?? 0;
     if (input.twitchUserId !== undefined) {
       statements.push(
         this.database
           .prepare(
             `UPDATE user_mappings
-             SET twitch_login = ?, updated_at = ?
+             SET twitch_login = ?, twitch_observed_at = ?, updated_at = ?
              WHERE twitch_user_id = ? AND twitch_login <> ?
+               AND twitch_observed_at <= ?
                AND NOT EXISTS (
                  SELECT 1 FROM user_mappings AS target WHERE target.twitch_login = ?
                )`,
           )
           .bind(
             input.twitchLogin,
+            twitchObservationTimestamp,
             input.timestamp,
             input.twitchUserId,
             input.twitchLogin,
+            twitchObservationTimestamp,
             input.twitchLogin,
           ),
         this.database
           .prepare(
             `UPDATE user_mappings SET twitch_user_id = NULL, updated_at = ?
-             WHERE twitch_user_id = ? AND twitch_login <> ?`,
+             WHERE twitch_user_id = ? AND twitch_login <> ? AND twitch_observed_at <= ?`,
           )
-          .bind(input.timestamp, input.twitchUserId, input.twitchLogin),
+          .bind(input.timestamp, input.twitchUserId, input.twitchLogin, twitchObservationTimestamp),
       );
     }
     if (input.discordUserId !== undefined) {
@@ -662,19 +679,28 @@ export class D1MvpRepository
         .prepare(
           `INSERT INTO user_mappings
              (twitch_login, twitch_user_id, discord_user_id, discord_display_name,
-              in_game_name, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+              in_game_name, created_at, updated_at, twitch_observed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(twitch_login) DO UPDATE SET
-             twitch_user_id = coalesce(excluded.twitch_user_id, user_mappings.twitch_user_id),
+             twitch_user_id = CASE
+               WHEN excluded.twitch_user_id IS NULL THEN user_mappings.twitch_user_id
+               WHEN user_mappings.twitch_observed_at <= excluded.twitch_observed_at
+                 THEN excluded.twitch_user_id ELSE user_mappings.twitch_user_id END,
              discord_user_id = coalesce(excluded.discord_user_id, user_mappings.discord_user_id),
              discord_display_name = coalesce(excluded.discord_display_name, user_mappings.discord_display_name),
              in_game_name = CASE
                WHEN excluded.in_game_name IS NULL THEN user_mappings.in_game_name
                WHEN user_mappings.in_game_name IS NULL OR excluded.discord_user_id IS NOT NULL
                  THEN excluded.in_game_name ELSE user_mappings.in_game_name END,
-             updated_at = excluded.updated_at
+             twitch_observed_at = CASE WHEN excluded.twitch_user_id IS NULL
+               THEN user_mappings.twitch_observed_at
+               ELSE max(user_mappings.twitch_observed_at, excluded.twitch_observed_at) END,
+             updated_at = max(user_mappings.updated_at, excluded.updated_at)
            WHERE user_mappings.twitch_user_id IS NOT
-                   coalesce(excluded.twitch_user_id, user_mappings.twitch_user_id)
+                   CASE
+                     WHEN excluded.twitch_user_id IS NULL THEN user_mappings.twitch_user_id
+                     WHEN user_mappings.twitch_observed_at <= excluded.twitch_observed_at
+                       THEN excluded.twitch_user_id ELSE user_mappings.twitch_user_id END
               OR user_mappings.discord_user_id IS NOT
                    coalesce(excluded.discord_user_id, user_mappings.discord_user_id)
               OR user_mappings.discord_display_name IS NOT
@@ -682,7 +708,9 @@ export class D1MvpRepository
               OR user_mappings.in_game_name IS NOT CASE
                    WHEN excluded.in_game_name IS NULL THEN user_mappings.in_game_name
                    WHEN user_mappings.in_game_name IS NULL OR excluded.discord_user_id IS NOT NULL
-                     THEN excluded.in_game_name ELSE user_mappings.in_game_name END`,
+                     THEN excluded.in_game_name ELSE user_mappings.in_game_name END
+              OR (excluded.twitch_user_id IS NOT NULL
+                  AND user_mappings.twitch_observed_at < excluded.twitch_observed_at)`,
         )
         .bind(
           input.twitchLogin,
@@ -692,6 +720,7 @@ export class D1MvpRepository
           input.inGameName?.trim() || null,
           input.timestamp,
           input.timestamp,
+          twitchObservationTimestamp,
         ),
     );
     return statements;
@@ -713,15 +742,16 @@ export class D1MvpRepository
     return orderByModePresence([...unique.values()]).slice(0, exactAheadLimit + 1);
   }
 
-  async createRequest(input: CreateHelpRequest): Promise<CreateHelpRequestOutcome> {
+  private validateCreateRequest(input: CreateHelpRequest): ValidatedCreateRequest {
     if (input.discordUserId === undefined && input.twitchUserId === undefined) {
       throw new RepositoryInvariantError("a request requires a Discord or Twitch caller ID");
     }
     const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
     const objective = input.objective.trim();
     const notes = input.notes?.trim() || undefined;
-    if (twitchLogin === undefined)
+    if (twitchLogin === undefined) {
       throw new RepositoryInvariantError("a request requires a valid Twitch name");
+    }
     if (objective.length < 1 || objective.length > 150) {
       throw new RepositoryInvariantError("the request objective must contain 1 to 150 characters");
     }
@@ -731,13 +761,50 @@ export class D1MvpRepository
     if (!Number.isInteger(input.recipientLimit) || input.recipientLimit < 1) {
       throw new RepositoryInvariantError("recipient limit must be a positive integer");
     }
-    const requesterCapacity = this.requesterCapacity(input.mapId, input.recipientLimit);
-    const timestamp = epoch(input.observedAt);
     const platform = PLATFORM[input.sourcePlatform];
-    const actionKey = `intake:${platform}:${input.sourceDeliveryId}`;
-    if (input.twitchUserId !== undefined) {
-      await this.assertNoStableIdentityCollision(twitchLogin, input.twitchUserId);
+    return {
+      twitchLogin,
+      objective,
+      ...(notes === undefined ? {} : { notes }),
+      requesterCapacity: this.requesterCapacity(input.mapId, input.recipientLimit),
+      timestamp: epoch(input.observedAt),
+      platform,
+      actionKey: `intake:${platform}:${input.sourceDeliveryId}`,
+    };
+  }
+
+  private async resolveCreateRequestTwitchLogin(
+    input: CreateHelpRequest,
+    twitchLogin: string,
+    timestamp: number,
+  ): Promise<string> {
+    if (input.twitchUserId === undefined) return twitchLogin;
+    const stable = await this.database
+      .prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_observed_at AS twitchObservedAt
+         FROM user_mappings WHERE twitch_user_id = ?`,
+      )
+      .bind(input.twitchUserId)
+      .first<{ twitchLogin: string; twitchObservedAt: number }>();
+    if (
+      input.sourcePlatform === "twitch" &&
+      stable !== null &&
+      stable.twitchObservedAt > timestamp
+    ) {
+      return stable.twitchLogin;
     }
+    await this.assertNoStableIdentityCollision(twitchLogin, input.twitchUserId);
+    return twitchLogin;
+  }
+
+  async createRequest(input: CreateHelpRequest): Promise<CreateHelpRequestOutcome> {
+    const validated = this.validateCreateRequest(input);
+    const { actionKey, notes, objective, platform, requesterCapacity, timestamp } = validated;
+    const twitchLogin = await this.resolveCreateRequestTwitchLogin(
+      input,
+      validated.twitchLogin,
+      timestamp,
+    );
     const statements = this.userMappingStatements({
       twitchLogin,
       ...(input.twitchUserId === undefined ? {} : { twitchUserId: input.twitchUserId }),
@@ -747,6 +814,9 @@ export class D1MvpRepository
         : { discordDisplayName: input.discordDisplayName }),
       inGameName: input.inGameName,
       timestamp,
+      ...(input.sourcePlatform === "twitch" && input.twitchUserId !== undefined
+        ? { twitchObservationTimestamp: timestamp }
+        : {}),
     });
     const requestInsertIndex = statements.length;
     statements.push(
@@ -781,7 +851,8 @@ export class D1MvpRepository
         ),
       this.database
         .prepare(
-          `INSERT OR IGNORE INTO raid_groups
+          `/* d1:assignment.intake_group */
+           INSERT OR IGNORE INTO raid_groups
              (is_priority, game_mode, sort_key, map_id, requester_capacity,
               last_action_key, created_at, updated_at)
            SELECT request.is_priority, request.game_mode,
@@ -821,7 +892,8 @@ export class D1MvpRepository
     statements.push(
       this.database
         .prepare(
-          `INSERT OR IGNORE INTO raid_group_members
+          `/* d1:assignment.intake_membership */
+           INSERT OR IGNORE INTO raid_group_members
              (group_id, request_id, position, created_at, updated_at)
            SELECT raid.id, request.id,
                   (SELECT coalesce(max(member.position), 0) + 1
@@ -1155,38 +1227,26 @@ export class D1MvpRepository
         >())
         .values(),
     ];
-    const [existing, maxima] = await Promise.all([
-      this.database
-        .prepare(
-          `WITH demand AS (
-             SELECT cast(json_extract(value, '$.isPriority') AS INTEGER) AS is_priority,
-                    cast(json_extract(value, '$.gameMode') AS INTEGER) AS game_mode,
-                    json_extract(value, '$.mapId') AS map_id,
-                    cast(json_extract(value, '$.requestCount') AS INTEGER) AS request_count
-             FROM json_each(?)
-           ), compatible AS (
-             SELECT raid.id AS groupId, raid.game_mode AS gameMode, raid.map_id AS mapId,
-                    raid.is_priority AS isPriority, raid.sort_key AS sortKey,
-                    raid.requester_capacity AS requesterCapacity,
-                    raid.current_member_count AS memberCount,
-                    demand.request_count AS requestCount,
-                    row_number() OVER (
-                      PARTITION BY raid.is_priority, raid.game_mode, raid.map_id
-                      ORDER BY raid.sort_key
-                    ) AS bucketRank
-             FROM demand
-             JOIN raid_groups AS raid
-               ON raid.is_priority = demand.is_priority
-              AND raid.game_mode = demand.game_mode AND raid.map_id = demand.map_id
-             WHERE raid.state = 0 AND raid.automatic_fill = 1
-               AND raid.current_member_count < raid.requester_capacity
-           )
-           SELECT groupId, gameMode, mapId, isPriority, sortKey, requesterCapacity, memberCount
-           FROM compatible WHERE bucketRank <= requestCount
-           ORDER BY isPriority, gameMode, mapId, sortKey`,
-        )
-        .bind(JSON.stringify(demand))
-        .all<OpenGroupRow>(),
+    const [existingResults, maxima] = await Promise.all([
+      this.database.batch<OpenGroupRow>(
+        demand.map((bucket) =>
+          this.database
+            .prepare(
+              `/* d1:assignment.legacy_candidates */
+               SELECT id AS groupId, game_mode AS gameMode, map_id AS mapId,
+                      is_priority AS isPriority, sort_key AS sortKey,
+                      requester_capacity AS requesterCapacity,
+                      current_member_count AS memberCount
+               FROM raid_groups
+               WHERE is_priority = ? AND game_mode = ? AND map_id = ?
+                 AND state = 0 AND automatic_fill = 1
+                 AND current_member_count < requester_capacity
+               ORDER BY sort_key
+               LIMIT ?`,
+            )
+            .bind(bucket.isPriority, bucket.gameMode, bucket.mapId, bucket.requestCount),
+        ),
+      ),
       this.database
         .prepare(
           `SELECT
@@ -1202,7 +1262,7 @@ export class D1MvpRepository
 
     const { newGroups, assignments } = planMaterialization(
       waiting,
-      existing.results,
+      existingResults.flatMap((result) => result.results),
       {
         priority: Number(maxima?.priorityMax ?? 0),
         ordinary: Number(maxima?.ordinaryMax ?? 0),
@@ -1215,7 +1275,8 @@ export class D1MvpRepository
     const results = await this.database.batch([
       this.database
         .prepare(
-          `INSERT OR IGNORE INTO raid_groups
+          `/* d1:assignment.legacy_group_insert */
+           INSERT OR IGNORE INTO raid_groups
              (is_priority, game_mode, sort_key, map_id, requester_capacity,
               last_action_key, created_at, updated_at)
            SELECT json_extract(value, '$.isPriority'), json_extract(value, '$.gameMode'),
@@ -1230,7 +1291,8 @@ export class D1MvpRepository
         .bind(timestamp, timestamp, groupJson),
       this.database
         .prepare(
-          `WITH resolved AS MATERIALIZED (
+          `/* d1:assignment.legacy_membership_insert */
+           WITH resolved AS MATERIALIZED (
              SELECT request.id AS request_id,
                     coalesce(json_extract(item.value, '$.groupId'), raid.id) AS group_id,
                     cast(json_extract(item.value, '$.positionOffset') AS INTEGER) AS position_offset
@@ -1552,11 +1614,14 @@ export class D1MvpRepository
                AND target.leader_discord_user_id IS NULL
                AND target.staff_message_id IS NULL
                AND target.current_member_count + json_array_length(?) <= target.requester_capacity
-               AND (
-                 SELECT count(*) FROM raid_group_members AS removed
-                 JOIN json_each(?) AS expected ON expected.value = removed.request_id
-                 WHERE removed.group_id = ? AND removed.state = 2 AND removed.updated_at = ?
-               ) = json_array_length(?)
+               AND NOT EXISTS (
+                 SELECT 1 FROM json_each(?) AS expected
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM raid_group_members AS removed
+                   WHERE removed.group_id = ? AND removed.request_id = expected.value
+                     AND removed.state = 2 AND removed.updated_at = ?
+                 )
+               )
              THEN target.id ELSE NULL END,
              item.value,
              (SELECT coalesce(max(position), 0) FROM raid_group_members
@@ -1574,7 +1639,6 @@ export class D1MvpRepository
           plan.remainderJson,
           input.sourceGroupId,
           plan.timestamp,
-          plan.remainderJson,
           plan.timestamp,
           plan.timestamp,
           plan.remainderJson,
@@ -1925,44 +1989,58 @@ export class D1MvpRepository
   }
 
   private async requesterFollowUpWindow(groupId: number): Promise<RequesterFollowUpWindow | null> {
-    return this.database
+    const window = await this.database
       .prepare(
         `WITH source AS (
            SELECT id, is_priority, game_mode, sort_key, map_id
            FROM raid_groups WHERE id = ? AND state IN (0, 1)
-         ),
-         follow_ups AS (
-           SELECT DISTINCT target.id, target.sort_key, target.state, target.automatic_fill,
-                  target.current_member_count, target.requester_capacity
-           FROM source
-           JOIN raid_group_members AS source_member
-             ON source_member.group_id = source.id AND source_member.state = 2
-           JOIN raid_group_members AS target_member
-             ON target_member.request_id = source_member.request_id AND target_member.state = 0
-           JOIN raid_groups AS target ON target.id = target_member.group_id
-           WHERE target.id <> source.id AND target.is_priority = source.is_priority
-             AND target.game_mode = source.game_mode
-             AND target.map_id = source.map_id AND target.state IN (0, 1)
-         ),
-         bounds AS (
-           SELECT source.is_priority AS isPriority, source.sort_key AS sourceSortKey,
-                  coalesce(max(follow_ups.sort_key), source.sort_key) AS anchorSortKey,
-                  count(follow_ups.id) AS followUpCount
-           FROM source LEFT JOIN follow_ups ON true
-           GROUP BY source.is_priority, source.sort_key
          )
-         SELECT bounds.sourceSortKey, bounds.anchorSortKey, bounds.followUpCount,
-                (SELECT min(next.sort_key) FROM raid_groups AS next
-                 WHERE next.is_priority = bounds.isPriority AND next.state IN (0, 1)
-                   AND next.sort_key > bounds.anchorSortKey) AS nextSortKey,
-                (SELECT id FROM follow_ups
-                 WHERE state = 0 AND automatic_fill = 1
-                   AND current_member_count < requester_capacity
-                 ORDER BY sort_key LIMIT 1) AS reusableGroupId
-         FROM bounds`,
+         SELECT source.is_priority AS isPriority, source.sort_key AS sourceSortKey,
+                coalesce((
+                  SELECT max(target.sort_key)
+                  FROM raid_group_follow_ups AS follow_up
+                  CROSS JOIN raid_groups AS target
+                  WHERE follow_up.source_group_id = source.id
+                    AND target.id = follow_up.target_group_id
+                    AND target.is_priority = source.is_priority
+                    AND target.game_mode = source.game_mode
+                    AND target.map_id = source.map_id AND target.state IN (0, 1)
+                ), source.sort_key) AS anchorSortKey,
+                (SELECT count(*)
+                 FROM raid_group_follow_ups AS follow_up
+                 CROSS JOIN raid_groups AS target
+                 WHERE follow_up.source_group_id = source.id
+                   AND target.id = follow_up.target_group_id
+                   AND target.is_priority = source.is_priority
+                   AND target.game_mode = source.game_mode
+                   AND target.map_id = source.map_id AND target.state IN (0, 1)
+                ) AS followUpCount,
+                (SELECT target.id
+                 FROM raid_group_follow_ups AS follow_up
+                 CROSS JOIN raid_groups AS target
+                 WHERE follow_up.source_group_id = source.id
+                   AND target.id = follow_up.target_group_id
+                   AND target.is_priority = source.is_priority
+                   AND target.game_mode = source.game_mode
+                   AND target.map_id = source.map_id AND target.state = 0
+                   AND target.automatic_fill = 1
+                   AND target.current_member_count < target.requester_capacity
+                 ORDER BY target.sort_key LIMIT 1) AS reusableGroupId
+         FROM source`,
       )
       .bind(groupId)
-      .first<RequesterFollowUpWindow>();
+      .first<Omit<RequesterFollowUpWindow, "nextSortKey">>();
+    if (window === null) return null;
+    const next = await this.database
+      .prepare(
+        `SELECT sort_key AS nextSortKey
+         FROM raid_groups INDEXED BY raid_groups_open_sort_key_idx
+         WHERE is_priority = ? AND state IN (0, 1) AND sort_key > ?
+         ORDER BY sort_key LIMIT 1`,
+      )
+      .bind(window.isPriority, window.anchorSortKey)
+      .first<Pick<RequesterFollowUpWindow, "nextSortKey">>();
+    return { ...window, nextSortKey: next?.nextSortKey ?? null };
   }
 
   private async requirePostponableRequester(input: PostponeRequesterInput): Promise<{
@@ -2073,6 +2151,17 @@ export class D1MvpRepository
            )`,
         )
         .bind(destinationKey, input.requestId, destinationKey, timestamp, timestamp),
+      this.database
+        .prepare(
+          `INSERT INTO raid_group_follow_ups
+             (source_group_id, target_group_id, created_at, updated_at)
+           SELECT ?, destination.id, ?, ?
+           FROM raid_groups AS destination
+           WHERE ${destinationPredicate} AND destination.state = 0
+           ON CONFLICT(source_group_id, target_group_id) DO UPDATE SET
+             updated_at = excluded.updated_at`,
+        )
+        .bind(input.groupId, timestamp, timestamp, destinationKey),
       this.boardDirtyStatement(timestamp),
     );
     const results = await this.database.batch(statements);
@@ -2490,7 +2579,8 @@ export class D1MvpRepository
         .prepare(
           `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
                   discord_user_id AS discordUserId,
-                  discord_display_name AS discordDisplayName, in_game_name AS inGameName
+                  discord_display_name AS discordDisplayName, in_game_name AS inGameName,
+                  twitch_observed_at AS twitchObservedAt
            FROM user_mappings WHERE twitch_user_id = ?`,
         )
         .bind(input.twitchUserId),
@@ -2498,13 +2588,15 @@ export class D1MvpRepository
         .prepare(
           `SELECT twitch_login AS twitchLogin, twitch_user_id AS twitchUserId,
                   discord_user_id AS discordUserId,
-                  discord_display_name AS discordDisplayName, in_game_name AS inGameName
+                  discord_display_name AS discordDisplayName, in_game_name AS inGameName,
+                  twitch_observed_at AS twitchObservedAt
            FROM user_mappings WHERE twitch_login = ?`,
         )
         .bind(twitchLogin),
     ]);
     const stable = stableResult?.results[0];
     const target = targetResult?.results[0];
+    if (stable !== undefined && Number(stable.twitchObservedAt ?? 0) > timestamp) return;
     if (
       target?.twitchUserId !== null &&
       target?.twitchUserId !== undefined &&
@@ -2519,15 +2611,26 @@ export class D1MvpRepository
       stable.twitchUserId === input.twitchUserId &&
       target?.twitchUserId === input.twitchUserId
     ) {
+      if (Number(stable.twitchObservedAt ?? 0) < timestamp) {
+        await this.database
+          .prepare(
+            `UPDATE user_mappings
+             SET twitch_observed_at = ?, updated_at = max(updated_at, ?)
+             WHERE twitch_user_id = ? AND twitch_login = ? AND twitch_observed_at < ?`,
+          )
+          .bind(timestamp, timestamp, input.twitchUserId, twitchLogin, timestamp)
+          .run();
+      }
       return;
     }
     if (stable !== undefined && stable.twitchLogin !== twitchLogin && target === undefined) {
       await this.database
         .prepare(
-          `UPDATE user_mappings SET twitch_login = ?, updated_at = ?
-           WHERE twitch_user_id = ? AND twitch_login = ?`,
+          `UPDATE user_mappings
+           SET twitch_login = ?, twitch_observed_at = ?, updated_at = max(updated_at, ?)
+           WHERE twitch_user_id = ? AND twitch_login = ? AND twitch_observed_at <= ?`,
         )
-        .bind(twitchLogin, timestamp, input.twitchUserId, stable.twitchLogin)
+        .bind(twitchLogin, timestamp, timestamp, input.twitchUserId, stable.twitchLogin, timestamp)
         .run();
       return;
     }
@@ -2541,15 +2644,15 @@ export class D1MvpRepository
             `UPDATE user_mappings
              SET twitch_user_id = NULL, discord_user_id = NULL,
                  discord_display_name = NULL, in_game_name = NULL, updated_at = ?
-             WHERE twitch_login = ? AND twitch_user_id = ?`,
+             WHERE twitch_login = ? AND twitch_user_id = ? AND twitch_observed_at <= ?`,
           )
-          .bind(timestamp, stable.twitchLogin, input.twitchUserId),
+          .bind(timestamp, stable.twitchLogin, input.twitchUserId, timestamp),
         this.database
           .prepare(
             `UPDATE user_mappings
              SET twitch_user_id = ?, discord_user_id = ?, discord_display_name = ?,
-                 in_game_name = ?, updated_at = ?
-             WHERE twitch_login = ?`,
+                 in_game_name = ?, twitch_observed_at = ?, updated_at = max(updated_at, ?)
+             WHERE twitch_login = ? AND twitch_observed_at <= ?`,
           )
           .bind(
             input.twitchUserId,
@@ -2557,7 +2660,9 @@ export class D1MvpRepository
             discordDisplayName,
             inGameName,
             timestamp,
+            timestamp,
             twitchLogin,
+            timestamp,
           ),
         this.database
           .prepare(
@@ -2593,6 +2698,7 @@ export class D1MvpRepository
         twitchLogin,
         twitchUserId: input.twitchUserId,
         timestamp,
+        twitchObservationTimestamp: timestamp,
       }),
     );
   }

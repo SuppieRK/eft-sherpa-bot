@@ -1,6 +1,8 @@
 import type { CloudflareEnvironment } from "../cloudflare/environment";
 import { requireEnvironmentValue } from "../cloudflare/environment";
 
+export const DISCORD_REQUEST_TIMEOUT_MS = 20_000;
+
 export class DiscordApiError extends Error {
   constructor(
     readonly status: number,
@@ -15,10 +17,7 @@ function apiBase(environment: CloudflareEnvironment): string {
   return environment.DISCORD_API_BASE_URL?.replace(/\/$/, "") ?? "https://discord.com/api/v10";
 }
 
-export function buildDiscordHeaders(
-  environment: CloudflareEnvironment,
-  input?: HeadersInit,
-): Headers {
+function buildDiscordHeaders(environment: CloudflareEnvironment, input?: HeadersInit): Headers {
   const headers = new Headers(input);
   headers.set("Authorization", `Bot ${requireEnvironmentValue(environment, "DISCORD_BOT_TOKEN")}`);
   headers.set("Content-Type", "application/json");
@@ -32,9 +31,11 @@ async function discordFetch(
 ): Promise<Response> {
   const fetcher =
     environment.DISCORD_API_FETCHER?.fetch.bind(environment.DISCORD_API_FETCHER) ?? fetch;
+  const timeoutSignal = AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS);
   const response = await fetcher(`${apiBase(environment)}${path}`, {
     ...init,
     headers: buildDiscordHeaders(environment, init.headers),
+    signal: init.signal == null ? timeoutSignal : AbortSignal.any([init.signal, timeoutSignal]),
   });
   if (!response.ok) {
     throw new DiscordApiError(

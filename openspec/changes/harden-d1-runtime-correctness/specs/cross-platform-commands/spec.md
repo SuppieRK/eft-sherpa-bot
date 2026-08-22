@@ -46,3 +46,18 @@ The system SHALL verify platform signatures and a ten-minute timestamp window be
 #### Scenario: An old receipt passes retention
 - **WHEN** receipt maintenance runs more than 24 hours after that receipt was accepted
 - **THEN** the bounded background batch can delete it while recent duplicate protection remains active
+
+### Requirement: Raid calls are best-effort background deliveries
+After the raid start commits, the system SHALL return the Discord interaction response and SHALL attempt Discord and Twitch call delivery concurrently through tracked `waitUntil()` work. It SHALL NOT retry a failed or ambiguous raid call. Platform delivery outcome and best-effort D1 status persistence SHALL use separate error handling so a successful platform send is not recorded as a platform failure solely because its status write fails.
+
+#### Scenario: Both platform calls are available
+- **WHEN** staff start a raid containing Discord and Twitch recipients
+- **THEN** the interaction response is not delayed by delivery and both platform sends begin as concurrent background work
+
+#### Scenario: Sent status cannot be stored
+- **WHEN** a platform accepts a raid call but D1 rejects the later `sent` status update
+- **THEN** the system logs the status-write failure without recording a platform failure or sending the call again
+
+#### Scenario: Platform call fails
+- **WHEN** Discord or Twitch rejects a raid call
+- **THEN** the system attempts one best-effort `failed` status write and does not retry the platform call

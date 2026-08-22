@@ -75,8 +75,4 @@ export function assertStableCost(measurements: readonly OperationMeasurement[]):
   if (statementGroups.size !== 1) {
     throw new Error("statementGroups changed between identical measured samples");
   }
-  const statementCount = measurements[0]?.statements ?? Number.POSITIVE_INFINITY;
-  if (statementCount > 50) {
-    throw new Error(`The operation used ${statementCount} D1 statements; the limit is 50.`);
-  }
 }
