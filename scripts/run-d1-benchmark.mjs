@@ -140,8 +140,7 @@ function markdown(report) {
     "|---:|---|---:|---:|---:|",
   );
   for (const result of report.results) {
-    const processedItems =
-      result.id === "twitch.request.invalid.expired-receipts" ? 100 : undefined;
+    const processedItems = result.id === "twitch.queue.expired-receipts" ? 100 : undefined;
     if (processedItems === undefined) continue;
     lines.push(
       `| ${result.scale.toLocaleString("en-US")} | ${result.label} | ${processedItems} | ${(result.aggregate.rowsRead.median / processedItems).toFixed(2)} | ${(result.aggregate.rowsWritten.median / processedItems).toFixed(2)} |`,
@@ -193,7 +192,8 @@ function markdown(report) {
     "- Discord Users page reads must be scale-independent and write zero rows.",
     "- Discord Users missing-detail completion must use bounded reads and writes.",
     "- Queue and board Refresh operations must perform no request-assignment writes.",
-    "- One due expired-receipt operation must remove exactly 100 expired receipts.",
+    "- Invalid Twitch request guidance must perform no D1 work, even when receipt cleanup is due.",
+    "- One due valid-command receipt-cleanup operation must remove exactly 100 expired receipts.",
     "- Removed membership history must not increase open-board D1 rows read with history size.",
     "- Maximum-bucket legacy repair must remain below 50 D1 statements per invocation.",
     "- Closing one follow-up source must not read unrelated follow-up relationships.",
@@ -261,7 +261,10 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
   let queueRowLimit;
   if (operationId.startsWith("discord.queue.")) {
     queueRowLimit = 200;
-  } else if (operationId.startsWith("twitch.queue.")) {
+  } else if (
+    operationId.startsWith("twitch.queue.") &&
+    operationId !== "twitch.queue.expired-receipts"
+  ) {
     queueRowLimit = 220;
   }
   if (
@@ -346,25 +349,29 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
   ) {
     fail(`${operationId} performed request-assignment work`);
   }
-  if (operationId === "twitch.request.invalid") {
+  if (
+    operationId === "twitch.request.invalid" ||
+    operationId === "twitch.request.invalid.expired-receipts"
+  ) {
     if (
       operationResults.some(
         (result) =>
-          result.aggregate.statements.max > 6 ||
-          result.aggregate.rowsRead.max > 20 ||
-          result.aggregate.rowsWritten.max !== 5,
+          result.aggregate.bindingCalls.max !== 0 ||
+          result.aggregate.statements.max !== 0 ||
+          result.aggregate.rowsRead.max !== 0 ||
+          result.aggregate.rowsWritten.max !== 0,
       )
     ) {
-      fail(`${operationId} exceeded its invalid-input D1 limit`);
+      fail(`${operationId} touched D1 for invalid input`);
     }
   }
-  if (operationId === "twitch.request.invalid.expired-receipts") {
+  if (operationId === "twitch.queue.expired-receipts") {
     if (
       operationResults.some(
         (result) =>
-          result.aggregate.statements.max > 7 ||
-          result.aggregate.rowsRead.max > 450 ||
-          result.aggregate.rowsWritten.max > 106,
+          result.aggregate.statements.max > 20 ||
+          result.aggregate.rowsRead.max > 500 ||
+          result.aggregate.rowsWritten.max > 110,
       )
     ) {
       fail(`${operationId} exceeded its leased-cleanup D1 limit`);
