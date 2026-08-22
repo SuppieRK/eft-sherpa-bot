@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { expect, it, vi } from "vitest";
 import { createWorker } from "../src";
 import type { CommunityConfig } from "../src/config/community";
+import { TARKOV_MAPS } from "../src/domain/maps/catalog";
 import {
   D1Metrics,
   instrumentD1Database,
@@ -128,6 +129,15 @@ function ordinal(value: number): string {
 
 async function responseText(response: Response): Promise<string> {
   return JSON.stringify(await response.json());
+}
+
+function completedInteractionText(discordMock: DiscordMock, interactionId: string): string {
+  return (
+    discordMock.calls.findLast(
+      (call) =>
+        call.method === "PATCH" && call.url.includes(`/token-${interactionId}/messages/@original`),
+    )?.body ?? ""
+  );
 }
 
 async function runConcurrentWorkerRequests(
@@ -584,19 +594,22 @@ function operationDefinitions(input: {
       id: "discord.board.create",
       label: "Discord /board create",
       async prepare(_seed, sample) {
+        const interactionId = `${OPERATION_PREFIX}board-create-${sample}`;
         await env.DB.prepare(
           "UPDATE community_state SET staff_board_message_id = NULL WHERE community_id = 'butcoffee'",
         ).run();
         return {
           request: await command({
-            id: `${OPERATION_PREFIX}board-create-${sample}`,
+            id: interactionId,
             name: "board",
             userId: streamerId,
             staff: true,
           }),
-          async verify(response) {
+          verify(response) {
             expect(response.status).toBe(200);
-            expect(await responseText(response)).toContain("Open the sherpa board");
+            expect(completedInteractionText(discordMock, interactionId)).toContain(
+              "Open the sherpa board",
+            );
             expect(discordMock.calls.some((call) => call.method === "POST")).toBe(true);
           },
         };
@@ -615,7 +628,11 @@ function operationDefinitions(input: {
           }),
           verify(response) {
             expect(response.status).toBe(200);
-            expect(discordMock.calls.some((call) => call.method === "PATCH")).toBe(false);
+            expect(
+              discordMock.calls.some(
+                (call) => call.method === "PATCH" && call.url.endsWith("benchmark-canonical-board"),
+              ),
+            ).toBe(false);
           },
         };
       },
@@ -804,6 +821,7 @@ function operationDefinitions(input: {
       id: "discord.raid.review.cancel",
       label: "Discord planned raid review Cancel",
       async prepare(seed, sample) {
+        const interactionId = `${OPERATION_PREFIX}raid-cancel-review-${sample}`;
         const messageId = `${OPERATION_PREFIX}detail-cancel-review`;
         const raid = await seedOperationRaid({
           seed,
@@ -817,13 +835,13 @@ function operationDefinitions(input: {
         });
         return {
           request: await component({
-            id: `${OPERATION_PREFIX}raid-cancel-review-${sample}`,
+            id: interactionId,
             customId: `raid:v3:cancel:${raid.groupId}`,
             messageId,
           }),
           async verify(response) {
             expect(response.status).toBe(200);
-            expect(await responseText(response)).toContain("Review closed");
+            expect(completedInteractionText(discordMock, interactionId)).toContain("Review closed");
             const row = await env.DB.prepare(
               `SELECT state, automatic_fill AS automaticFill,
                       attempt_count AS attemptCount, staff_message_id AS staffMessageId
@@ -1194,6 +1212,128 @@ function operationDefinitions(input: {
               "SELECT discord_user_id AS discordUserId FROM user_mappings WHERE twitch_login = 'bench_000001'",
             ).first<{ discordUserId: string }>();
             expect(row?.discordUserId).toBe(`${OPERATION_PREFIX}completed-discord`);
+          },
+        };
+      },
+    },
+    {
+      id: "operator.legacy-repair.max-buckets",
+      label: "Operator legacy repair with all 78 demand buckets",
+      async prepare(seed, sample) {
+        const buckets = [0, 1].flatMap((isPriority) =>
+          [0, 1, 2].flatMap((gameMode) =>
+            TARKOV_MAPS.map((map) => ({ isPriority, gameMode, mapId: map.id })),
+          ),
+        );
+        const rows = [
+          ...buckets,
+          buckets[0] as (typeof buckets)[number],
+          buckets[1] as (typeof buckets)[number],
+        ].map((bucket, index) => ({
+          isPriority: bucket.isPriority,
+          gameMode: bucket.gameMode,
+          mapId: bucket.mapId,
+          index: index + 1,
+        }));
+        await env.DB.prepare(
+          `UPDATE raid_groups
+           SET state = 2, outcome = 0, completed_at = ?, updated_at = ?
+           WHERE id <= ?`,
+        )
+          .bind(Date.now(), Date.now(), seed.groupCount)
+          .run();
+        await env.DB.batch([
+          env.DB.prepare(
+            `INSERT INTO user_mappings
+               (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
+             SELECT printf('op_repair_%d', json_extract(value, '$.index')),
+                    printf('op-repair-twitch-%d', json_extract(value, '$.index')),
+                    printf('Repair PMC %d', json_extract(value, '$.index')), ?, ?
+             FROM json_each(?)`,
+          ).bind(Date.now(), Date.now(), JSON.stringify(rows)),
+          env.DB.prepare(
+            `INSERT INTO help_requests
+               (source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+                game_mode, map_id, objective, is_priority, state, created_at, updated_at)
+             SELECT 1, printf('bench-op-repair-%d', json_extract(value, '$.index')),
+                    printf('op-repair-twitch-%d', json_extract(value, '$.index')),
+                    printf('op_repair_%d', json_extract(value, '$.index')),
+                    printf('Repair PMC %d', json_extract(value, '$.index')),
+                    json_extract(value, '$.gameMode'), json_extract(value, '$.mapId'),
+                    printf('Repair goal %d', json_extract(value, '$.index')),
+                    json_extract(value, '$.isPriority'), 0, ?, ?
+             FROM json_each(?)`,
+          ).bind(Date.now(), Date.now(), JSON.stringify(rows)),
+        ]);
+        return {
+          request: new Request("https://benchmark.invalid/internal/repair-unassigned-requests", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${String((env as CloudflareEnvironment).SPIKE_DIAGNOSTICS_TOKEN)}`,
+              "X-Benchmark-Sample": String(sample),
+            },
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const result = await response.json();
+            await env.DB.prepare(
+              `UPDATE raid_groups
+               SET state = 0, outcome = NULL, completed_at = NULL, updated_at = ?
+               WHERE id <= ?`,
+            )
+              .bind(Date.now(), seed.groupCount)
+              .run();
+            expect(result).toMatchObject({ hasMore: true });
+            expect((result as { repaired: number }).repaired).toBeGreaterThan(0);
+          },
+        };
+      },
+    },
+    {
+      id: "operator.follow-up.close-history",
+      label: "Follow-up source close with 10,000 unrelated relationships",
+      async prepare(seed) {
+        const sourceIds = Array.from({ length: 10_000 }, (_, index) => seed.groupCount + index + 1);
+        const targetId = seed.groupCount + 10_001;
+        const groupIds = [...sourceIds, targetId];
+        await env.DB.prepare(
+          `INSERT INTO raid_groups
+             (id, is_priority, game_mode, sort_key, map_id, requester_capacity,
+              automatic_fill, state, created_at, updated_at)
+           SELECT value, 1, 2, ? + (key + 1) * 1000000, 'customs', 4, 0, 1, ?, ?
+           FROM json_each(?)`,
+        )
+          .bind(seed.priorityMaxSortKey, Date.now(), Date.now(), JSON.stringify(groupIds))
+          .run();
+        await env.DB.prepare(
+          `INSERT INTO raid_group_follow_ups
+             (source_group_id, target_group_id, created_at, updated_at)
+           SELECT value, ?, ?, ? FROM json_each(?)`,
+        )
+          .bind(targetId, Date.now(), Date.now(), JSON.stringify(sourceIds))
+          .run();
+        const sourceId = sourceIds[0] as number;
+        return {
+          request: new Request("https://benchmark.invalid/internal/follow-up-close"),
+          async execute(_worker, environment) {
+            const startedAt = performance.now();
+            await environment.DB.prepare(
+              `UPDATE raid_groups
+               SET state = 2, outcome = 1, completed_at = ?, updated_at = ?
+               WHERE id = ?`,
+            )
+              .bind(Date.now(), Date.now(), sourceId)
+              .run();
+            return {
+              response: new Response(null, { status: 204 }),
+              wallMs: Number(Math.max(0, performance.now() - startedAt).toFixed(3)),
+            };
+          },
+          async verify(response) {
+            expect(response.status).toBe(204);
+            await expect(
+              env.DB.prepare(`SELECT count(*) AS count FROM raid_group_follow_ups`).first(),
+            ).resolves.toEqual({ count: 9_999 });
           },
         };
       },

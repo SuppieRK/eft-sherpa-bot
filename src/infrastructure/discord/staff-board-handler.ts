@@ -12,6 +12,7 @@ import { sendTwitchChatMessage } from "../twitch/twitch-api";
 import {
   DISCORD_EPHEMERAL_MESSAGE_FLAG,
   DISCORD_INTERACTION_RESPONSE_CHANNEL_MESSAGE,
+  DISCORD_INTERACTION_RESPONSE_DEFERRED_CHANNEL_MESSAGE,
   DISCORD_INTERACTION_RESPONSE_UPDATE_MESSAGE,
   type DiscordApplicationCommandInteraction,
   type DiscordMessageComponentInteraction,
@@ -21,6 +22,7 @@ import {
   deleteDiscordMessage,
   DiscordApiError,
   discordMessageUrl,
+  updateDiscordInteractionResponse,
   updateDiscordMessage,
 } from "./messages";
 import {
@@ -35,7 +37,7 @@ import {
 
 type StaffInteraction = Pick<
   DiscordApplicationCommandInteraction,
-  "discordUserId" | "discordRoleIds" | "channelId"
+  "discordUserId" | "discordRoleIds" | "channelId" | "applicationId" | "interactionToken"
 >;
 
 export interface StaffBoardHandlerDependencies {
@@ -45,15 +47,16 @@ export interface StaffBoardHandlerDependencies {
   context?: ExecutionContext | TrackedExecutionContext;
 }
 
-function scheduleBackground(
+export function scheduleBackground(
   context: ExecutionContext | TrackedExecutionContext | undefined,
   name: string,
   environment: CloudflareEnvironment,
   task: (measured: CloudflareEnvironment) => Promise<unknown>,
 ): void {
   if (context === undefined) return;
-  if ("waitUntilTask" in context) {
-    context.waitUntilTask(name, task);
+  const tracked = context as Partial<TrackedExecutionContext>;
+  if (typeof tracked.waitUntilTask === "function") {
+    tracked.waitUntilTask(name, task);
   } else {
     context.waitUntil(task(environment));
   }
@@ -70,6 +73,13 @@ function ephemeralMessage(message: DiscordBotMessage): Response {
   return Response.json({
     type: DISCORD_INTERACTION_RESPONSE_CHANNEL_MESSAGE,
     data: { ...message, flags: DISCORD_EPHEMERAL_MESSAGE_FLAG },
+  });
+}
+
+function deferredEphemeral(): Response {
+  return Response.json({
+    type: DISCORD_INTERACTION_RESPONSE_DEFERRED_CHANNEL_MESSAGE,
+    data: { flags: DISCORD_EPHEMERAL_MESSAGE_FLAG },
   });
 }
 
@@ -246,13 +256,11 @@ async function drainCanonicalBoardLease(input: {
   lease: BoardDrainLease;
   reusableSnapshot: BoardSnapshot | undefined;
   captureSnapshot?: (snapshot: BoardSnapshot) => void;
-  beforeRender?: (snapshot: BoardSnapshot) => Promise<void>;
 }): Promise<BoardDrainStepResult> {
   const snapshot =
     input.reusableSnapshot?.boardVersion === input.lease.dirtyVersion
       ? input.reusableSnapshot
       : await input.repository.getBoardSnapshot(input.changedAt);
-  await input.beforeRender?.(snapshot);
   input.captureSnapshot?.(snapshot);
   const message = boardMessage(snapshot, input.communityConfig);
   const renderedVersion = snapshot.boardVersion ?? input.lease.dirtyVersion;
@@ -285,7 +293,6 @@ export async function synchronizeCanonicalBoard(input: {
   context?: ExecutionContext | TrackedExecutionContext;
   snapshot?: BoardSnapshot;
   captureSnapshot?: (snapshot: BoardSnapshot) => void;
-  beforeRender?: (snapshot: BoardSnapshot) => Promise<void>;
 }): Promise<string | undefined> {
   const repository = new D1MvpRepository(input.environment.DB);
   const token = crypto.randomUUID();
@@ -333,7 +340,6 @@ export async function synchronizeCanonicalBoard(input: {
           communityConfig: input.communityConfig,
           changedAt: new Date(),
           createIfMissing: input.createIfMissing,
-          ...(input.beforeRender === undefined ? {} : { beforeRender: input.beforeRender }),
           ...(input.context === undefined ? {} : { context: input.context }),
         });
       },
@@ -447,8 +453,7 @@ async function reconcileVisibleRaidMessages(input: {
   changedAt: Date;
   context?: ExecutionContext | TrackedExecutionContext;
   snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
-  skipCanonicalUpdate?: boolean;
-}): Promise<void> {
+}): Promise<boolean> {
   const repository = new D1MvpRepository(input.environment.DB);
   const visibleRaids = [...input.snapshot.priorityRaids, ...input.snapshot.ordinaryRaids].filter(
     (raid) => raid.state === "active" || raid.staffMessageId !== undefined,
@@ -474,23 +479,20 @@ async function reconcileVisibleRaidMessages(input: {
       });
     }),
   );
+  let identityChanged = false;
   for (const [index, result] of reconciled.entries()) {
     if (result.status !== "fulfilled" || result.value === undefined) continue;
     const raid = visibleRaids[index];
     if (raid === undefined) continue;
-    if (result.value === null) delete raid.staffMessageId;
-    else raid.staffMessageId = result.value;
+    if (result.value === null) {
+      identityChanged ||= raid.staffMessageId !== undefined;
+      delete raid.staffMessageId;
+    } else {
+      identityChanged ||= raid.staffMessageId !== result.value;
+      raid.staffMessageId = result.value;
+    }
   }
-  if (!input.skipCanonicalUpdate) {
-    await synchronizeCanonicalBoard({
-      environment: input.environment,
-      communityConfig: input.communityConfig,
-      changedAt: input.changedAt,
-      createIfMissing: false,
-      snapshot: input.snapshot,
-      ...(input.context === undefined ? {} : { context: input.context }),
-    });
-  }
+  return identityChanged;
 }
 
 async function sendRaidCalls(
@@ -514,12 +516,22 @@ async function sendRaidCalls(
     .map((member) => `@${member.twitchLogin}`);
   const discordMentions = [...uniqueUsers.map((id) => `<@${id}>`), ...unlinkedNames].join(" ");
   const twitchMentions = raid.members.map((member) => `@${member.twitchLogin}`).join(" ");
+  const startedAt = raid.startedAt;
+  if (startedAt === undefined) {
+    throw new RepositoryInvariantError("The active raid start time is missing.");
+  }
   const persistStatus = async (
     platform: "discord" | "twitch",
     outcome: "sent" | "failed",
   ): Promise<void> => {
     try {
-      await repository.updateCallStatus(raid.id, platform, outcome, changedAt);
+      await repository.updateCallStatus({
+        groupId: raid.id,
+        startedAt,
+        platform,
+        status: outcome,
+        changedAt,
+      });
     } catch {
       logDiagnostic("warn", "raid_call_status_write_failed", { platform, outcome });
     }
@@ -565,6 +577,38 @@ class StaffBoardHandler {
 
   constructor(private readonly dependencies: StaffBoardHandlerDependencies) {
     this.repository = new D1MvpRepository(dependencies.environment.DB);
+  }
+
+  private deferRestWork(
+    interaction: StaffInteraction,
+    name: string,
+    work: (handler: StaffBoardHandler) => Promise<string>,
+  ): Response {
+    scheduleBackground(
+      this.dependencies.context,
+      name,
+      this.dependencies.environment,
+      async (environment) => {
+        const handler = new StaffBoardHandler({ ...this.dependencies, environment });
+        let content: string;
+        try {
+          content = await work(handler);
+        } catch (error) {
+          logDiagnostic("warn", "discord_deferred_staff_action_failed", { task: name });
+          content =
+            error instanceof RepositoryInvariantError
+              ? error.message
+              : "Discord could not finish that action. Try again.";
+        }
+        await updateDiscordInteractionResponse(
+          environment,
+          interaction.applicationId,
+          interaction.interactionToken,
+          { content, allowed_mentions: { parse: [] } },
+        );
+      },
+    );
+    return deferredEphemeral();
   }
 
   private async claimMutation(deliveryId: string, eventType: string): Promise<string | undefined> {
@@ -621,11 +665,41 @@ class StaffBoardHandler {
       "discord.board_reconciliation",
       this.dependencies.environment,
       async (environment) => {
-        await reconcileVisibleRaidMessages({
+        const identityChanged = await reconcileVisibleRaidMessages({
           ...this.dependencies,
           environment,
           snapshot,
         });
+        if (identityChanged) {
+          new StaffBoardHandler({ ...this.dependencies, environment }).refreshBoardLater();
+        }
+      },
+    );
+  }
+
+  private refreshAndReconcileBoardLater(): void {
+    scheduleBackground(
+      this.dependencies.context,
+      "discord.board_drain",
+      this.dependencies.environment,
+      async (environment) => {
+        const handler = new StaffBoardHandler({ ...this.dependencies, environment });
+        let renderedSnapshot: BoardSnapshot | undefined;
+        await synchronizeCanonicalBoard({
+          environment,
+          communityConfig: this.dependencies.communityConfig,
+          changedAt: this.dependencies.changedAt,
+          createIfMissing: false,
+          captureSnapshot(snapshot) {
+            renderedSnapshot = snapshot;
+          },
+          ...(this.dependencies.context === undefined
+            ? {}
+            : { context: this.dependencies.context }),
+        });
+        if (renderedSnapshot !== undefined) {
+          handler.reconcileBoardLater(renderedSnapshot);
+        }
       },
     );
   }
@@ -732,33 +806,36 @@ class StaffBoardHandler {
     }
   }
 
-  async open(interaction: StaffInteraction): Promise<Response> {
+  open(interaction: StaffInteraction): Response {
     const { communityConfig } = this.dependencies;
     if (!hasAccess(interaction, communityConfig)) {
       return ephemeral("Use `/board` in the staff channel as the streamer or a volunteer sherpa.");
     }
-    let renderedSnapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>> | undefined;
-    const messageId = await synchronizeCanonicalBoard({
-      environment: this.dependencies.environment,
-      communityConfig,
-      changedAt: this.dependencies.changedAt,
-      createIfMissing: true,
-      captureSnapshot(snapshot) {
-        renderedSnapshot = snapshot;
-      },
-      ...(this.dependencies.context === undefined ? {} : { context: this.dependencies.context }),
-    });
-    if (messageId === undefined) throw new Error("The canonical board was not created.");
-    const currentSnapshot =
-      renderedSnapshot ?? (await this.repository.getBoardSnapshot(this.dependencies.changedAt));
-    this.reconcileBoardLater(currentSnapshot);
-    return ephemeral(
-      `[Open the sherpa board](${discordMessageUrl(
+    return this.deferRestWork(interaction, "discord.board_open", async (handler) => {
+      let renderedSnapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>> | undefined;
+      const messageId = await synchronizeCanonicalBoard({
+        environment: handler.dependencies.environment,
+        communityConfig,
+        changedAt: handler.dependencies.changedAt,
+        createIfMissing: true,
+        captureSnapshot(snapshot) {
+          renderedSnapshot = snapshot;
+        },
+        ...(handler.dependencies.context === undefined
+          ? {}
+          : { context: handler.dependencies.context }),
+      });
+      if (messageId === undefined) throw new Error("The canonical board was not created.");
+      const currentSnapshot =
+        renderedSnapshot ??
+        (await handler.repository.getBoardSnapshot(handler.dependencies.changedAt));
+      handler.reconcileBoardLater(currentSnapshot);
+      return `[Open the sherpa board](${discordMessageUrl(
         communityConfig.discord.guildId,
         communityConfig.discord.staffChannelId,
         messageId,
-      )})`,
-    );
+      )})`;
+    });
   }
 
   private async reviewRaid(interaction: DiscordMessageComponentInteraction): Promise<Response> {
@@ -768,20 +845,18 @@ class StaffBoardHandler {
       throw new RepositoryInvariantError("Choose a current raid to review.");
     }
     const reviewed = await this.repository.reviewRaid({ groupId: raidId, changedAt });
-    const messageId = await this.ensureReviewMessage(reviewed, interaction.discordUserId);
-    this.refreshBoardLater();
-    if (messageId === undefined) {
-      return ephemeral(
-        "That review message was deleted. The raid is back on the board. Review it again to open new details.",
-      );
-    }
-    return ephemeral(
-      `[Open raid details](${discordMessageUrl(
+    return this.deferRestWork(interaction, "discord.raid_review", async (handler) => {
+      const messageId = await handler.ensureReviewMessage(reviewed, interaction.discordUserId);
+      handler.refreshBoardLater();
+      if (messageId === undefined) {
+        return "That review message was deleted. The raid is back on the board. Review it again to open new details.";
+      }
+      return `[Open raid details](${discordMessageUrl(
         communityConfig.discord.guildId,
         communityConfig.discord.staffChannelId,
         messageId,
-      )})`,
-    );
+      )})`;
+    });
   }
 
   private async cancelReview(
@@ -789,30 +864,33 @@ class StaffBoardHandler {
     raid: StaffBoardRaid,
   ): Promise<Response> {
     const { changedAt } = this.dependencies;
-    if (interaction.messageId === undefined) {
+    const messageId = interaction.messageId;
+    if (messageId === undefined) {
       throw new RepositoryInvariantError("That review control is out of date.");
     }
     const dismissed = await this.repository.dismissRaidReview({
       groupId: raid.id,
-      expectedMessageId: interaction.messageId,
+      expectedMessageId: messageId,
       changedAt,
     });
     if (!dismissed) {
       throw new RepositoryInvariantError("That review is no longer available to cancel.");
     }
-    const deleted = await this.deleteRaidMessage(interaction.messageId);
-    if (!deleted) {
-      await this.repository.compareAndSetRaidStaffMessage({
-        groupId: raid.id,
-        messageId: interaction.messageId,
-        changedAt,
-      });
-      throw new RepositoryInvariantError(
-        "Discord could not close that review. Try Cancel review again.",
-      );
-    }
-    this.refreshBoardLater();
-    return ephemeral("Review closed. The raid is still on the board.");
+    return this.deferRestWork(interaction, "discord.review_cancel", async (handler) => {
+      const deleted = await handler.deleteRaidMessage(messageId);
+      if (!deleted) {
+        await handler.repository.compareAndSetRaidStaffMessage({
+          groupId: raid.id,
+          messageId,
+          changedAt,
+        });
+        throw new RepositoryInvariantError(
+          "Discord could not close that review. Try Cancel review again.",
+        );
+      }
+      handler.refreshBoardLater();
+      return "Review closed. The raid is still on the board.";
+    });
   }
 
   private async showPullCandidates(raid: StaffBoardRaid): Promise<Response> {
@@ -843,7 +921,16 @@ class StaffBoardHandler {
       actionKey: interaction.interactionId,
       changedAt: this.dependencies.changedAt,
     });
-    await this.refreshPulledRaidMessage(pulled.destination);
+    scheduleBackground(
+      this.dependencies.context,
+      "discord.pulled_raid_detail",
+      this.dependencies.environment,
+      async (environment) => {
+        await new StaffBoardHandler({ ...this.dependencies, environment }).refreshPulledRaidMessage(
+          pulled.destination,
+        );
+      },
+    );
     this.refreshBoardLater();
     if (pulled.sourceDisposition === "closed") {
       return ephemeral("Requester pulled up. The empty source raid was closed.");
@@ -930,13 +1017,13 @@ class StaffBoardHandler {
         actionKey: interaction.interactionId,
         changedAt,
       });
-      const deleted = await this.deleteRaidMessage(raid.staffMessageId);
       this.refreshBoardLater();
-      return ephemeral(
-        deleted
+      return this.deferRestWork(interaction, "discord.postponed_raid_detail", async (handler) => {
+        const deleted = await handler.deleteRaidMessage(raid.staffMessageId);
+        return deleted
           ? "Raid postponed to the end of the Priority queue."
-          : "Raid postponed to the end of the Priority queue, but its old details message could not be deleted.",
-      );
+          : "Raid postponed to the end of the Priority queue, but its old details message could not be deleted.";
+      });
     }
     const updatedRaid = await this.repository.recordRaidResult({
       groupId: raid.id,
@@ -949,12 +1036,12 @@ class StaffBoardHandler {
     if (result !== "helped") {
       return update(renderRaidMessage(updatedRaid, communityConfig.policies.attemptLimit));
     }
-    const deleted = await this.deleteRaidMessage(raid.staffMessageId);
-    return ephemeral(
-      deleted
+    return this.deferRestWork(interaction, "discord.helped_raid_detail", async (handler) => {
+      const deleted = await handler.deleteRaidMessage(raid.staffMessageId);
+      return deleted
         ? "Raid recorded as Helped."
-        : "Raid recorded as Helped, but its old details message could not be deleted.",
-    );
+        : "Raid recorded as Helped, but its old details message could not be deleted.";
+    });
   }
 
   private async removeRequester(
@@ -978,12 +1065,12 @@ class StaffBoardHandler {
         }),
       );
     }
-    const deleted = await this.deleteRaidMessage(raid.staffMessageId);
-    return ephemeral(
-      deleted
+    return this.deferRestWork(interaction, "discord.removed_raid_detail", async (handler) => {
+      const deleted = await handler.deleteRaidMessage(raid.staffMessageId);
+      return deleted
         ? "Requester removed. The empty raid was closed."
-        : "Requester removed and the empty raid was closed, but its old details message could not be deleted.",
-    );
+        : "Requester removed and the empty raid was closed, but its old details message could not be deleted.";
+    });
   }
 
   private async postponeRequester(
@@ -1007,11 +1094,15 @@ class StaffBoardHandler {
         }),
       );
     }
-    const deleted = await this.deleteRaidMessage(raid.staffMessageId);
-    return ephemeral(
-      deleted
-        ? "Requester postponed to the next raid. The empty raid was closed."
-        : "Requester postponed and the empty raid was closed, but its old details message could not be deleted.",
+    return this.deferRestWork(
+      interaction,
+      "discord.postponed_requester_detail",
+      async (handler) => {
+        const deleted = await handler.deleteRaidMessage(raid.staffMessageId);
+        return deleted
+          ? "Requester postponed to the next raid. The empty raid was closed."
+          : "Requester postponed and the empty raid was closed, but its old details message could not be deleted.";
+      },
     );
   }
 
@@ -1052,30 +1143,7 @@ class StaffBoardHandler {
     }
     if (boardAction?.action === "refresh") {
       await this.repository.markBoardDirty(changedAt);
-      scheduleBackground(
-        this.dependencies.context,
-        "discord.board_reconciliation",
-        this.dependencies.environment,
-        async (environment) => {
-          await synchronizeCanonicalBoard({
-            environment,
-            communityConfig: this.dependencies.communityConfig,
-            changedAt,
-            createIfMissing: false,
-            ...(this.dependencies.context === undefined
-              ? {}
-              : { context: this.dependencies.context }),
-            beforeRender: async (snapshot) => {
-              await reconcileVisibleRaidMessages({
-                ...this.dependencies,
-                environment,
-                snapshot,
-                skipCanonicalUpdate: true,
-              });
-            },
-          });
-        },
-      );
+      this.refreshAndReconcileBoardLater();
       return ephemeral("Refreshing the sherpa board.");
     }
     const claimToken = await this.claimMutation(
@@ -1113,7 +1181,7 @@ export function openDiscordStaffBoard(
   interaction: DiscordApplicationCommandInteraction,
   dependencies: StaffBoardHandlerDependencies,
 ): Promise<Response> {
-  return new StaffBoardHandler(dependencies).open(interaction);
+  return Promise.resolve(new StaffBoardHandler(dependencies).open(interaction));
 }
 
 export function handleDiscordStaffBoardComponent(

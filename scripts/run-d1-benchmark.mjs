@@ -177,7 +177,7 @@ function markdown(report) {
   }
   lines.push(
     "",
-    "Focused adversarial scenarios add 600 expired receipts, concurrent board and delivery bursts, expired Discord claims, and up to 100,000 removed membership rows outside the measured window. They exercise complete Worker command paths without changing the stable active-request seed matrix. Legacy unassigned-request recovery is covered by deterministic local D1 integration tests because it is an authenticated deployment operation, not a user-facing command.",
+    "Focused adversarial scenarios add 600 expired receipts, concurrent board and delivery bursts, expired Discord claims, all 78 legacy-repair demand buckets, 10,000 live follow-up relationships, and up to 100,000 removed membership rows outside the measured window. User-facing and authenticated operator paths use only local Miniflare/workerd D1.",
     "",
     "## Cost Invariants",
     "",
@@ -195,6 +195,8 @@ function markdown(report) {
     "- Queue and board Refresh operations must perform no request-assignment writes.",
     "- One due expired-receipt operation must remove exactly 100 expired receipts.",
     "- Removed membership history must not increase open-board D1 rows read with history size.",
+    "- Maximum-bucket legacy repair must remain below 50 D1 statements per invocation.",
+    "- Closing one follow-up source must not read unrelated follow-up relationships.",
     "",
   );
   return lines.join("\n");

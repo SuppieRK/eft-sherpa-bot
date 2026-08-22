@@ -16,12 +16,14 @@ const DISCORD_INTERACTION_MESSAGE_COMPONENT = 3;
 const DISCORD_INTERACTION_MODAL_SUBMIT = 5;
 export const DISCORD_INTERACTION_RESPONSE_PONG = 1;
 export const DISCORD_INTERACTION_RESPONSE_CHANNEL_MESSAGE = 4;
+export const DISCORD_INTERACTION_RESPONSE_DEFERRED_CHANNEL_MESSAGE = 5;
 export const DISCORD_INTERACTION_RESPONSE_UPDATE_MESSAGE = 7;
 export const DISCORD_INTERACTION_RESPONSE_MODAL = 9;
 export const DISCORD_EPHEMERAL_MESSAGE_FLAG = 64;
 
 interface DiscordInteractionContext {
   interactionId: string;
+  interactionToken: string;
   applicationId: string;
   guildId: string;
   channelId: string;
@@ -73,11 +75,14 @@ function parseContext(payload: Record<string, unknown>): DiscordInteractionConte
     return undefined;
   }
   const interactionId = requiredString(payload, "id");
+  const interactionToken = requiredString(payload, "token");
   const applicationId = requiredString(payload, "application_id");
   const guildId = requiredString(payload, "guild_id");
   const channelId = requiredString(payload, "channel_id");
   const discordUserId = requiredString(member.user, "id");
-  if (!(interactionId && applicationId && guildId && channelId && discordUserId)) {
+  if (
+    !(interactionId && interactionToken && applicationId && guildId && channelId && discordUserId)
+  ) {
     return undefined;
   }
   const discordRoleIds = Array.isArray(member.roles)
@@ -89,6 +94,7 @@ function parseContext(payload: Record<string, unknown>): DiscordInteractionConte
     requiredString(member.user, "username");
   return {
     interactionId,
+    interactionToken,
     applicationId,
     guildId,
     channelId,

@@ -81,6 +81,7 @@ interface RaidRow {
   leaderType: "streamer" | "volunteer" | null;
   automaticFill: number;
   attemptCount: number;
+  startedAt: number | null;
   discordCallStatus: CallStatus;
   twitchCallStatus: CallStatus;
   staffMessageId: string | null;
@@ -315,6 +316,7 @@ function raidFromRow(row: RaidRow): StaffBoardRaid {
     ...(row.leaderType === null ? {} : { leaderType: row.leaderType }),
     automaticFill: row.automaticFill === 1,
     attemptCount: row.attemptCount,
+    ...(row.startedAt === null ? {} : { startedAt: row.startedAt }),
     discordCallStatus: row.discordCallStatus,
     twitchCallStatus: row.twitchCallStatus,
     ...(row.staffMessageId === null ? {} : { staffMessageId: row.staffMessageId }),
@@ -383,6 +385,7 @@ function raidSelectSql(where: string, memberState?: number): string {
                  raid.leader_discord_user_id AS leaderDiscordUserId,
                  CASE raid.leader_type WHEN 0 THEN 'streamer' WHEN 1 THEN 'volunteer' END AS leaderType,
                  raid.automatic_fill AS automaticFill, raid.attempt_count AS attemptCount,
+                 raid.started_at AS startedAt,
                  CASE raid.discord_call_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
                    WHEN 2 THEN 'failed' ELSE 'not_requested' END AS discordCallStatus,
                  CASE raid.twitch_call_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
@@ -1227,25 +1230,34 @@ export class D1MvpRepository
         >())
         .values(),
     ];
+    const candidateChunks: (typeof demand)[] = [];
+    for (let index = 0; index < demand.length; index += 4) {
+      candidateChunks.push(demand.slice(index, index + 4));
+    }
     const [existingResults, maxima] = await Promise.all([
       this.database.batch<OpenGroupRow>(
-        demand.map((bucket) =>
-          this.database
+        candidateChunks.map((chunk) => {
+          const branches = chunk.map(
+            (bucket) =>
+              `SELECT * FROM (
+                 SELECT id AS groupId, game_mode AS gameMode, map_id AS mapId,
+                        is_priority AS isPriority, sort_key AS sortKey,
+                        requester_capacity AS requesterCapacity,
+                        current_member_count AS memberCount
+                 FROM raid_groups INDEXED BY raid_groups_compatible_mode_idx
+                 WHERE is_priority = ${bucket.isPriority} AND game_mode = ${bucket.gameMode}
+                   AND map_id = ? AND state = 0 AND automatic_fill = 1
+                   AND current_member_count < requester_capacity
+                 ORDER BY sort_key
+                 LIMIT ${bucket.requestCount})`,
+          );
+          return this.database
             .prepare(
               `/* d1:assignment.legacy_candidates */
-               SELECT id AS groupId, game_mode AS gameMode, map_id AS mapId,
-                      is_priority AS isPriority, sort_key AS sortKey,
-                      requester_capacity AS requesterCapacity,
-                      current_member_count AS memberCount
-               FROM raid_groups
-               WHERE is_priority = ? AND game_mode = ? AND map_id = ?
-                 AND state = 0 AND automatic_fill = 1
-                 AND current_member_count < requester_capacity
-               ORDER BY sort_key
-               LIMIT ?`,
+               ${branches.join(" UNION ALL ")}`,
             )
-            .bind(bucket.isPriority, bucket.gameMode, bucket.mapId, bucket.requestCount),
-        ),
+            .bind(...chunk.map((bucket) => bucket.mapId));
+        }),
       ),
       this.database
         .prepare(
@@ -1870,17 +1882,23 @@ export class D1MvpRepository
     return raid;
   }
 
-  async updateCallStatus(
-    groupId: number,
-    platform: "discord" | "twitch",
-    status: Extract<CallStatus, "sent" | "failed">,
-    changedAt: Date,
-  ): Promise<void> {
-    const column = platform === "discord" ? "discord_call_status" : "twitch_call_status";
-    await this.database
-      .prepare(`UPDATE raid_groups SET ${column} = ?, updated_at = ? WHERE id = ?`)
-      .bind(CALL_STATUS[status], epoch(changedAt), groupId)
+  async updateCallStatus(input: {
+    groupId: number;
+    startedAt: number;
+    platform: "discord" | "twitch";
+    status: Extract<CallStatus, "sent" | "failed">;
+    changedAt: Date;
+  }): Promise<boolean> {
+    const column = input.platform === "discord" ? "discord_call_status" : "twitch_call_status";
+    const result = await this.database
+      .prepare(
+        `UPDATE raid_groups
+         SET ${column} = ?, updated_at = max(updated_at, ?)
+         WHERE id = ? AND state = 1 AND started_at = ? AND ${column} = 0`,
+      )
+      .bind(CALL_STATUS[input.status], epoch(input.changedAt), input.groupId, input.startedAt)
       .run();
+    return Number(result.meta.changes ?? 0) === 1;
   }
 
   async setRaidStaffMessage(groupId: number, messageId: string, changedAt: Date): Promise<void> {
@@ -1896,19 +1914,17 @@ export class D1MvpRepository
     messageId?: string;
     changedAt: Date;
   }): Promise<boolean> {
-    const result = await this.database
-      .prepare(
-        `UPDATE raid_groups SET staff_message_id = ?, updated_at = ?
-       WHERE id = ? AND state IN (0, 1) AND (state = 1 OR automatic_fill = 0)
-         AND staff_message_id IS ?`,
-      )
-      .bind(
-        input.messageId ?? null,
-        epoch(input.changedAt),
-        input.groupId,
-        input.expectedMessageId ?? null,
-      )
-      .run();
+    const timestamp = epoch(input.changedAt);
+    const [result] = await this.database.batch([
+      this.database
+        .prepare(
+          `UPDATE raid_groups SET staff_message_id = ?, updated_at = ?
+           WHERE id = ? AND state IN (0, 1) AND (state = 1 OR automatic_fill = 0)
+             AND staff_message_id IS ?`,
+        )
+        .bind(input.messageId ?? null, timestamp, input.groupId, input.expectedMessageId ?? null),
+      this.boardDirtyStatement(timestamp, true),
+    ]);
     return Number(result?.meta.changes ?? 0) === 1;
   }
 
@@ -2151,21 +2167,29 @@ export class D1MvpRepository
            )`,
         )
         .bind(destinationKey, input.requestId, destinationKey, timestamp, timestamp),
-      this.database
-        .prepare(
-          `INSERT INTO raid_group_follow_ups
+    );
+    const followUpStatementIndex = sourceBecomesEmpty ? undefined : statements.length;
+    if (!sourceBecomesEmpty) {
+      statements.push(
+        this.database
+          .prepare(
+            `INSERT INTO raid_group_follow_ups
              (source_group_id, target_group_id, created_at, updated_at)
            SELECT ?, destination.id, ?, ?
            FROM raid_groups AS destination
            WHERE ${destinationPredicate} AND destination.state = 0
-           ON CONFLICT(source_group_id, target_group_id) DO UPDATE SET
-             updated_at = excluded.updated_at`,
-        )
-        .bind(input.groupId, timestamp, timestamp, destinationKey),
-      this.boardDirtyStatement(timestamp),
-    );
+           ON CONFLICT(source_group_id, target_group_id) DO NOTHING`,
+          )
+          .bind(input.groupId, timestamp, timestamp, destinationKey),
+      );
+    }
+    statements.push(this.boardDirtyStatement(timestamp));
     const results = await this.database.batch(statements);
-    if (results.some((result) => Number(result.meta.changes) < 1)) {
+    if (
+      results.some(
+        (result, index) => index !== followUpStatementIndex && Number(result.meta.changes) < 1,
+      )
+    ) {
       throw new RepositoryInvariantError("The requester was not postponed atomically.");
     }
     const destinationId =

@@ -8,6 +8,7 @@
     "0005_bound_recovery_work.sql": "b4f6d32ea4b9b50399423a26b5624544aafa5d31899b6071f2b64c89008ce944",
     "0006_harden_runtime_correctness.sql": "1f3ac5f417edef0fe47181e7bd02ff472540209ac583a31b090c220ec9c0d539",
     "0007_fence_delivery_claims.sql": "8ef23e4561a7d7e2f3e81a38330f1cc21eeb8974bafbef38846bdca453bbe202",
-    "0008_monotonic_twitch_identity.sql": "84dfdc79c7853281b9750752a056a0249181feb5455f08da41523cd37c62ef65"
+    "0008_monotonic_twitch_identity.sql": "84dfdc79c7853281b9750752a056a0249181feb5455f08da41523cd37c62ef65",
+    "0009_bound_follow_up_cleanup.sql": "f8f22b21f7f7b88933f16139d95f0cd1596f0cdfaff9615fa3c0878aa5508d98"
   }
 }

@@ -73,7 +73,19 @@
       "rowsRead": 20,
       "rowsWritten": 10
     },
-    "operator:status": { "bindingCalls": 3, "statements": 5, "rowsRead": 80, "rowsWritten": 0 }
+    "operator:status": { "bindingCalls": 3, "statements": 5, "rowsRead": 80, "rowsWritten": 0 },
+    "operator:legacy-repair": {
+      "bindingCalls": 30,
+      "statements": 49,
+      "rowsRead": 3500,
+      "rowsWritten": 1500
+    },
+    "operator:follow-up-cleanup": {
+      "bindingCalls": 2,
+      "statements": 2,
+      "rowsRead": 20,
+      "rowsWritten": 5
+    }
   },
   "databaseBytes": {
     "100": 350000,

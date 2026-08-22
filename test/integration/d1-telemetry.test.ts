@@ -3,6 +3,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { afterEach, expect, it, vi } from "vitest";
 import { observeWorkerRequest } from "../../src/infrastructure/cloudflare/telemetry";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
+import { scheduleBackground } from "../../src/infrastructure/discord/staff-board-handler";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -54,6 +55,41 @@ it("reports independent foreground, background, and final D1 usage", async () =>
   expect(background?.correlationId).toBe(foreground?.correlationId);
   expect(final?.correlationId).toBe(foreground?.correlationId);
   expect(JSON.stringify(logs)).not.toContain("SELECT 3");
+});
+
+it("tracks Discord staff work through the proxied context member", async () => {
+  const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+  const context = createExecutionContext();
+  await observeWorkerRequest(
+    new Request("https://worker.test/webhooks/discord/interactions", { method: "POST" }),
+    env as CloudflareEnvironment,
+    context,
+    (environment, tracked) => {
+      scheduleBackground(tracked, "discord.staff_test", environment, async (background) => {
+        await background.DB.prepare("SELECT 1 AS value").first();
+      });
+      return Promise.resolve(new Response(null, { status: 204 }));
+    },
+  );
+  await waitOnExecutionContext(context);
+
+  const logs = parsedLogs(info);
+  expect(logs).toContainEqual(
+    expect.objectContaining({
+      code: "worker_background_task",
+      task: "discord.staff_test",
+      d1BindingCalls: 1,
+      d1Statements: 1,
+    }),
+  );
+  expect(logs).toContainEqual(
+    expect.objectContaining({
+      code: "worker_invocation_final",
+      trackedTaskCount: 1,
+      d1BindingCalls: 1,
+      d1Statements: 1,
+    }),
+  );
 });
 
 it("reports a safe background failure without changing the response", async () => {

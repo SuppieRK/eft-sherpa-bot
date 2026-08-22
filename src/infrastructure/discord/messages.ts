@@ -1,7 +1,7 @@
 import type { CloudflareEnvironment } from "../cloudflare/environment";
 import { requireEnvironmentValue } from "../cloudflare/environment";
 
-export const DISCORD_REQUEST_TIMEOUT_MS = 20_000;
+export const DISCORD_REQUEST_TIMEOUT_MS = 10_000;
 
 export class DiscordApiError extends Error {
   constructor(
@@ -24,17 +24,26 @@ function buildDiscordHeaders(environment: CloudflareEnvironment, input?: Headers
   return headers;
 }
 
+function buildInteractionHeaders(input?: HeadersInit): Headers {
+  const headers = new Headers(input);
+  headers.set("Content-Type", "application/json");
+  return headers;
+}
+
 async function discordFetch(
   environment: CloudflareEnvironment,
   path: string,
   init: RequestInit,
+  authenticate = true,
 ): Promise<Response> {
   const fetcher =
     environment.DISCORD_API_FETCHER?.fetch.bind(environment.DISCORD_API_FETCHER) ?? fetch;
   const timeoutSignal = AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS);
   const response = await fetcher(`${apiBase(environment)}${path}`, {
     ...init,
-    headers: buildDiscordHeaders(environment, init.headers),
+    headers: authenticate
+      ? buildDiscordHeaders(environment, init.headers)
+      : buildInteractionHeaders(init.headers),
     signal: init.signal == null ? timeoutSignal : AbortSignal.any([init.signal, timeoutSignal]),
   });
   if (!response.ok) {
@@ -44,6 +53,20 @@ async function discordFetch(
     );
   }
   return response;
+}
+
+export async function updateDiscordInteractionResponse(
+  environment: CloudflareEnvironment,
+  applicationId: string,
+  interactionToken: string,
+  message: unknown,
+): Promise<void> {
+  await discordFetch(
+    environment,
+    `/webhooks/${applicationId}/${interactionToken}/messages/@original`,
+    { method: "PATCH", body: JSON.stringify(message) },
+    false,
+  );
 }
 
 async function discordRequest(
