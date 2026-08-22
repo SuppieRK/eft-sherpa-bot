@@ -300,12 +300,12 @@ Before release, the fully local Miniflare/workerd D1 benchmark SHALL retain ever
 - **THEN** the complete Worker path contains no materialization statement and performs no assignment write
 
 #### Scenario: Receipt cleanup is benchmarked
-- **WHEN** an invalid Twitch request schedules due maintenance with more than 100 expired receipts
+- **WHEN** a valid Twitch queue command schedules due maintenance with more than 100 expired receipts
 - **THEN** the complete Worker path deletes exactly 100 receipts within the reviewed statement, read, and write baseline
 
 #### Scenario: Invalid Twitch input is benchmarked
-- **WHEN** an invalid Twitch request arrives without due maintenance
-- **THEN** the complete Worker path creates no identity, help request, raid, membership, or Discord board work
+- **WHEN** an invalid Twitch request arrives with or without due receipt maintenance
+- **THEN** the complete Worker path performs no D1 statement and creates no identity, receipt, help request, raid, membership, or Discord board work
 
 #### Scenario: Membership history is benchmarked
 - **WHEN** the performance report hydrates an open board raid with substantial removed-member history

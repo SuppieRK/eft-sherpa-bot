@@ -584,6 +584,36 @@ function operationDefinitions(input: {
               `SELECT count(*) AS count FROM event_receipts
                WHERE delivery_id LIKE 'bench-op-expired-%'`,
             ).first<{ count: number }>();
+            expect(remaining?.count).toBe(600);
+            const receipt = await env.DB.prepare(
+              `SELECT delivery_id FROM event_receipts
+               WHERE platform = 1 AND delivery_id = ?`,
+            )
+              .bind(`${OPERATION_PREFIX}twitch-expired-${sample}`)
+              .first();
+            expect(receipt).toBeNull();
+          },
+        };
+      },
+    },
+    {
+      id: "twitch.queue.expired-receipts",
+      label: "Twitch !queue with expired-receipt cleanup",
+      async prepare(_seed, sample) {
+        await seedExpiredReceiptBacklog(600);
+        return {
+          request: await twitch({
+            text: "!queue",
+            deliveryId: `${OPERATION_PREFIX}twitch-queue-expired-${sample}`,
+            twitchUserId: `${OPERATION_PREFIX}twitch-queue-expired`,
+            twitchLogin: "op_twitch_queue_expired",
+          }),
+          async verify(response) {
+            expect(response.status).toBe(204);
+            const remaining = await env.DB.prepare(
+              `SELECT count(*) AS count FROM event_receipts
+               WHERE delivery_id LIKE 'bench-op-expired-%'`,
+            ).first<{ count: number }>();
             expect(remaining?.count).toBe(500);
           },
         };

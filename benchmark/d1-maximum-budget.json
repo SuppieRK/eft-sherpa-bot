@@ -11,6 +11,12 @@
     },
     "twitch:request": { "bindingCalls": 16, "statements": 30, "rowsRead": 500, "rowsWritten": 120 },
     "twitch:queue": { "bindingCalls": 16, "statements": 20, "rowsRead": 220, "rowsWritten": 10 },
+    "maintenance:receipts": {
+      "bindingCalls": 20,
+      "statements": 30,
+      "rowsRead": 600,
+      "rowsWritten": 120
+    },
     "board:create": { "bindingCalls": 10, "statements": 12, "rowsRead": 260, "rowsWritten": 8 },
     "board:open": { "bindingCalls": 8, "statements": 10, "rowsRead": 250, "rowsWritten": 4 },
     "board:refresh": { "bindingCalls": 10, "statements": 12, "rowsRead": 275, "rowsWritten": 10 },

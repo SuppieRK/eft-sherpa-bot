@@ -685,6 +685,31 @@ function acceptedTwitchChatEvent(
   return event;
 }
 
+async function deliverBestEffortTwitchGuidance(input: {
+  environment: CloudflareEnvironment;
+  communityConfig: CommunityConfig;
+  message: string;
+  replyToMessageId: string;
+}): Promise<void> {
+  try {
+    await sendTwitchChatMessage(
+      input.environment,
+      {
+        clientId: input.communityConfig.twitch.clientId,
+        botUserId: input.communityConfig.twitch.botUserId,
+      },
+      {
+        broadcasterId: input.communityConfig.twitch.broadcasterUserId,
+        message: input.message,
+        replyParentMessageId: input.replyToMessageId,
+      },
+    );
+  } catch (error) {
+    const errorCode = error instanceof TwitchApiError ? error.code : "unexpected_error";
+    logDiagnostic("error", "twitch_guidance_failed", { errorCode });
+  }
+}
+
 async function deliverTwitchReply(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
@@ -829,6 +854,20 @@ async function handleTwitchEventSub(
   const command = parseTwitchPublicCommand(event.text);
   if (command === undefined) {
     return new Response(null, { status: 204 });
+  }
+  if (command.name === "request") {
+    const parsedRequest = parseTwitchRequestInput(command.input);
+    if (!parsedRequest.valid) {
+      context.waitUntilTask("twitch.invalid_request_guidance", async (backgroundEnvironment) => {
+        await deliverBestEffortTwitchGuidance({
+          environment: backgroundEnvironment,
+          communityConfig,
+          message: invalidTwitchRequestReply(parsedRequest),
+          replyToMessageId: event.messageId,
+        });
+      });
+      return new Response(null, { status: 204 });
+    }
   }
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);

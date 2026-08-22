@@ -126,6 +126,63 @@ describe("Twitch private-pilot commands", () => {
     await expect(
       env.DB.prepare(`SELECT count(*) AS count FROM user_mappings`).first(),
     ).resolves.toEqual({ count: 0 });
+    await expect(
+      env.DB.prepare(`SELECT count(*) AS count FROM event_receipts`).first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
+  it("does not run receipt maintenance for invalid request guidance", async () => {
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }));
+    await env.DB.prepare(
+      `INSERT INTO event_receipts (platform, delivery_id, event_type, received_at)
+       VALUES (1, 'expired-invalid-guidance', 'command:request', 0)`,
+    ).run();
+    const context = createExecutionContext();
+
+    await worker.fetch(
+      await eventSubRequest("!request pve", "invalid-with-expired-receipt"),
+      testEnvironment,
+      context,
+    );
+    await waitOnExecutionContext(context);
+
+    expect(twitchFetch).toHaveBeenCalledTimes(1);
+    await expect(
+      env.DB.prepare(
+        `SELECT delivery_id AS deliveryId FROM event_receipts ORDER BY delivery_id`,
+      ).all(),
+    ).resolves.toMatchObject({ results: [{ deliveryId: "expired-invalid-guidance" }] });
+  });
+
+  it.each([
+    ["a Twitch API error", () => Promise.resolve(new Response("Unavailable", { status: 503 }))],
+    ["an unexpected transport error", () => Promise.reject(new Error("Network unavailable"))],
+  ])("keeps invalid request guidance best-effort after %s", async (_scenario, reply) => {
+    const twitchFetch = vi.spyOn(globalThis, "fetch").mockImplementation(reply);
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const context = createExecutionContext();
+
+    expect(
+      (
+        await worker.fetch(
+          await eventSubRequest("!request pve", `invalid-guidance-${_scenario}`),
+          testEnvironment,
+          context,
+        )
+      ).status,
+    ).toBe(204);
+    await expect(waitOnExecutionContext(context)).resolves.toBeUndefined();
+
+    expect(twitchFetch).toHaveBeenCalledTimes(1);
+    expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining("twitch_guidance_failed"));
+    await expect(
+      env.DB.prepare(`SELECT count(*) AS count FROM user_mappings`).first(),
+    ).resolves.toEqual({ count: 0 });
+    await expect(
+      env.DB.prepare(`SELECT count(*) AS count FROM event_receipts`).first(),
+    ).resolves.toEqual({ count: 0 });
   });
 
   it("creates a Twitch-native request and keeps one active request per mode and map", async () => {
