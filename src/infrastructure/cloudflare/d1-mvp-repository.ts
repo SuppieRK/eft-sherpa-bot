@@ -232,6 +232,16 @@ interface PostponeRequesterInput {
   changedAt: Date;
 }
 
+interface ValidatedCreateRequest {
+  actionKey: string;
+  notes?: string;
+  objective: string;
+  platform: number;
+  requesterCapacity: number;
+  timestamp: number;
+  twitchLogin: string;
+}
+
 interface PullBoundaryRow {
   automaticFill: number;
   currentMemberCount: number;
@@ -732,15 +742,16 @@ export class D1MvpRepository
     return orderByModePresence([...unique.values()]).slice(0, exactAheadLimit + 1);
   }
 
-  async createRequest(input: CreateHelpRequest): Promise<CreateHelpRequestOutcome> {
+  private validateCreateRequest(input: CreateHelpRequest): ValidatedCreateRequest {
     if (input.discordUserId === undefined && input.twitchUserId === undefined) {
       throw new RepositoryInvariantError("a request requires a Discord or Twitch caller ID");
     }
-    let twitchLogin = normalizeTwitchLogin(input.twitchLogin);
+    const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
     const objective = input.objective.trim();
     const notes = input.notes?.trim() || undefined;
-    if (twitchLogin === undefined)
+    if (twitchLogin === undefined) {
       throw new RepositoryInvariantError("a request requires a valid Twitch name");
+    }
     if (objective.length < 1 || objective.length > 150) {
       throw new RepositoryInvariantError("the request objective must contain 1 to 150 characters");
     }
@@ -750,28 +761,50 @@ export class D1MvpRepository
     if (!Number.isInteger(input.recipientLimit) || input.recipientLimit < 1) {
       throw new RepositoryInvariantError("recipient limit must be a positive integer");
     }
-    const requesterCapacity = this.requesterCapacity(input.mapId, input.recipientLimit);
-    const timestamp = epoch(input.observedAt);
     const platform = PLATFORM[input.sourcePlatform];
-    const actionKey = `intake:${platform}:${input.sourceDeliveryId}`;
-    if (input.twitchUserId !== undefined) {
-      const stable = await this.database
-        .prepare(
-          `SELECT twitch_login AS twitchLogin, twitch_observed_at AS twitchObservedAt
-           FROM user_mappings WHERE twitch_user_id = ?`,
-        )
-        .bind(input.twitchUserId)
-        .first<{ twitchLogin: string; twitchObservedAt: number }>();
-      if (
-        input.sourcePlatform === "twitch" &&
-        stable !== null &&
-        stable.twitchObservedAt > timestamp
-      ) {
-        twitchLogin = stable.twitchLogin;
-      } else {
-        await this.assertNoStableIdentityCollision(twitchLogin, input.twitchUserId);
-      }
+    return {
+      twitchLogin,
+      objective,
+      ...(notes === undefined ? {} : { notes }),
+      requesterCapacity: this.requesterCapacity(input.mapId, input.recipientLimit),
+      timestamp: epoch(input.observedAt),
+      platform,
+      actionKey: `intake:${platform}:${input.sourceDeliveryId}`,
+    };
+  }
+
+  private async resolveCreateRequestTwitchLogin(
+    input: CreateHelpRequest,
+    twitchLogin: string,
+    timestamp: number,
+  ): Promise<string> {
+    if (input.twitchUserId === undefined) return twitchLogin;
+    const stable = await this.database
+      .prepare(
+        `SELECT twitch_login AS twitchLogin, twitch_observed_at AS twitchObservedAt
+         FROM user_mappings WHERE twitch_user_id = ?`,
+      )
+      .bind(input.twitchUserId)
+      .first<{ twitchLogin: string; twitchObservedAt: number }>();
+    if (
+      input.sourcePlatform === "twitch" &&
+      stable !== null &&
+      stable.twitchObservedAt > timestamp
+    ) {
+      return stable.twitchLogin;
     }
+    await this.assertNoStableIdentityCollision(twitchLogin, input.twitchUserId);
+    return twitchLogin;
+  }
+
+  async createRequest(input: CreateHelpRequest): Promise<CreateHelpRequestOutcome> {
+    const validated = this.validateCreateRequest(input);
+    const { actionKey, notes, objective, platform, requesterCapacity, timestamp } = validated;
+    const twitchLogin = await this.resolveCreateRequestTwitchLogin(
+      input,
+      validated.twitchLogin,
+      timestamp,
+    );
     const statements = this.userMappingStatements({
       twitchLogin,
       ...(input.twitchUserId === undefined ? {} : { twitchUserId: input.twitchUserId }),
