@@ -22,3 +22,7 @@ The database SHALL enforce at most one waiting or planned request per stable Twi
 #### Scenario: Same map is requested in another mode
 - **WHEN** the same stable Twitch user requests an active map in a different game mode
 - **THEN** a separate request is accepted for that mode without changing the earlier request
+
+#### Scenario: Twitch reassigns a login held by another stable identity
+- **WHEN** an authenticated Twitch user ID appears under a login mapped to a different non-null Twitch user ID
+- **THEN** the system rejects automatic identity merging and does not transfer either user's Discord or EFT details

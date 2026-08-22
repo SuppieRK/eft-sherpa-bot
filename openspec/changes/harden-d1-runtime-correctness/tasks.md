@@ -76,3 +76,14 @@
 - [x] 9.2 Run formatting, Biome, typed Oxlint, TypeScript, Knip, migration checks, unit/integration tests, build, secret checks, strict OpenSpec validation, and the complete local D1 benchmark.
 - [x] 9.3 Update ASD-STE100 operator and release documentation for migration `0006`, duplicate repair evidence, D1 Analytics comparison, rollback, and DEV smoke verification.
 - [x] 9.4 Commit the completed change on the feature branch, push it, create a GitHub pull request with measured before/after evidence, and manually deploy that exact branch version to DEV for Discord and Twitch smoke testing.
+
+## 10. Follow-up Runtime Correctness
+
+- [x] 10.1 Add forward-only migration `0007` with fenced Discord claim tokens and Twitch processing/send claim metadata; leave migration `0006` unchanged.
+- [x] 10.2 Allocate intake, legacy materialization, and reusable postponement membership positions after the maximum active position and cover each gap shape with regression tests.
+- [x] 10.3 Reject recycled-login conflicts between different non-null stable Twitch IDs in both observation and request intake without transferring Discord or EFT data.
+- [x] 10.4 Acquire the board lease before hydration, commit the exact rendered version, fence creation and 404 replacement, clean up losing messages, and schedule bounded follow-up drains.
+- [x] 10.5 Use server wall-clock time and random fencing tokens for Discord mutation claims, completion, and release, including stale-worker regression tests.
+- [x] 10.6 Claim Twitch processing before command work, recover expired processing claims, fence one at-most-once send, and distinguish explicit API failure from ambiguous acknowledgement failure.
+- [x] 10.7 Extend local D1 and concurrency tests for recycled identities, position gaps, board races, abandoned claims, exact overlapping Twitch deliveries, and ambiguous send acknowledgement.
+- [x] 10.8 Run formatting, static analysis, type checking, migration checks, tests, build, strict OpenSpec validation, and the complete fully local D1 benchmark; update evidence only from local D1.

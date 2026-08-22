@@ -110,3 +110,23 @@ Report provenance will use the Node 26 runtime and a digest of benchmark source,
 ## Open Questions
 
 None.
+
+## Follow-up Runtime Corrections
+
+### Active membership positions use the active maximum
+
+Every path that appends a current raid member will calculate its base position from `max(position)` over `raid_group_members.state = 0`, not from `raid_groups.current_member_count`. This applies to normal intake, bounded legacy materialization, and reusable postponement raids. The member count remains the capacity fact; position is only stable display/order metadata and can contain historical gaps.
+
+### Recycled Twitch logins never merge different stable identities
+
+A mapping at the newly observed login can be merged only when its stable Twitch ID is null or equals the authenticated ID. A different non-null ID is an identity collision. Automatic observation and Twitch request intake will preserve both existing profiles and will not copy Discord display, Discord ID, or EFT name across the collision. The command will fail safely and emit no private profile data. Staff can resolve the exceptional mapping explicitly.
+
+### Board creation and rendering are fenced by one lease
+
+Board synchronization acquires the lease before it hydrates raid details. The lease returns the canonical message ID and dirty version. Creation and 404 replacement commit the message ID and the exact `snapshot.boardVersion` only when the lease token and expected prior message still match. A losing created message is deleted. When one three-attempt drain still has newer work, production schedules another bounded drain through the tracked execution context; final telemetry waits for dynamically scheduled follow-up tasks.
+
+### Discord and Twitch claims use wall-clock leases and fencing tokens
+
+Migration `0007` adds Discord and Twitch claim metadata without changing migration `0006`. Discord retains the signed interaction time as receipt metadata but uses server wall-clock time for expiry. Completion and release require the random claim token.
+
+Twitch claims a new or expired processing receipt before command-side D1 work. Completing that claim stores the reply. A separate random send token permits one external send. Explicit Twitch API rejection clears the send token into retryable failure. An ambiguous network failure or a successful Twitch POST followed by failed D1 acknowledgement keeps the send token and is not retried automatically, favoring at-most-once chat delivery over duplicate messages.

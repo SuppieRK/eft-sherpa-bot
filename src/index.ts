@@ -9,9 +9,10 @@ import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
 import { parseTwitchRequestInput } from "./domain/twitch-request";
 import { isStaffBoardMember } from "./domain/staff-board";
+import { StableTwitchIdentityConflictError } from "./domain/sherpa-repository";
 import {
   D1MvpRepository,
-  type TwitchReplyReceipt,
+  type TwitchReplyDeliveryClaim,
 } from "./infrastructure/cloudflare/d1-mvp-repository";
 import { logDiagnostic } from "./infrastructure/cloudflare/diagnostics";
 import type { CloudflareEnvironment } from "./infrastructure/cloudflare/environment";
@@ -159,19 +160,21 @@ async function claimDiscordMutation(
   dependencies: DiscordInteractionDependencies,
   deliveryId: string,
   eventType: string,
-): Promise<boolean> {
+): Promise<string | undefined> {
   return dependencies.repository.claimDiscordMutation(
     deliveryId,
     eventType,
     dependencies.changedAt,
+    new Date(),
   );
 }
 
 async function completeDiscordMutation(
   dependencies: DiscordInteractionDependencies,
   deliveryId: string,
+  claimToken: string,
 ): Promise<void> {
-  await dependencies.repository.completeDiscordMutation(deliveryId);
+  await dependencies.repository.completeDiscordMutation(deliveryId, claimToken);
   dependencies.context.waitUntilTask("discord.receipt_cleanup", async (environment) => {
     await new D1MvpRepository(environment.DB).maintainExpiredReceipts(dependencies.changedAt);
   });
@@ -180,8 +183,9 @@ async function completeDiscordMutation(
 async function releaseDiscordMutation(
   dependencies: DiscordInteractionDependencies,
   deliveryId: string,
+  claimToken: string,
 ): Promise<void> {
-  await dependencies.repository.releaseDiscordMutation(deliveryId);
+  await dependencies.repository.releaseDiscordMutation(deliveryId, claimToken);
 }
 
 async function handleStaffInsightsCommand(
@@ -248,12 +252,13 @@ async function handleDiscordLinkCommand(
       "Only the streamer or a volunteer sherpa can use the Discord member option.",
     );
   }
-  const claimed = await claimDiscordMutation(
+  const claimToken = await claimDiscordMutation(
     dependencies,
     interaction.interactionId,
     "identity:link-twitch",
   );
-  if (!claimed) return discordEphemeralMessage("That link command was already received.");
+  if (claimToken === undefined)
+    return discordEphemeralMessage("That link command was already received.");
   try {
     const discordDisplayName =
       targetDiscordUserId === interaction.discordUserId
@@ -266,12 +271,12 @@ async function handleDiscordLinkCommand(
       ...(inGameName === undefined ? {} : { inGameName }),
       linkedAt: changedAt,
     });
-    await completeDiscordMutation(dependencies, interaction.interactionId);
+    await completeDiscordMutation(dependencies, interaction.interactionId, claimToken);
     return discordEphemeralMessage(
       buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
     );
   } catch (error) {
-    await releaseDiscordMutation(dependencies, interaction.interactionId);
+    await releaseDiscordMutation(dependencies, interaction.interactionId, claimToken);
     throw error;
   }
 }
@@ -338,12 +343,12 @@ async function completeMissingDiscord(
   if (!hasResolvedMember || discordUserId === undefined) {
     return discordEphemeralMessage("Select a current member of this Discord server.");
   }
-  const claimed = await claimDiscordMutation(
+  const claimToken = await claimDiscordMutation(
     dependencies,
     interaction.interactionId,
     "identity:complete-discord",
   );
-  if (!claimed) {
+  if (claimToken === undefined) {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
   }
   try {
@@ -354,10 +359,10 @@ async function completeMissingDiscord(
       ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
       changedAt,
     });
-    await completeDiscordMutation(dependencies, interaction.interactionId);
+    await completeDiscordMutation(dependencies, interaction.interactionId, claimToken);
     return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
   } catch (error) {
-    await releaseDiscordMutation(dependencies, interaction.interactionId);
+    await releaseDiscordMutation(dependencies, interaction.interactionId, claimToken);
     throw error;
   }
 }
@@ -430,12 +435,12 @@ async function handleUserDirectoryEftModal(
   if (inGameName === undefined || inGameName.length < 1 || inGameName.length > 64) {
     return discordEphemeralMessage("Enter an Escape from Tarkov name from 1 to 64 characters.");
   }
-  const claimed = await claimDiscordMutation(
+  const claimToken = await claimDiscordMutation(
     dependencies,
     interaction.interactionId,
     "identity:complete-eft",
   );
-  if (!claimed) {
+  if (claimToken === undefined) {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
   }
   const result = await repository
@@ -445,10 +450,10 @@ async function handleUserDirectoryEftModal(
       changedAt,
     })
     .catch(async (error: unknown) => {
-      await releaseDiscordMutation(dependencies, interaction.interactionId);
+      await releaseDiscordMutation(dependencies, interaction.interactionId, claimToken);
       throw error;
     });
-  await completeDiscordMutation(dependencies, interaction.interactionId);
+  await completeDiscordMutation(dependencies, interaction.interactionId, claimToken);
   return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
 }
 
@@ -491,6 +496,7 @@ async function handleDiscordRequestModal(
         communityConfig,
         changedAt,
         createIfMissing: false,
+        context,
       });
     });
   }
@@ -684,11 +690,11 @@ async function deliverTwitchReply(input: {
   communityConfig: CommunityConfig;
   repository: D1MvpRepository;
   deliveryId: string;
-  replyText: string;
-  replyToMessageId?: string;
+  delivery: TwitchReplyDeliveryClaim;
 }): Promise<void> {
+  let messageId: string;
   try {
-    const messageId = await sendTwitchChatMessage(
+    messageId = await sendTwitchChatMessage(
       input.environment,
       {
         clientId: input.communityConfig.twitch.clientId,
@@ -696,45 +702,97 @@ async function deliverTwitchReply(input: {
       },
       {
         broadcasterId: input.communityConfig.twitch.broadcasterUserId,
-        message: input.replyText,
-        ...(input.replyToMessageId === undefined
+        message: input.delivery.receipt.replyText,
+        ...(input.delivery.receipt.replyToMessageId === undefined
           ? {}
-          : { replyParentMessageId: input.replyToMessageId }),
+          : { replyParentMessageId: input.delivery.receipt.replyToMessageId }),
       },
     );
-    await input.repository.markTwitchReplySent(input.deliveryId, messageId);
   } catch (error) {
     const errorCode = error instanceof TwitchApiError ? error.code : "unexpected_error";
-    await input.repository.markTwitchReplyFailed(input.deliveryId, errorCode);
-    logDiagnostic("error", "twitch_reply_failed", { errorCode });
+    if (error instanceof TwitchApiError) {
+      await input.repository
+        .markTwitchReplyFailed(input.deliveryId, input.delivery.sendToken, errorCode)
+        .catch(() => {
+          logDiagnostic("error", "twitch_reply_failure_state_failed", { errorCode });
+        });
+      logDiagnostic("error", "twitch_reply_failed", { errorCode });
+    } else {
+      await input.repository
+        .markTwitchReplyAmbiguous(input.deliveryId, input.delivery.sendToken, errorCode)
+        .catch(() => {
+          logDiagnostic("error", "twitch_reply_ambiguous_state_failed", { errorCode });
+        });
+      logDiagnostic("error", "twitch_reply_ambiguous", { errorCode });
+    }
+    return;
+  }
+  try {
+    await input.repository.markTwitchReplySent(
+      input.deliveryId,
+      input.delivery.sendToken,
+      messageId,
+    );
+  } catch {
+    logDiagnostic("error", "twitch_reply_ack_failed", { errorCode: "d1_ack_failed" });
   }
 }
 
 async function handleExistingTwitchReceipt(input: {
-  receipt: TwitchReplyReceipt;
   deliveryId: string;
+  receipt: TwitchReplyDeliveryClaim["receipt"];
   repository: D1MvpRepository;
   context: TrackedExecutionContext;
   communityConfig: CommunityConfig;
 }): Promise<Response> {
-  const shouldRetry =
-    input.receipt.replyStatus === "failed" &&
-    (await input.repository.claimFailedTwitchReplyRetry(input.deliveryId));
-  if (shouldRetry) {
+  if (input.receipt.replyStatus === "sent" || input.receipt.sendClaimed) {
+    return new Response(null, { status: 204 });
+  }
+  const delivery = await input.repository.claimTwitchReplyDelivery(input.deliveryId);
+  if (delivery !== undefined) {
     input.context.waitUntilTask("twitch.reply_retry", async (backgroundEnvironment) => {
       await deliverTwitchReply({
         environment: backgroundEnvironment,
         communityConfig: input.communityConfig,
         repository: new D1MvpRepository(backgroundEnvironment.DB),
         deliveryId: input.deliveryId,
-        replyText: input.receipt.replyText,
-        ...(input.receipt.replyToMessageId === undefined
-          ? {}
-          : { replyToMessageId: input.receipt.replyToMessageId }),
+        delivery,
       });
     });
   }
   return new Response(null, { status: 204 });
+}
+
+async function buildClaimedTwitchCommandResult(input: {
+  command: TwitchPublicCommand;
+  chatterUserId: string;
+  chatterUserLogin: string;
+  deliveryId: string;
+  observedAt: Date;
+  repository: D1MvpRepository;
+  communityConfig: CommunityConfig;
+  claimToken: string;
+}): Promise<{ replyText: string; boardChanged: boolean }> {
+  try {
+    return await buildTwitchPublicReply(
+      input.command,
+      input.chatterUserId,
+      input.chatterUserLogin,
+      input.deliveryId,
+      input.observedAt,
+      input.repository,
+      input.communityConfig,
+    );
+  } catch (error) {
+    if (error instanceof StableTwitchIdentityConflictError) {
+      return {
+        replyText: "I could not verify that Twitch login. Ask staff to check your link.",
+        boardChanged: false,
+      };
+    }
+    await input.repository.releaseTwitchCommand(input.deliveryId, input.claimToken);
+    throw error;
+  }
 }
 
 async function handleTwitchEventSub(
@@ -774,63 +832,61 @@ async function handleTwitchEventSub(
   }
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);
-  const existingReceipt = await repository.findTwitchReply(verification.headers.messageId);
-  if (existingReceipt !== undefined) {
+  const commandClaim = await repository.claimTwitchCommand({
+    deliveryId: verification.headers.messageId,
+    eventType: `command:${command.name}`,
+    receivedAt: observedAt,
+    claimedAt: new Date(),
+  });
+  if (commandClaim.outcome === "processing") return new Response(null, { status: 204 });
+  if (commandClaim.outcome === "ready") {
     return handleExistingTwitchReceipt({
-      receipt: existingReceipt,
       deliveryId: verification.headers.messageId,
+      receipt: commandClaim.receipt,
       repository,
       context,
       communityConfig,
     });
   }
-  const commandResult = await buildTwitchPublicReply(
+  const commandResult = await buildClaimedTwitchCommandResult({
     command,
-    event.chatterUserId,
-    event.chatterUserLogin,
-    verification.headers.messageId,
+    chatterUserId: event.chatterUserId,
+    chatterUserLogin: event.chatterUserLogin,
+    deliveryId: verification.headers.messageId,
     observedAt,
     repository,
     communityConfig,
-  );
-  const receipt = await repository.recordTwitchReply({
+    claimToken: commandClaim.claimToken,
+  });
+  await repository.completeTwitchCommand({
     deliveryId: verification.headers.messageId,
-    eventType: `command:${command.name}`,
+    claimToken: commandClaim.claimToken,
     replyText: commandResult.replyText,
     ...(replyToMessage ? { replyToMessageId: event.messageId } : {}),
-    receivedAt: observedAt,
   });
-  if (!receipt.duplicate) {
-    context.waitUntilTask("twitch.receipt_cleanup", async (backgroundEnvironment) => {
-      await new D1MvpRepository(backgroundEnvironment.DB).maintainExpiredReceipts(observedAt);
-    });
-  }
-  const shouldDeliver =
-    (!receipt.duplicate && receipt.replyStatus === "pending") ||
-    (receipt.duplicate &&
-      receipt.replyStatus === "failed" &&
-      (await repository.claimFailedTwitchReplyRetry(verification.headers.messageId)));
-  if (shouldDeliver) {
+  context.waitUntilTask("twitch.receipt_cleanup", async (backgroundEnvironment) => {
+    await new D1MvpRepository(backgroundEnvironment.DB).maintainExpiredReceipts(observedAt);
+  });
+  const delivery = await repository.claimTwitchReplyDelivery(verification.headers.messageId);
+  if (delivery !== undefined) {
     context.waitUntilTask("twitch.reply_delivery", async (backgroundEnvironment) => {
       await deliverTwitchReply({
         environment: backgroundEnvironment,
         communityConfig,
         repository: new D1MvpRepository(backgroundEnvironment.DB),
         deliveryId: verification.headers.messageId,
-        replyText: receipt.replyText,
-        ...(receipt.replyToMessageId === undefined
-          ? {}
-          : { replyToMessageId: receipt.replyToMessageId }),
+        delivery,
       });
     });
   }
-  if (!receipt.duplicate && commandResult.boardChanged) {
+  if (commandResult.boardChanged) {
     context.waitUntilTask("twitch.board_drain", async (backgroundEnvironment) => {
       await synchronizeCanonicalBoard({
         environment: backgroundEnvironment,
         communityConfig,
         changedAt: observedAt,
         createIfMissing: false,
+        context,
       });
     });
   }
@@ -868,6 +924,7 @@ function workerRoute(request: Request, url: URL): WorkerRoute | undefined {
 async function handleLegacyRepair(
   environment: CloudflareEnvironment,
   communityConfig: CommunityConfig,
+  context: TrackedExecutionContext,
 ): Promise<Response> {
   const repository = new D1MvpRepository(environment.DB);
   const result = await repository.repairLegacyUnassignedRequests({
@@ -880,6 +937,7 @@ async function handleLegacyRepair(
       communityConfig,
       changedAt: new Date(),
       createIfMissing: false,
+      context,
     });
   }
   return Response.json(result);
@@ -931,7 +989,7 @@ async function handleConfiguredWorkerRequest(input: {
     return new Response("Not found", { status: 404 });
   }
   return input.route === "legacy_repair"
-    ? handleLegacyRepair(input.environment, input.communityConfig)
+    ? handleLegacyRepair(input.environment, input.communityConfig, input.context)
     : handleInternalStatus(input.environment, input.communityConfig);
 }
 

@@ -167,7 +167,11 @@ async function seedActiveRaid(input: {
     });
     raid = (await repo.getRaid(raid.id)) as StaffBoardRaid;
   }
-  await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+  await repo.setCanonicalBoardMessage({
+    messageId: "canonical-board",
+    renderedVersion: 0,
+    changedAt,
+  });
   return { repo, raid };
 }
 
@@ -708,7 +712,11 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-board",
+      renderedVersion: 0,
+      changedAt,
+    });
 
     const response = await refreshBoard("refresh-old-controls");
     const body = JSON.stringify(await response.json());
@@ -1030,7 +1038,11 @@ describe("Discord progressive raid workflow", () => {
       messageId: "deleted-planned-detail",
       changedAt,
     });
-    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-board",
+      renderedVersion: 0,
+      changedAt,
+    });
     messagePatchStatuses.set("deleted-planned-detail", 404);
     outbound = [];
 
@@ -1183,7 +1195,11 @@ describe("Discord progressive raid workflow", () => {
       messageId: "keep-woods-detail",
       changedAt,
     });
-    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-board",
+      renderedVersion: 0,
+      changedAt,
+    });
     outbound = [];
 
     const executionContext = createExecutionContext();
@@ -1379,7 +1395,11 @@ describe("Discord progressive raid workflow", () => {
         observedAt: new Date(changedAt.getTime() + index),
       });
     }
-    await repo.setCanonicalBoardMessage({ messageId: "canonical-board", changedAt });
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-board",
+      renderedVersion: 0,
+      changedAt,
+    });
     const staff = {
       channel_id: config.discord.staffChannelId,
       member: {
@@ -1792,7 +1812,11 @@ describe("Discord requester pull-up workflow", () => {
       actionKey: `${input.messageId}-open-seat`,
       changedAt,
     });
-    await repo.setCanonicalBoardMessage({ messageId: "canonical-pull-board", changedAt });
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-pull-board",
+      renderedVersion: 0,
+      changedAt,
+    });
     return {
       repo,
       destination: (await repo.getRaid(reviewed.id)) as StaffBoardRaid,
