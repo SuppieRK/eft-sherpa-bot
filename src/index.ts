@@ -689,7 +689,7 @@ async function deliverBestEffortTwitchGuidance(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   message: string;
-  replyToMessageId?: string;
+  replyToMessageId: string;
 }): Promise<void> {
   try {
     await sendTwitchChatMessage(
@@ -701,9 +701,7 @@ async function deliverBestEffortTwitchGuidance(input: {
       {
         broadcasterId: input.communityConfig.twitch.broadcasterUserId,
         message: input.message,
-        ...(input.replyToMessageId === undefined
-          ? {}
-          : { replyParentMessageId: input.replyToMessageId }),
+        replyParentMessageId: input.replyToMessageId,
       },
     );
   } catch (error) {
@@ -865,7 +863,7 @@ async function handleTwitchEventSub(
           environment: backgroundEnvironment,
           communityConfig,
           message: invalidTwitchRequestReply(parsedRequest),
-          ...(replyToMessage ? { replyToMessageId: event.messageId } : {}),
+          replyToMessageId: event.messageId,
         });
       });
       return new Response(null, { status: 204 });
