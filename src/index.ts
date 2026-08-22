@@ -763,6 +763,38 @@ async function handleExistingTwitchReceipt(input: {
   return new Response(null, { status: 204 });
 }
 
+async function buildClaimedTwitchCommandResult(input: {
+  command: TwitchPublicCommand;
+  chatterUserId: string;
+  chatterUserLogin: string;
+  deliveryId: string;
+  observedAt: Date;
+  repository: D1MvpRepository;
+  communityConfig: CommunityConfig;
+  claimToken: string;
+}): Promise<{ replyText: string; boardChanged: boolean }> {
+  try {
+    return await buildTwitchPublicReply(
+      input.command,
+      input.chatterUserId,
+      input.chatterUserLogin,
+      input.deliveryId,
+      input.observedAt,
+      input.repository,
+      input.communityConfig,
+    );
+  } catch (error) {
+    if (error instanceof StableTwitchIdentityConflictError) {
+      return {
+        replyText: "I could not verify that Twitch login. Ask staff to check your link.",
+        boardChanged: false,
+      };
+    }
+    await input.repository.releaseTwitchCommand(input.deliveryId, input.claimToken);
+    throw error;
+  }
+}
+
 async function handleTwitchEventSub(
   request: Request,
   environment: CloudflareEnvironment,
@@ -816,31 +848,16 @@ async function handleTwitchEventSub(
       communityConfig,
     });
   }
-  let commandResult: { replyText: string; boardChanged: boolean };
-  try {
-    commandResult = await buildTwitchPublicReply(
-      command,
-      event.chatterUserId,
-      event.chatterUserLogin,
-      verification.headers.messageId,
-      observedAt,
-      repository,
-      communityConfig,
-    );
-  } catch (error) {
-    if (error instanceof StableTwitchIdentityConflictError) {
-      commandResult = {
-        replyText: "I could not verify that Twitch login. Ask staff to check your link.",
-        boardChanged: false,
-      };
-    } else {
-      await repository.releaseTwitchCommand(
-        verification.headers.messageId,
-        commandClaim.claimToken,
-      );
-      throw error;
-    }
-  }
+  const commandResult = await buildClaimedTwitchCommandResult({
+    command,
+    chatterUserId: event.chatterUserId,
+    chatterUserLogin: event.chatterUserLogin,
+    deliveryId: verification.headers.messageId,
+    observedAt,
+    repository,
+    communityConfig,
+    claimToken: commandClaim.claimToken,
+  });
   await repository.completeTwitchCommand({
     deliveryId: verification.headers.messageId,
     claimToken: commandClaim.claimToken,

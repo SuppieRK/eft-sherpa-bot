@@ -4,7 +4,7 @@ import { appendRaidBringSuffix } from "../../domain/raid-call";
 import { formatModeMap } from "../../domain/game-mode";
 import { RepositoryInvariantError } from "../../domain/sherpa-repository";
 import { isStaffBoardMember, type StaffBoardRaid } from "../../domain/staff-board";
-import { D1MvpRepository } from "../cloudflare/d1-mvp-repository";
+import { type BoardDrainLease, D1MvpRepository } from "../cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../cloudflare/environment";
 import type { TrackedExecutionContext } from "../cloudflare/telemetry";
 import { sendTwitchChatMessage } from "../twitch/twitch-api";
@@ -135,20 +135,148 @@ async function raidDetailMessage(input: {
   );
 }
 
+type BoardSnapshot = Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
+
+interface BoardDrainStepResult {
+  complete: boolean;
+  hasMore: boolean;
+  canonicalMessageId: string | undefined;
+}
+
+async function completedBoardDrainResult(
+  repository: D1MvpRepository,
+  completion: Awaited<ReturnType<D1MvpRepository["completeBoardDrain"]>>,
+): Promise<BoardDrainStepResult> {
+  if (!completion.applied) {
+    return {
+      complete: true,
+      hasMore: false,
+      canonicalMessageId: await repository.getCanonicalBoardMessageId(),
+    };
+  }
+  return {
+    complete: !completion.hasMore,
+    hasMore: completion.hasMore,
+    canonicalMessageId: completion.canonicalMessageId,
+  };
+}
+
+async function createCanonicalBoardMessage(input: {
+  environment: CloudflareEnvironment;
+  communityConfig: CommunityConfig;
+  repository: D1MvpRepository;
+  token: string;
+  renderedVersion: number;
+  expectedMessageId: string | null;
+  message: DiscordBotMessage;
+}): Promise<BoardDrainStepResult> {
+  const created = await createDiscordMessage(
+    input.environment,
+    input.communityConfig.discord.staffChannelId,
+    input.message,
+  );
+  const completion = await input.repository.completeBoardDrain({
+    token: input.token,
+    renderedVersion: input.renderedVersion,
+    expectedMessageId: input.expectedMessageId,
+    messageId: created.id,
+    changedAt: new Date(),
+  });
+  if (!completion.applied) {
+    await deleteDuplicateRaidMessage({
+      environment: input.environment,
+      channelId: input.communityConfig.discord.staffChannelId,
+      messageId: created.id,
+    });
+  }
+  return completedBoardDrainResult(input.repository, completion);
+}
+
+async function updateCanonicalBoardMessage(input: {
+  environment: CloudflareEnvironment;
+  communityConfig: CommunityConfig;
+  repository: D1MvpRepository;
+  token: string;
+  renderedVersion: number;
+  expectedMessageId: string;
+  message: DiscordBotMessage;
+  createIfMissing: boolean;
+}): Promise<BoardDrainStepResult> {
+  try {
+    await updateDiscordMessage(
+      input.environment,
+      input.communityConfig.discord.staffChannelId,
+      input.expectedMessageId,
+      input.message,
+    );
+  } catch (error) {
+    if (!(error instanceof DiscordApiError) || error.status !== 404 || !input.createIfMissing) {
+      await input.repository.releaseBoardDrainLease(input.token);
+      throw error;
+    }
+    return createCanonicalBoardMessage(input);
+  }
+  const completion = await input.repository.completeBoardDrain({
+    token: input.token,
+    renderedVersion: input.renderedVersion,
+    expectedMessageId: input.expectedMessageId,
+    changedAt: new Date(),
+  });
+  return completedBoardDrainResult(input.repository, completion);
+}
+
+async function drainCanonicalBoardLease(input: {
+  environment: CloudflareEnvironment;
+  communityConfig: CommunityConfig;
+  changedAt: Date;
+  createIfMissing: boolean;
+  repository: D1MvpRepository;
+  token: string;
+  lease: BoardDrainLease;
+  reusableSnapshot: BoardSnapshot | undefined;
+  captureSnapshot?: (snapshot: BoardSnapshot) => void;
+}): Promise<BoardDrainStepResult> {
+  const snapshot =
+    input.reusableSnapshot?.boardVersion === input.lease.dirtyVersion
+      ? input.reusableSnapshot
+      : await input.repository.getBoardSnapshot(input.changedAt);
+  input.captureSnapshot?.(snapshot);
+  const message = boardMessage(snapshot, input.communityConfig);
+  const renderedVersion = snapshot.boardVersion ?? input.lease.dirtyVersion;
+  const expectedMessageId = input.lease.canonicalMessageId ?? null;
+  if (expectedMessageId !== null) {
+    return updateCanonicalBoardMessage({
+      ...input,
+      renderedVersion,
+      expectedMessageId,
+      message,
+    });
+  }
+  if (!input.createIfMissing) {
+    await input.repository.releaseBoardDrainLease(input.token);
+    return { complete: true, hasMore: false, canonicalMessageId: undefined };
+  }
+  return createCanonicalBoardMessage({
+    ...input,
+    renderedVersion,
+    expectedMessageId: null,
+    message,
+  });
+}
+
 export async function synchronizeCanonicalBoard(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
   createIfMissing: boolean;
   context?: ExecutionContext | TrackedExecutionContext;
-  snapshot?: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
-  captureSnapshot?: (snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>) => void;
+  snapshot?: BoardSnapshot;
+  captureSnapshot?: (snapshot: BoardSnapshot) => void;
 }): Promise<string | undefined> {
   const repository = new D1MvpRepository(input.environment.DB);
   const token = crypto.randomUUID();
   let canonicalMessageId = input.snapshot?.canonicalMessageId;
-  let reusableSnapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>> | undefined =
-    input.snapshot;
+  let reusableSnapshot: BoardSnapshot | undefined = input.snapshot;
   let hasMore = false;
   // oxlint-disable no-await-in-loop -- Each lease/CAS step must finish before the next board version.
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -165,92 +293,17 @@ export async function synchronizeCanonicalBoard(input: {
       await new Promise((resolve) => setTimeout(resolve, 25));
       continue;
     }
-    const snapshot =
-      reusableSnapshot?.boardVersion === lease.dirtyVersion
-        ? reusableSnapshot
-        : await repository.getBoardSnapshot(input.changedAt);
-    input.captureSnapshot?.(snapshot);
-    const message = boardMessage(snapshot, input.communityConfig);
-    const renderedVersion = snapshot.boardVersion ?? lease.dirtyVersion;
+    const result = await drainCanonicalBoardLease({
+      ...input,
+      repository,
+      token,
+      lease,
+      reusableSnapshot,
+    });
     reusableSnapshot = undefined;
-    const expectedMessageId = lease.canonicalMessageId ?? null;
-    canonicalMessageId = lease.canonicalMessageId;
-    if (expectedMessageId === null) {
-      if (!input.createIfMissing) {
-        await repository.releaseBoardDrainLease(token);
-        return undefined;
-      }
-      const created = await createDiscordMessage(
-        input.environment,
-        input.communityConfig.discord.staffChannelId,
-        message,
-      );
-      const completed = await repository.completeBoardDrain({
-        token,
-        renderedVersion,
-        expectedMessageId: null,
-        messageId: created.id,
-        changedAt: new Date(),
-      });
-      if (!completed.applied) {
-        await deleteDuplicateRaidMessage({
-          environment: input.environment,
-          channelId: input.communityConfig.discord.staffChannelId,
-          messageId: created.id,
-        });
-        return repository.getCanonicalBoardMessageId();
-      }
-      canonicalMessageId = completed.canonicalMessageId;
-      hasMore = completed.hasMore;
-      if (!hasMore) return canonicalMessageId;
-      continue;
-    }
-    try {
-      await updateDiscordMessage(
-        input.environment,
-        input.communityConfig.discord.staffChannelId,
-        expectedMessageId,
-        message,
-      );
-      const completed = await repository.completeBoardDrain({
-        token,
-        renderedVersion,
-        expectedMessageId,
-        changedAt: new Date(),
-      });
-      if (!completed.applied) return repository.getCanonicalBoardMessageId();
-      canonicalMessageId = completed.canonicalMessageId;
-      hasMore = completed.hasMore;
-      if (!hasMore) return canonicalMessageId;
-    } catch (error) {
-      if (!(error instanceof DiscordApiError) || error.status !== 404 || !input.createIfMissing) {
-        await repository.releaseBoardDrainLease(token);
-        throw error;
-      }
-      const created = await createDiscordMessage(
-        input.environment,
-        input.communityConfig.discord.staffChannelId,
-        message,
-      );
-      const completed = await repository.completeBoardDrain({
-        token,
-        renderedVersion,
-        expectedMessageId,
-        messageId: created.id,
-        changedAt: new Date(),
-      });
-      if (!completed.applied) {
-        await deleteDuplicateRaidMessage({
-          environment: input.environment,
-          channelId: input.communityConfig.discord.staffChannelId,
-          messageId: created.id,
-        });
-        return repository.getCanonicalBoardMessageId();
-      }
-      canonicalMessageId = completed.canonicalMessageId;
-      hasMore = completed.hasMore;
-      if (!hasMore) return canonicalMessageId;
-    }
+    canonicalMessageId = result.canonicalMessageId;
+    hasMore = result.hasMore;
+    if (result.complete) return canonicalMessageId;
   }
   // oxlint-enable no-await-in-loop
   await repository.releaseBoardDrainLease(token);
