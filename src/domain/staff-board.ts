@@ -26,6 +26,7 @@ export interface StaffBoardRaid {
   leaderType?: "streamer" | "volunteer";
   automaticFill: boolean;
   attemptCount: number;
+  startedAt?: number;
   discordCallStatus: CallStatus;
   twitchCallStatus: CallStatus;
   staffMessageId?: string;

@@ -11,6 +11,7 @@ const BASE_SORT_OFFSET = 100;
 const SEED_CHUNK_SIZE = 1_000;
 const RECEIPT_PREFIX = "seed-receipt-";
 export const OPERATION_PREFIX = "bench-op-";
+let lastTwitchTimestamp = 0;
 
 export interface SeedState {
   scale: number;
@@ -482,6 +483,7 @@ export function discordContext(
 ): Record<string, unknown> {
   return {
     id: input.id,
+    token: `token-${input.id}`,
     application_id: config.discord.applicationId,
     guild_id: config.discord.guildId,
     channel_id: input.staff ? config.discord.staffChannelId : config.discord.requestChannelId,
@@ -533,7 +535,8 @@ export async function signedTwitchRequest(input: {
   eventSubSecret: string;
   broadcasterUserId: string;
 }): Promise<Request> {
-  const timestamp = new Date().toISOString();
+  lastTwitchTimestamp = Math.max(Date.now(), lastTwitchTimestamp + 1);
+  const timestamp = new Date(lastTwitchTimestamp).toISOString();
   const body = JSON.stringify({
     subscription: { type: "channel.chat.message" },
     event: {

@@ -98,15 +98,15 @@
       "rowsWritten": 6
     },
     "100:discord.board.create": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 202,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 200,
       "rowsWritten": 2
     },
     "100:discord.board.open": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 201,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 199,
       "rowsWritten": 0
     },
     "100:discord.board.refresh": {
@@ -116,10 +116,10 @@
       "rowsWritten": 3
     },
     "100:discord.raid.review": {
-      "statements": 13,
+      "statements": 14,
       "bindingCalls": 11,
-      "rowsRead": 222,
-      "rowsWritten": 9
+      "rowsRead": 223,
+      "rowsWritten": 10
     },
     "100:discord.raid.review.cancel": {
       "statements": 12,
@@ -142,13 +142,13 @@
     "100:discord.requester.pull.with-push": {
       "statements": 28,
       "bindingCalls": 20,
-      "rowsRead": 372,
+      "rowsRead": 371,
       "rowsWritten": 43
     },
     "100:discord.raid.result.helped": {
       "statements": 18,
       "bindingCalls": 14,
-      "rowsRead": 306,
+      "rowsRead": 305,
       "rowsWritten": 29
     },
     "100:discord.requester.postpone.remaining": {
@@ -158,10 +158,10 @@
       "rowsWritten": 30
     },
     "100:discord.requester.postpone.last": {
-      "statements": 25,
+      "statements": 24,
       "bindingCalls": 19,
-      "rowsRead": 261,
-      "rowsWritten": 29
+      "rowsRead": 257,
+      "rowsWritten": 28
     },
     "100:discord.requester.remove.remaining": {
       "statements": 19,
@@ -172,7 +172,7 @@
     "100:discord.requester.remove.last": {
       "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 236,
+      "rowsRead": 235,
       "rowsWritten": 15
     },
     "100:discord.stats.all-time": {
@@ -314,15 +314,15 @@
       "rowsWritten": 6
     },
     "1000:discord.board.create": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 211,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 209,
       "rowsWritten": 2
     },
     "1000:discord.board.open": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 210,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 208,
       "rowsWritten": 0
     },
     "1000:discord.board.refresh": {
@@ -350,16 +350,16 @@
       "rowsWritten": 102
     },
     "1000:discord.raid.review": {
-      "statements": 13,
+      "statements": 14,
       "bindingCalls": 11,
-      "rowsRead": 231,
-      "rowsWritten": 9
+      "rowsRead": 232,
+      "rowsWritten": 10
     },
     "1000:discord.raid.review.expired-leases-10": {
-      "statements": 124,
+      "statements": 134,
       "bindingCalls": 113,
-      "rowsRead": 547,
-      "rowsWritten": 62
+      "rowsRead": 557,
+      "rowsWritten": 72
     },
     "1000:discord.raid.review.cancel": {
       "statements": 12,
@@ -382,19 +382,19 @@
     "1000:discord.requester.pull.with-push": {
       "statements": 28,
       "bindingCalls": 20,
-      "rowsRead": 381,
+      "rowsRead": 380,
       "rowsWritten": 43
     },
     "1000:discord.requester.pull.removed-history": {
       "statements": 28,
       "bindingCalls": 20,
-      "rowsRead": 381,
+      "rowsRead": 380,
       "rowsWritten": 43
     },
     "1000:discord.raid.result.helped": {
       "statements": 18,
       "bindingCalls": 14,
-      "rowsRead": 315,
+      "rowsRead": 314,
       "rowsWritten": 29
     },
     "1000:discord.requester.postpone.remaining": {
@@ -404,10 +404,10 @@
       "rowsWritten": 30
     },
     "1000:discord.requester.postpone.last": {
-      "statements": 25,
+      "statements": 24,
       "bindingCalls": 19,
-      "rowsRead": 270,
-      "rowsWritten": 29
+      "rowsRead": 266,
+      "rowsWritten": 28
     },
     "1000:discord.requester.postpone.removed-history": {
       "statements": 25,
@@ -424,7 +424,7 @@
     "1000:discord.requester.remove.last": {
       "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 245,
+      "rowsRead": 244,
       "rowsWritten": 15
     },
     "1000:discord.stats.all-time": {
@@ -456,6 +456,18 @@
       "bindingCalls": 4,
       "rowsRead": 8,
       "rowsWritten": 5
+    },
+    "1000:operator.legacy-repair.max-buckets": {
+      "statements": 46,
+      "bindingCalls": 16,
+      "rowsRead": 3263,
+      "rowsWritten": 619
+    },
+    "1000:operator.follow-up.close-history": {
+      "statements": 1,
+      "bindingCalls": 1,
+      "rowsRead": 6,
+      "rowsWritten": 3
     },
     "1000:operator.status": {
       "statements": 3,
@@ -554,15 +566,15 @@
       "rowsWritten": 6
     },
     "10000:discord.board.create": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 211,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 209,
       "rowsWritten": 2
     },
     "10000:discord.board.open": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 210,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 208,
       "rowsWritten": 0
     },
     "10000:discord.board.refresh": {
@@ -578,10 +590,10 @@
       "rowsWritten": 3
     },
     "10000:discord.raid.review": {
-      "statements": 13,
+      "statements": 14,
       "bindingCalls": 11,
-      "rowsRead": 231,
-      "rowsWritten": 9
+      "rowsRead": 232,
+      "rowsWritten": 10
     },
     "10000:discord.raid.review.cancel": {
       "statements": 12,
@@ -604,13 +616,13 @@
     "10000:discord.requester.pull.with-push": {
       "statements": 28,
       "bindingCalls": 20,
-      "rowsRead": 381,
+      "rowsRead": 380,
       "rowsWritten": 43
     },
     "10000:discord.raid.result.helped": {
       "statements": 18,
       "bindingCalls": 14,
-      "rowsRead": 315,
+      "rowsRead": 314,
       "rowsWritten": 29
     },
     "10000:discord.requester.postpone.remaining": {
@@ -620,10 +632,10 @@
       "rowsWritten": 30
     },
     "10000:discord.requester.postpone.last": {
-      "statements": 25,
+      "statements": 24,
       "bindingCalls": 19,
-      "rowsRead": 270,
-      "rowsWritten": 29
+      "rowsRead": 266,
+      "rowsWritten": 28
     },
     "10000:discord.requester.remove.remaining": {
       "statements": 19,
@@ -634,7 +646,7 @@
     "10000:discord.requester.remove.last": {
       "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 245,
+      "rowsRead": 244,
       "rowsWritten": 15
     },
     "10000:discord.stats.all-time": {
@@ -764,15 +776,15 @@
       "rowsWritten": 6
     },
     "100000:discord.board.create": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 216,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 214,
       "rowsWritten": 2
     },
     "100000:discord.board.open": {
-      "statements": 6,
-      "bindingCalls": 5,
-      "rowsRead": 215,
+      "statements": 5,
+      "bindingCalls": 4,
+      "rowsRead": 213,
       "rowsWritten": 0
     },
     "100000:discord.board.refresh": {
@@ -788,10 +800,10 @@
       "rowsWritten": 3
     },
     "100000:discord.raid.review": {
-      "statements": 13,
+      "statements": 14,
       "bindingCalls": 11,
-      "rowsRead": 236,
-      "rowsWritten": 9
+      "rowsRead": 237,
+      "rowsWritten": 10
     },
     "100000:discord.raid.review.cancel": {
       "statements": 12,
@@ -814,13 +826,13 @@
     "100000:discord.requester.pull.with-push": {
       "statements": 28,
       "bindingCalls": 20,
-      "rowsRead": 386,
+      "rowsRead": 385,
       "rowsWritten": 43
     },
     "100000:discord.raid.result.helped": {
       "statements": 18,
       "bindingCalls": 14,
-      "rowsRead": 320,
+      "rowsRead": 319,
       "rowsWritten": 29
     },
     "100000:discord.requester.postpone.remaining": {
@@ -830,10 +842,10 @@
       "rowsWritten": 30
     },
     "100000:discord.requester.postpone.last": {
-      "statements": 25,
+      "statements": 24,
       "bindingCalls": 19,
-      "rowsRead": 275,
-      "rowsWritten": 29
+      "rowsRead": 271,
+      "rowsWritten": 28
     },
     "100000:discord.requester.remove.remaining": {
       "statements": 19,
@@ -844,7 +856,7 @@
     "100000:discord.requester.remove.last": {
       "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 250,
+      "rowsRead": 249,
       "rowsWritten": 15
     },
     "100000:discord.stats.all-time": {
@@ -951,7 +963,7 @@
         "rowsRead": 21,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 175,
         "rowsWritten": 0
@@ -1241,7 +1253,7 @@
         "rowsRead": 21,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 175,
         "rowsWritten": 0
@@ -1563,7 +1575,7 @@
         "rowsRead": 21,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 169,
         "rowsWritten": 0
@@ -1585,7 +1597,7 @@
         "rowsRead": 4,
         "rowsWritten": 0
       },
-      "sql.2534337f": {
+      "sql.8822164a": {
         "statements": 4,
         "rowsRead": 29,
         "rowsWritten": 0
@@ -1620,7 +1632,7 @@
         "rowsRead": 15,
         "rowsWritten": 7
       },
-      "sql.ce73caa6": {
+      "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 1
@@ -1660,7 +1672,7 @@
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 154,
         "rowsWritten": 0
@@ -1754,7 +1766,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 175,
         "rowsWritten": 0
@@ -2044,7 +2056,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 175,
         "rowsWritten": 0
@@ -2403,7 +2415,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 169,
         "rowsWritten": 0
@@ -2425,7 +2437,7 @@
         "rowsRead": 5,
         "rowsWritten": 0
       },
-      "sql.2534337f": {
+      "sql.8822164a": {
         "statements": 5,
         "rowsRead": 61,
         "rowsWritten": 0
@@ -2462,7 +2474,7 @@
       },
       "sql.b3784ad0": {
         "statements": 1,
-        "rowsRead": 5,
+        "rowsRead": 4,
         "rowsWritten": 4
       },
       "sql.39620dae": {
@@ -2505,7 +2517,7 @@
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 174,
         "rowsWritten": 0
@@ -2527,7 +2539,7 @@
         "rowsRead": 4,
         "rowsWritten": 0
       },
-      "sql.2534337f": {
+      "sql.8822164a": {
         "statements": 4,
         "rowsRead": 29,
         "rowsWritten": 0
@@ -2562,7 +2574,7 @@
         "rowsRead": 15,
         "rowsWritten": 7
       },
-      "sql.ce73caa6": {
+      "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 1
@@ -2602,7 +2614,7 @@
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 165,
         "rowsWritten": 0
@@ -2624,7 +2636,7 @@
         "rowsRead": 4,
         "rowsWritten": 0
       },
-      "sql.2534337f": {
+      "sql.8822164a": {
         "statements": 4,
         "rowsRead": 29,
         "rowsWritten": 0
@@ -2659,7 +2671,7 @@
         "rowsRead": 15,
         "rowsWritten": 7
       },
-      "sql.ce73caa6": {
+      "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 1
@@ -2699,7 +2711,7 @@
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 165,
         "rowsWritten": 0
@@ -2708,6 +2720,55 @@
         "statements": 1,
         "rowsRead": 2,
         "rowsWritten": 1
+      }
+    },
+    "1000:operator.legacy-repair.max-buckets": {
+      "sql.2413cde2": {
+        "statements": 3,
+        "rowsRead": 186,
+        "rowsWritten": 0
+      },
+      "sql.1d22c154": {
+        "statements": 3,
+        "rowsRead": 54,
+        "rowsWritten": 0
+      },
+      "assignment.legacy_candidates": {
+        "statements": 27,
+        "rowsRead": 84,
+        "rowsWritten": 0
+      },
+      "sql.80a632f2": {
+        "statements": 3,
+        "rowsRead": 4,
+        "rowsWritten": 0
+      },
+      "assignment.legacy_group_insert": {
+        "statements": 3,
+        "rowsRead": 392,
+        "rowsWritten": 345
+      },
+      "assignment.legacy_membership_insert": {
+        "statements": 3,
+        "rowsRead": 2539,
+        "rowsWritten": 273
+      },
+      "sql.6587ea19": {
+        "statements": 3,
+        "rowsRead": 3,
+        "rowsWritten": 1
+      },
+      "sql.3077f1af": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      }
+    },
+    "1000:operator.follow-up.close-history": {
+      "sql.6d8d04c5": {
+        "statements": 1,
+        "rowsRead": 6,
+        "rowsWritten": 3
       }
     },
     "1000:operator.status": {
@@ -2793,7 +2854,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 175,
         "rowsWritten": 0
@@ -3083,7 +3144,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 175,
         "rowsWritten": 0
@@ -3405,7 +3466,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 169,
         "rowsWritten": 0
@@ -3427,7 +3488,7 @@
         "rowsRead": 4,
         "rowsWritten": 0
       },
-      "sql.2534337f": {
+      "sql.8822164a": {
         "statements": 4,
         "rowsRead": 29,
         "rowsWritten": 0
@@ -3462,7 +3523,7 @@
         "rowsRead": 15,
         "rowsWritten": 7
       },
-      "sql.ce73caa6": {
+      "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 1
@@ -3502,7 +3563,7 @@
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 165,
         "rowsWritten": 0
@@ -3596,7 +3657,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 180,
         "rowsWritten": 0
@@ -3886,7 +3947,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 180,
         "rowsWritten": 0
@@ -4208,7 +4269,7 @@
         "rowsRead": 30,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 174,
         "rowsWritten": 0
@@ -4230,7 +4291,7 @@
         "rowsRead": 4,
         "rowsWritten": 0
       },
-      "sql.2534337f": {
+      "sql.8822164a": {
         "statements": 4,
         "rowsRead": 29,
         "rowsWritten": 0
@@ -4265,7 +4326,7 @@
         "rowsRead": 15,
         "rowsWritten": 7
       },
-      "sql.ce73caa6": {
+      "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
         "rowsWritten": 1
@@ -4305,7 +4366,7 @@
         "rowsRead": 2,
         "rowsWritten": 0
       },
-      "sql.c021e885": {
+      "sql.dc07d1c": {
         "statements": 1,
         "rowsRead": 170,
         "rowsWritten": 0

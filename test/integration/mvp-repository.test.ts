@@ -985,7 +985,49 @@ describe("schedule-independent dual queues", () => {
       postponedRequest,
       laterRequest,
     ]);
+    await expect(
+      env.DB.prepare(
+        `SELECT count(*) AS count FROM raid_group_follow_ups WHERE source_group_id = ?`,
+      )
+        .bind(source.id)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
   });
+
+  it("closes one source without scanning unrelated follow-up relationships", async () => {
+    const groups = JSON.stringify(Array.from({ length: 10_001 }, (_, index) => index + 1));
+    await env.DB.prepare(
+      `INSERT INTO raid_groups
+         (is_priority, game_mode, sort_key, map_id, requester_capacity,
+          automatic_fill, state, created_at, updated_at)
+       SELECT 0, 2, value * 1000000, 'customs', 4, 0, 1, ?, ?
+       FROM json_each(?)`,
+    )
+      .bind(now.getTime(), now.getTime(), groups)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO raid_group_follow_ups
+         (source_group_id, target_group_id, created_at, updated_at)
+       SELECT value, 10001, ?, ? FROM json_each(?) WHERE value < 10001`,
+    )
+      .bind(now.getTime(), now.getTime(), groups)
+      .run();
+    const metrics = new D1Metrics();
+    const measured = instrumentD1Database(env.DB, metrics);
+
+    await measured
+      .prepare(
+        `UPDATE raid_groups SET state = 2, outcome = 1, completed_at = ?, updated_at = ?
+         WHERE id = 1`,
+      )
+      .bind(now.getTime(), now.getTime())
+      .run();
+
+    expect(metrics.snapshot().rowsRead).toBeLessThan(20);
+    await expect(
+      env.DB.prepare(`SELECT count(*) AS count FROM raid_group_follow_ups`).first(),
+    ).resolves.toEqual({ count: 9_999 });
+  }, 20_000);
 
   it("fills requester follow-ups only with the same game mode", async () => {
     const repo = repository();
@@ -1399,7 +1441,13 @@ describe("schedule-independent dual queues", () => {
     await postpone(repo, ordinary[0] as StaffBoardRaid, "existing-priority");
     const source = ordinary[1] as StaffBoardRaid;
     const started = await start(repo, source);
-    await repo.updateCallStatus(started.id, "discord", "sent", now);
+    await repo.updateCallStatus({
+      groupId: started.id,
+      startedAt: started.startedAt as number,
+      platform: "discord",
+      status: "sent",
+      changedAt: now,
+    });
     await repo.setRaidStaffMessage(started.id, "postpone-message", now);
 
     const postponed = await repo.postponeRaid({
@@ -1445,6 +1493,89 @@ describe("schedule-independent dual queues", () => {
       state: "planned",
       attemptCount: 0,
       leaderDiscordUserId: "leader",
+    });
+  });
+
+  it("fences call status to one active raid start and keeps update time monotonic", async () => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    const firstRun = await start(
+      repo,
+      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+    );
+    const firstStartedAt = firstRun.startedAt as number;
+
+    await expect(
+      repo.updateCallStatus({
+        groupId: firstRun.id,
+        startedAt: firstStartedAt,
+        platform: "discord",
+        status: "sent",
+        changedAt: new Date(now.getTime() - 1_000),
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      repo.updateCallStatus({
+        groupId: firstRun.id,
+        startedAt: firstStartedAt,
+        platform: "discord",
+        status: "failed",
+        changedAt: new Date(now.getTime() + 1_000),
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      env.DB.prepare(
+        `SELECT updated_at AS updatedAt, discord_call_status AS discordCallStatus
+         FROM raid_groups WHERE id = ?`,
+      )
+        .bind(firstRun.id)
+        .first(),
+    ).resolves.toEqual({ updatedAt: now.getTime(), discordCallStatus: 1 });
+
+    await repo.postponeRaid({
+      groupId: firstRun.id,
+      actionKey: "fenced-call-postpone",
+      changedAt: new Date(now.getTime() + 2_000),
+    });
+    await expect(
+      repo.updateCallStatus({
+        groupId: firstRun.id,
+        startedAt: firstStartedAt,
+        platform: "twitch",
+        status: "sent",
+        changedAt: new Date(now.getTime() + 3_000),
+      }),
+    ).resolves.toBe(false);
+
+    const reviewed = await repo.reviewRaid({
+      groupId: firstRun.id,
+      changedAt: new Date(now.getTime() + 4_000),
+    });
+    await repo.compareAndSetRaidStaffMessage({
+      groupId: reviewed.id,
+      messageId: "fenced-call-second-run",
+      changedAt: new Date(now.getTime() + 4_000),
+    });
+    const secondRun = await repo.startRaid({
+      groupId: reviewed.id,
+      leaderDiscordUserId: "leader",
+      leaderType: "volunteer",
+      requestTwitchCall: true,
+      changedAt: new Date(now.getTime() + 5_000),
+    });
+    expect(secondRun.startedAt).not.toBe(firstStartedAt);
+    await expect(
+      repo.updateCallStatus({
+        groupId: secondRun.id,
+        startedAt: firstStartedAt,
+        platform: "twitch",
+        status: "failed",
+        changedAt: new Date(now.getTime() + 6_000),
+      }),
+    ).resolves.toBe(false);
+    await expect(repo.getRaid(secondRun.id)).resolves.toMatchObject({
+      state: "active",
+      twitchCallStatus: "pending",
     });
   });
 
@@ -1561,6 +1692,60 @@ describe("schedule-independent dual queues", () => {
     ).first<{ requestCount: number; raidCount: number; memberCount: number }>();
     expect(stored).toEqual({ requestCount: 60, raidCount: 20, memberCount: 60 });
   }, 15_000);
+
+  it("repairs all 78 valid queue, mode, and map buckets below the D1 Free query limit", async () => {
+    const buckets = [0, 1].flatMap((isPriority) =>
+      [0, 1, 2].flatMap((gameMode) =>
+        TARKOV_MAPS.map((map) => ({ isPriority, gameMode, mapId: map.id })),
+      ),
+    );
+    expect(buckets).toHaveLength(78);
+    const rows = [
+      ...buckets,
+      buckets[0] as (typeof buckets)[number],
+      buckets[1] as (typeof buckets)[number],
+    ].map((bucket, index) => ({
+      isPriority: bucket.isPriority,
+      gameMode: bucket.gameMode,
+      mapId: bucket.mapId,
+      index: index + 1,
+    }));
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO user_mappings
+           (twitch_login, twitch_user_id, in_game_name, created_at, updated_at)
+         SELECT printf('bucket_viewer_%d', json_extract(value, '$.index')),
+                printf('bucket-twitch-%d', json_extract(value, '$.index')),
+                printf('Bucket PMC %d', json_extract(value, '$.index')), ?, ?
+         FROM json_each(?)`,
+      ).bind(now.getTime(), now.getTime(), JSON.stringify(rows)),
+      env.DB.prepare(
+        `INSERT INTO help_requests
+           (source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
+            game_mode, map_id, objective, is_priority, state, created_at, updated_at)
+         SELECT 1, printf('bucket-delivery-%d', json_extract(value, '$.index')),
+                printf('bucket-twitch-%d', json_extract(value, '$.index')),
+                printf('bucket_viewer_%d', json_extract(value, '$.index')),
+                printf('Bucket PMC %d', json_extract(value, '$.index')),
+                json_extract(value, '$.gameMode'), json_extract(value, '$.mapId'),
+                printf('Bucket goal %d', json_extract(value, '$.index')),
+                json_extract(value, '$.isPriority'), 0, ?, ?
+         FROM json_each(?)`,
+      ).bind(now.getTime(), now.getTime(), JSON.stringify(rows)),
+    ]);
+    const metrics = new D1Metrics(true);
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+
+    await expect(
+      measured.repairLegacyUnassignedRequests({ recipientLimit: 4, changedAt: now }),
+    ).resolves.toEqual({ repaired: 80, hasMore: false });
+    expect(metrics.snapshot().statements).toBeLessThan(50);
+    const candidateQueries = metrics
+      .statementDetails()
+      .filter((statement) => statement.queryId === "assignment.legacy_candidates");
+    expect(candidateQueries.length).toBeGreaterThanOrEqual(1);
+    expect(candidateQueries.length).toBeLessThanOrEqual(20);
+  });
 
   it("appends legacy recovery after the highest active position when a gap exists", async () => {
     const repo = repository();

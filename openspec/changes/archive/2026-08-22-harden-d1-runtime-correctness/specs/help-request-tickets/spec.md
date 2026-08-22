@@ -27,6 +27,8 @@ The database SHALL enforce at most one waiting or planned request per stable Twi
 - **WHEN** an authenticated Twitch user ID appears under a login mapped to a different non-null Twitch user ID
 - **THEN** the system rejects automatic identity merging and does not transfer either user's Discord or EFT details
 
+## ADDED Requirements
+
 ### Requirement: Twitch identity observations are time-monotonic
 The system SHALL store the latest accepted authenticated Twitch observation time for a stable identity. Identity observation and Twitch request intake SHALL NOT move or merge that identity from an event older than the stored observation. Equal timestamps SHALL remain idempotent.
 

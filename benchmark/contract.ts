@@ -46,6 +46,8 @@ export const USER_OPERATION_IDS = [
   "discord.users.last",
   "discord.users.complete-discord",
   "operator.status",
+  "operator.legacy-repair.max-buckets",
+  "operator.follow-up.close-history",
 ] as const;
 
 export type UserOperationId = (typeof USER_OPERATION_IDS)[number];
@@ -68,6 +70,8 @@ export const FOCUSED_D1_OPERATION_IDS = [
   "discord.requester.postpone.removed-history",
   "discord.requester.pull.removed-history",
   "operator.status",
+  "operator.legacy-repair.max-buckets",
+  "operator.follow-up.close-history",
 ] as const satisfies readonly UserOperationId[];
 
 export const BENCHMARK_SCALES_BY_OPERATION: Readonly<
@@ -81,6 +85,8 @@ export const BENCHMARK_SCALES_BY_OPERATION: Readonly<
   "discord.requester.postpone.removed-history": [1_000],
   "twitch.request.concurrent-exact-10": [1_000],
   "discord.raid.review.expired-leases-10": [1_000],
+  "operator.legacy-repair.max-buckets": [1_000],
+  "operator.follow-up.close-history": [1_000],
 };
 
 export const BENCHMARK_SAMPLE_OVERRIDE: Readonly<
@@ -93,6 +99,8 @@ export const BENCHMARK_SAMPLE_OVERRIDE: Readonly<
   "discord.requester.postpone.removed-history": { warmups: 0, samples: 1 },
   "twitch.request.concurrent-exact-10": { warmups: 0, samples: 1 },
   "discord.raid.review.expired-leases-10": { warmups: 0, samples: 1 },
+  "operator.legacy-repair.max-buckets": { warmups: 0, samples: 1 },
+  "operator.follow-up.close-history": { warmups: 0, samples: 1 },
 };
 
 export const BENCHMARK_OPERATION_FAMILIES = [
@@ -119,6 +127,8 @@ export const BENCHMARK_OPERATION_FAMILIES = [
   "discord:users-page",
   "discord:users-complete",
   "operator:status",
+  "operator:legacy-repair",
+  "operator:follow-up-cleanup",
 ] as const;
 
 export type BenchmarkOperationFamily = (typeof BENCHMARK_OPERATION_FAMILIES)[number];
@@ -166,4 +176,6 @@ export const OPERATION_FAMILY_BY_ID: Readonly<Record<UserOperationId, BenchmarkO
   "discord.users.last": "discord:users-page",
   "discord.users.complete-discord": "discord:users-complete",
   "operator.status": "operator:status",
+  "operator.legacy-repair.max-buckets": "operator:legacy-repair",
+  "operator.follow-up.close-history": "operator:follow-up-cleanup",
 };

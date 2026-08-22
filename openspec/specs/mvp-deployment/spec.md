@@ -266,7 +266,7 @@ Migration `0005` SHALL retain state `0`, its bounded repair indexes, and the wai
 - **THEN** that Worker can read and operate on the existing numeric states, raids, and memberships
 
 ### Requirement: Legacy unassigned repair is deployment-only
-The Worker SHALL expose authenticated `POST /internal/repair-unassigned-requests`. One call SHALL repair at most 80 state-`0` requests using stable priority, mode-presence, and arrival ordering, and SHALL return the number repaired plus whether more remain. Deployment SHALL repeat the call until none remain, synchronize the canonical board once after the final changed batch, and fail verification if internal status still reports legacy unassigned data. Unauthorized requests SHALL receive the same not-found response as unknown routes.
+The Worker SHALL expose authenticated `POST /internal/repair-unassigned-requests`. One call SHALL repair at most 80 state-`0` requests using stable priority, mode-presence, and arrival ordering, and SHALL return the number repaired plus whether more remain. One call SHALL use fewer than 50 D1 queries for every valid combination of two queue kinds, three game modes, and thirteen maps. Deployment SHALL repeat the call until none remain, synchronize the canonical board once after the final changed batch, and fail verification if internal status still reports legacy unassigned data. Unauthorized requests SHALL receive the same not-found response as unknown routes.
 
 #### Scenario: No legacy request remains
 - **WHEN** deployment calls the protected repair operation with no state-`0` request stored
@@ -275,6 +275,10 @@ The Worker SHALL expose authenticated `POST /internal/repair-unassigned-requests
 #### Scenario: Legacy backlog exceeds one batch
 - **WHEN** more than 80 state-`0` requests remain
 - **THEN** one call repairs no more than 80 and reports that another call is required
+
+#### Scenario: Maximum valid bucket set is repaired
+- **WHEN** one selected page contains requests from all valid priority, game-mode, and map buckets
+- **THEN** each repair pass selects compatible raid candidates with no more than 20 bounded index-seeking queries and the complete Worker invocation remains below 50 D1 queries
 
 #### Scenario: Final repair batch commits
 - **WHEN** the last legacy batch creates one or more assignments
@@ -310,3 +314,124 @@ Before release, the fully local Miniflare/workerd D1 benchmark SHALL retain ever
 #### Scenario: Stored D1 baseline regresses
 - **WHEN** a statement, row-read, row-write, database-size, or focused statement-group result exceeds its reviewed baseline or absolute contract
 - **THEN** release remains blocked until the code, schema, fixture, or documented baseline is corrected
+
+### Requirement: Runtime D1 telemetry covers foreground and background work
+Production telemetry SHALL emit one foreground usage event, one completion or failure event for each named `waitUntil()` task, and one correlated final aggregate after all tracked tasks settle. Every event SHALL report D1 binding calls, statements, rows read, rows written, D1 duration, wall time, and outcome from an independent metric scope. A D1 batch SHALL count as one binding call while retaining its per-statement result totals. Telemetry SHALL identify repository queries with stable explicit query IDs and SHALL NOT contain command text, user identity, secrets, or request data. Cloudflare D1 Analytics SHALL remain the authoritative billed total.
+
+#### Scenario: Twitch reply completes in the background
+- **WHEN** the Worker returns its EventSub response before reply-status storage and board synchronization finish
+- **THEN** foreground telemetry excludes that later work, each background task reports its own D1 usage, and the final correlated event includes both scopes
+
+#### Scenario: Background task fails
+- **WHEN** receipt cleanup or Discord board reconciliation rejects
+- **THEN** its background event records a safe failure code and its D1 usage without changing the successful foreground response
+
+#### Scenario: A D1 batch executes several statements
+- **WHEN** one binding batch returns several statement results
+- **THEN** telemetry counts one binding call and records every returned statement's rows and duration under stable query IDs
+
+#### Scenario: Production cost is reviewed
+- **WHEN** an operator evaluates billed D1 use
+- **THEN** the operator compares custom per-operation evidence with Cloudflare D1 Analytics for the same deployment and time window and treats D1 Analytics as authoritative
+
+### Requirement: Routine internal status has bounded D1 cost
+`GET /internal/status` SHALL report only bounded schema readiness, whether legacy unassigned requests exist, and any request total obtained from the singleton statistics rollup. It SHALL NOT count the complete help-request or receipt tables. Deployment readiness and verification SHALL use this routine endpoint without an unbounded receipt diagnostic.
+
+#### Scenario: Historical tables are large
+- **WHEN** internal status runs with many terminal requests or retained receipts
+- **THEN** its statements and D1 rows read remain bounded independently of those table sizes
+
+#### Scenario: Statistics rollup is available
+- **WHEN** internal status includes a submitted-request total
+- **THEN** it reads `staff_statistics_summary.submitted_requests` instead of counting `help_requests`
+
+### Requirement: Runtime hardening uses additive migration 0006
+Migration `0006` SHALL preserve migrations `0001` through `0005`, add stable-Twitch-ID active-request uniqueness, deterministically reconcile any pre-existing active duplicates, and add canonical-board dirty-version, rendered-version, and lease state. It SHALL remain readable by the previous Worker. It SHALL drop `raid_groups_outstanding_idx` only if fully local query-plan and benchmark evidence proves that no production query needs it.
+
+#### Scenario: Stable identity duplicates exist before migration
+- **WHEN** several active requests share stable Twitch user ID, game mode, and map under different logins
+- **THEN** migration `0006` retains the oldest request, cancels later duplicates, removes their open memberships, and permits the new unique index to be created
+
+#### Scenario: No duplicate needs repair
+- **WHEN** migration `0006` runs on valid existing data
+- **THEN** it retains every request, membership, raid, statistic, and receipt while adding the new index and board state
+
+#### Scenario: Previous Worker is restored
+- **WHEN** deployment rolls Worker code back after migration `0006`
+- **THEN** the previous Worker can ignore additive board state and continue to read the existing request and raid schema
+
+#### Scenario: Redundant index is not proven redundant
+- **WHEN** any local production-query plan or benchmark needs `raid_groups_outstanding_idx` or shows a material regression without it
+- **THEN** migration `0006` retains that index
+
+### Requirement: Expanded local D1 evidence gates release
+Before release, the fully local Miniflare/workerd D1 benchmark SHALL retain user-facing operations at 100, 1,000, 10,000, and 100,000 active requests and SHALL add operator status, exact duplicate delivery, legacy repair, retained-history, raid-action, reviewed-raid reconciliation, and board-burst suites. It SHALL report exact binding calls, statements, rows read, rows written, database size, stable query IDs, and informational latency without contacting remote D1 or platform APIs. It SHALL use Node 26 and report a digest of benchmark source, migrations, fixtures, and configuration. A hand-reviewed maximum-budget file SHALL be separate from the rewritable exact baseline, and the baseline update command SHALL NOT change maximum budgets. Production deployment verification SHALL run `npm run benchmark:d1` before migration or deployment.
+
+#### Scenario: Exact delivery replay is benchmarked
+- **WHEN** Discord or Twitch sends the same delivery ID and body more than once
+- **THEN** the report distinguishes the first delivery from the exact replay and verifies that repeated command-side D1 work does not occur
+
+#### Scenario: Routine status is benchmarked
+- **WHEN** request and receipt history grows while the active shape is fixed
+- **THEN** the operator-cost report shows bounded statements, binding calls, and rows read for `/internal/status`
+
+#### Scenario: Legacy repair is benchmarked
+- **WHEN** fixtures contain zero legacy requests, one 80-request page, several pages, or many unrelated partial raids
+- **THEN** the maintenance report demonstrates page and bucket bounds independently of total stored partial raids
+
+#### Scenario: Membership history grows
+- **WHEN** a fixed active population is combined with 10,000 or 100,000 terminal requests, closed raids, removed memberships, or retained receipts
+- **THEN** call, result, postpone, remove, and reconciliation paths remain within their reviewed budgets
+
+#### Scenario: Board work overlaps
+- **WHEN** ten reviewed raids are reconciled or 10 to 100 request creations overlap
+- **THEN** the report measures coalesced snapshots and PATCH scheduling and proves that the final board version is current
+
+#### Scenario: Maximum budget is exceeded
+- **WHEN** binding calls, statements, rows, writes, or database size exceed a hand-reviewed maximum
+- **THEN** release remains blocked and updating the exact baseline cannot approve the regression
+
+#### Scenario: Benchmark provenance is stale
+- **WHEN** the runtime is not Node 26 or the recorded source digest does not match benchmark inputs
+- **THEN** the report is not accepted as current evidence
+
+#### Scenario: Deployment verification starts
+- **WHEN** GitHub Actions prepares to migrate or deploy the production Worker
+- **THEN** it runs the local D1 benchmark contract and stops before external changes if the contract fails
+
+### Requirement: Local benchmark evidence measures the current Worker and failed calls
+The benchmark digest SHALL include production source, lockfiles, runtime pins, migrations, benchmark configuration, and the exact baseline. Instrumentation SHALL count every attempted D1 binding call before awaiting it, including rejected standalone calls. Maximum budgets SHALL be reviewed per operation family. Semantic guards SHALL use stable query IDs and SHALL fail when the query class they claim to protect was not captured. CI SHALL upload only evidence generated by a successful benchmark in the current run.
+
+#### Scenario: Standalone D1 call rejects
+- **WHEN** a prepared-statement binding rejects before returning result metadata
+- **THEN** telemetry records one binding attempt and no successful statement result
+
+#### Scenario: Assignment guard captures no assignment work
+- **WHEN** the benchmark completes without any stable `assignment.*` query ID
+- **THEN** the benchmark contract fails instead of reporting an inactive guard as passing
+
+#### Scenario: One operation family exceeds its reviewed maximum
+- **WHEN** that family's binding, statement, row, write, or size cost exceeds its approved limit
+- **THEN** the benchmark fails even if the cost remains below another family's limit
+
+### Requirement: Production telemetry includes named background work
+The Worker SHALL route every named background task through the tracked execution context when telemetry is active. Final request telemetry SHALL include the task's D1 statements, rows read, rows written, binding calls, outcome, and elapsed time after the task settles. A plain Cloudflare execution context SHALL continue to schedule the same task through `waitUntil()`.
+
+#### Scenario: Staff action schedules background D1 work
+- **WHEN** a Discord staff action schedules board, reconciliation, receipt, or raid-call status work through the telemetry-wrapped execution context
+- **THEN** production telemetry emits the named background task and includes its database usage in the final invocation totals
+
+#### Scenario: Telemetry wrapper is absent
+- **WHEN** the same staff task receives a plain Cloudflare execution context
+- **THEN** the Worker schedules it with `waitUntil()` and does not require a telemetry-only context member
+
+### Requirement: Maintenance cost evidence covers maximum valid dimensions
+The fully local Miniflare/workerd D1 benchmark SHALL measure one legacy repair page containing all 78 valid priority, game-mode, and map buckets and follow-up cleanup with a large live relationship population. It SHALL record D1 binding calls, statements, rows read, and rows written without a remote D1 database. The maximum-bucket repair SHALL remain below the D1 Free limit of 50 queries per Worker invocation. Follow-up closure cost SHALL remain bounded by the closing source's own relationships rather than all stored relationships.
+
+#### Scenario: Every repair bucket is present
+- **WHEN** one repair invocation receives state-`0` requests covering two queue kinds, three game modes, and all thirteen maps
+- **THEN** the repair handles no more than 80 requests and completes with fewer than 50 D1 queries
+
+#### Scenario: Many unrelated follow-ups exist
+- **WHEN** a source raid closes while many follow-up relationships belong to other source raids
+- **THEN** cleanup does not scan or write those unrelated relationships

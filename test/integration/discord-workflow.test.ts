@@ -99,14 +99,30 @@ async function signedRequest(body: unknown, signedTimestamp = timestamp): Promis
 }
 
 function context(overrides: Record<string, unknown> = {}) {
+  const interactionId = typeof overrides.id === "string" ? overrides.id : "discord-interaction";
   return {
-    id: "discord-interaction",
+    id: interactionId,
+    token: `token-${interactionId}`,
     application_id: config.discord.applicationId,
     guild_id: config.discord.guildId,
     channel_id: config.discord.requestChannelId,
     member: { user: { id: "requester", username: "DiscordViewer" }, roles: [] },
     ...overrides,
   };
+}
+
+async function deferredCompletion(
+  response: Response,
+  interactionId: string,
+): Promise<Record<string, unknown>> {
+  expect(await response.json()).toMatchObject({ type: 5, data: { flags: 64 } });
+  const completion = outbound.findLast(
+    (request) =>
+      request.method === "PATCH" &&
+      request.url.includes(`/token-${interactionId}/messages/@original`),
+  );
+  expect(completion).toBeDefined();
+  return completion?.body ?? {};
 }
 
 function requestModal(
@@ -471,19 +487,22 @@ describe("Discord progressive raid workflow", () => {
         roles: [config.discord.volunteerRoleId],
       },
     };
+    const boardContext = createExecutionContext();
     const board = await worker.fetch(
       await signedRequest(
         context({ ...staff, id: "board", type: 2, data: { type: 1, name: "board" } }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      boardContext,
     );
-    expect(await board.json()).toMatchObject({
-      data: { content: expect.stringContaining("/message-1") },
+    await waitOnExecutionContext(boardContext);
+    expect(await deferredCompletion(board, "board")).toMatchObject({
+      content: expect.stringContaining("/message-1"),
     });
     const repo = new D1MvpRepository(env.DB);
     const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id;
     expect(raidId).toBeDefined();
+    const reviewContext = createExecutionContext();
     const review = await worker.fetch(
       await signedRequest(
         context({
@@ -494,12 +513,12 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      reviewContext,
     );
+    await waitOnExecutionContext(reviewContext);
     expect(review.status).toBe(200);
-    expect(await review.json()).toMatchObject({
-      type: 4,
-      data: { content: expect.stringContaining("/message-2") },
+    expect(await deferredCompletion(review, "review")).toMatchObject({
+      content: expect.stringContaining("/message-2"),
     });
     expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
       false,
@@ -591,8 +610,9 @@ describe("Discord progressive raid workflow", () => {
     );
     const repo = new D1MvpRepository(env.DB);
     const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id ?? 0;
-    const reviewRequest = async (id: string, userId: string) =>
-      worker.fetch(
+    const reviewRequest = async (id: string, userId: string) => {
+      const executionContext = createExecutionContext();
+      const response = await worker.fetch(
         await signedRequest(
           context({
             channel_id: config.discord.staffChannelId,
@@ -606,8 +626,11 @@ describe("Discord progressive raid workflow", () => {
           }),
         ),
         testEnvironment,
-        createExecutionContext(),
+        executionContext,
       );
+      await waitOnExecutionContext(executionContext);
+      return response;
+    };
     createBarrierTarget = 2;
 
     const responses = await Promise.all([
@@ -622,18 +645,16 @@ describe("Discord progressive raid workflow", () => {
     const retained = await repo.getRaid(raidId);
     expect(retained).toMatchObject({ state: "planned", automaticFill: false });
     expect(retained?.staffMessageId).toMatch(/^message-[12]$/);
-    for (const response of responses) {
-      expect(await response.json()).toMatchObject({
-        type: 4,
-        data: { content: expect.stringContaining(`/${retained?.staffMessageId}`) },
-      });
+    for (const [index, response] of responses.entries()) {
+      expect(
+        await deferredCompletion(response, `concurrent-review-${index === 0 ? "one" : "two"}`),
+      ).toMatchObject({ content: expect.stringContaining(`/${retained?.staffMessageId}`) });
     }
 
     outbound = [];
     const repeated = await reviewRequest("repeat-review", "volunteer-one");
-    expect(await repeated.json()).toMatchObject({
-      type: 4,
-      data: { content: expect.stringContaining(`/${retained?.staffMessageId}`) },
+    expect(await deferredCompletion(repeated, "repeat-review")).toMatchObject({
+      content: expect.stringContaining(`/${retained?.staffMessageId}`),
     });
     expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
   });
@@ -665,6 +686,7 @@ describe("Discord progressive raid workflow", () => {
         roles: [config.discord.volunteerRoleId],
       },
     };
+    const moveReviewContext = createExecutionContext();
     await worker.fetch(
       await signedRequest(
         context({
@@ -675,8 +697,9 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      moveReviewContext,
     );
+    await waitOnExecutionContext(moveReviewContext);
     outbound = [];
     const movedRequestId = planned.members[1]?.requestId;
     const moved = await worker.fetch(
@@ -872,6 +895,7 @@ describe("Discord progressive raid workflow", () => {
       channel_id: config.discord.staffChannelId,
       member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
     };
+    const reviewContext = createExecutionContext();
     await worker.fetch(
       await signedRequest(
         context({
@@ -882,8 +906,9 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      reviewContext,
     );
+    await waitOnExecutionContext(reviewContext);
     createResponseStatus = 500;
     const twitchFetch = vi
       .spyOn(globalThis, "fetch")
@@ -1042,13 +1067,13 @@ describe("Discord progressive raid workflow", () => {
     await waitOnExecutionContext(executionContext);
 
     expect(response.status).toBe(200);
-    expect(statusWrite.mock.calls.map((call) => call.slice(1, 3))).toEqual(
+    expect(statusWrite.mock.calls.map(([call]) => [call.platform, call.status])).toEqual(
       expect.arrayContaining([
         ["discord", "sent"],
         ["twitch", "sent"],
       ]),
     );
-    expect(statusWrite.mock.calls.some((call) => call[2] === "failed")).toBe(false);
+    expect(statusWrite.mock.calls.some(([call]) => call.status === "failed")).toBe(false);
     expect(
       outbound.some((request) =>
         request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
@@ -1070,9 +1095,8 @@ describe("Discord progressive raid workflow", () => {
       result: "helped",
     });
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: "Raid recorded as Helped." },
+    expect(await deferredCompletion(response, "record-helped")).toMatchObject({
+      content: "Raid recorded as Helped.",
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -1102,11 +1126,8 @@ describe("Discord progressive raid workflow", () => {
       result: "helped",
     });
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: {
-        content: "Raid recorded as Helped, but its old details message could not be deleted.",
-      },
+    expect(await deferredCompletion(response, "record-helped-delete-failure")).toMatchObject({
+      content: "Raid recorded as Helped, but its old details message could not be deleted.",
     });
     const completed = await repo.getRaid(raid.id);
     expect(completed).toMatchObject({
@@ -1136,9 +1157,8 @@ describe("Discord progressive raid workflow", () => {
       result: "postpone_raid",
     });
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: "Raid postponed to the end of the Priority queue." },
+    expect(await deferredCompletion(response, "record-final-postpone")).toMatchObject({
+      content: "Raid postponed to the end of the Priority queue.",
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -1188,7 +1208,7 @@ describe("Discord progressive raid workflow", () => {
       content: "<@volunteer> this raid is ready.",
       allowed_mentions: { parse: [] },
     });
-    const canonicalUpdate = outbound.find(
+    const canonicalUpdate = outbound.findLast(
       (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
     );
     expect(JSON.stringify(canonicalUpdate?.body)).toContain("/message-1");
@@ -1230,7 +1250,7 @@ describe("Discord progressive raid workflow", () => {
     expect(repaired?.staffMessageId).toBeUndefined();
     expect(repaired?.leaderDiscordUserId).toBeUndefined();
     expect(outbound.some((request) => request.method === "POST")).toBe(false);
-    const canonicalUpdate = outbound.find(
+    const canonicalUpdate = outbound.findLast(
       (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
     );
     expect(JSON.stringify(canonicalUpdate?.body)).not.toContain("/deleted-planned-detail");
@@ -1256,6 +1276,7 @@ describe("Discord progressive raid workflow", () => {
     messagePatchStatuses.set("deleted-repeat-review", 404);
     outbound = [];
 
+    const reviewContext = createExecutionContext();
     const response = await worker.fetch(
       await signedRequest(
         context({
@@ -1270,12 +1291,12 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      reviewContext,
     );
+    await waitOnExecutionContext(reviewContext);
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: expect.stringContaining("raid is back on the board"), flags: 64 },
+    expect(await deferredCompletion(response, "repeat-deleted-review")).toMatchObject({
+      content: expect.stringContaining("raid is back on the board"),
     });
     expect(await repo.getRaid(planned.id)).toMatchObject({
       state: "planned",
@@ -1305,8 +1326,9 @@ describe("Discord progressive raid workflow", () => {
     });
     messagePatchStatuses.set("deleted-concurrent-review", 404);
     outbound = [];
-    const review = async (id: string) =>
-      worker.fetch(
+    const review = async (id: string) => {
+      const executionContext = createExecutionContext();
+      const response = await worker.fetch(
         await signedRequest(
           context({
             id,
@@ -1320,16 +1342,22 @@ describe("Discord progressive raid workflow", () => {
           }),
         ),
         testEnvironment,
-        createExecutionContext(),
+        executionContext,
       );
+      await waitOnExecutionContext(executionContext);
+      return response;
+    };
 
     const responses = await Promise.all([
       review("concurrent-deleted-review-one"),
       review("concurrent-deleted-review-two"),
     ]);
     expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
-    for (const response of responses) {
-      expect(JSON.stringify(await response.json())).toContain("raid is back on the board");
+    for (const [index, response] of responses.entries()) {
+      const id = `concurrent-deleted-review-${index === 0 ? "one" : "two"}`;
+      expect(JSON.stringify(await deferredCompletion(response, id))).toContain(
+        "raid is back on the board",
+      );
     }
     expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
     expect(outbound.filter((request) => request.method === "DELETE")).toHaveLength(0);
@@ -1393,9 +1421,8 @@ describe("Discord progressive raid workflow", () => {
     );
     await waitOnExecutionContext(executionContext);
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: "Review closed. The raid is still on the board.", flags: 64 },
+    expect(await deferredCompletion(response, "cancel-planned-review")).toMatchObject({
+      content: "Review closed. The raid is still on the board.",
     });
     expect(await repo.getRaid(customs.id)).toMatchObject({
       state: "planned",
@@ -1415,7 +1442,7 @@ describe("Discord progressive raid workflow", () => {
         url: expect.stringContaining("/messages/cancel-customs-detail"),
       }),
     );
-    const boardUpdate = outbound.find(
+    const boardUpdate = outbound.findLast(
       (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
     );
     expect(JSON.stringify(boardUpdate?.body)).not.toContain("/cancel-customs-detail");
@@ -1455,8 +1482,9 @@ describe("Discord progressive raid workflow", () => {
       messageId: "missing-cancel-detail",
       changedAt,
     });
-    const cancel = async (id: string, messageId: string) =>
-      worker.fetch(
+    const cancel = async (id: string, messageId: string) => {
+      const executionContext = createExecutionContext();
+      const response = await worker.fetch(
         await signedRequest(
           context({
             id,
@@ -1471,12 +1499,17 @@ describe("Discord progressive raid workflow", () => {
           }),
         ),
         testEnvironment,
-        createExecutionContext(),
+        executionContext,
       );
+      await waitOnExecutionContext(executionContext);
+      return response;
+    };
 
     deleteResponseStatus = 404;
     const missing = await cancel("cancel-missing-detail", "missing-cancel-detail");
-    expect(JSON.stringify(await missing.json())).toContain("Review closed");
+    expect(JSON.stringify(await deferredCompletion(missing, "cancel-missing-detail"))).toContain(
+      "Review closed",
+    );
     expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
 
     await repo.compareAndSetRaidStaffMessage({
@@ -1486,7 +1519,9 @@ describe("Discord progressive raid workflow", () => {
     });
     deleteResponseStatus = 500;
     const failed = await cancel("cancel-failed-detail", "failed-cancel-detail");
-    expect(JSON.stringify(await failed.json())).toContain("could not close");
+    expect(JSON.stringify(await deferredCompletion(failed, "cancel-failed-detail"))).toContain(
+      "could not close",
+    );
     expect(await repo.getRaid(planned.id)).toMatchObject({
       state: "planned",
       automaticFill: false,
@@ -1637,7 +1672,7 @@ describe("Discord progressive raid workflow", () => {
     expect(recoveredShoreline.staffMessageId).toBe(shoreline.staffMessageId);
     expect(recoveredWoods.staffMessageId).toBeUndefined();
     expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
-    const refreshedBoard = outbound.find(
+    const refreshedBoard = outbound.findLast(
       (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
     );
     const refreshedBody = JSON.stringify(refreshedBoard?.body);
@@ -1704,7 +1739,7 @@ describe("Discord progressive raid workflow", () => {
 
     expect((await repo.getRaid(raid.id))?.staffMessageId).toBe("temporary-detail");
     expect(outbound.filter((request) => request.method === "POST")).toHaveLength(0);
-    const canonicalUpdate = outbound.find(
+    const canonicalUpdate = outbound.findLast(
       (request) => request.method === "PATCH" && request.url.endsWith("/canonical-board"),
     );
     expect(JSON.stringify(canonicalUpdate?.body)).toContain("/temporary-detail");
@@ -1723,7 +1758,7 @@ describe("Discord progressive raid workflow", () => {
     expect((await repo.getRaid(raid.id))?.staffMessageId).toBe("dead-detail");
   });
 
-  it("serializes overlapping refreshes before replacing a missing raid message", async () => {
+  it("coalesces overlapping refresh reconciliation before replacing a missing raid message", async () => {
     const { repo, raid } = await seedActiveRaid({ interactionId: "concurrent-repair" });
 
     await Promise.all([refreshBoard("refresh-one"), refreshBoard("refresh-two")]);
@@ -1778,6 +1813,7 @@ describe("Discord progressive raid workflow", () => {
       leaderDiscordUserId: "volunteer",
       staffMessageId: "postpone-last-message",
     });
+    const executionContext = createExecutionContext();
     const response = await worker.fetch(
       await signedRequest(
         context({
@@ -1795,12 +1831,12 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      executionContext,
     );
+    await waitOnExecutionContext(executionContext);
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: expect.stringContaining("empty raid was closed") },
+    expect(await deferredCompletion(response, "postpone-last")).toMatchObject({
+      content: expect.stringContaining("empty raid was closed"),
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -1830,6 +1866,7 @@ describe("Discord progressive raid workflow", () => {
       staffMessageId: "remove-last-message",
     });
     deleteResponseStatus = 500;
+    const executionContext = createExecutionContext();
     const response = await worker.fetch(
       await signedRequest(
         context({
@@ -1847,12 +1884,12 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      executionContext,
     );
+    await waitOnExecutionContext(executionContext);
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: expect.stringContaining("old details message could not be deleted") },
+    expect(await deferredCompletion(response, "remove-last")).toMatchObject({
+      content: expect.stringContaining("old details message could not be deleted"),
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -1884,6 +1921,7 @@ describe("Discord progressive raid workflow", () => {
       leaderDiscordUserId: "volunteer",
       staffMessageId: "postpone-whole-message",
     });
+    const executionContext = createExecutionContext();
     const response = await worker.fetch(
       await signedRequest(
         context({
@@ -1901,12 +1939,12 @@ describe("Discord progressive raid workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      executionContext,
     );
+    await waitOnExecutionContext(executionContext);
 
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: "Raid postponed to the end of the Priority queue." },
+    expect(await deferredCompletion(response, "postpone-whole")).toMatchObject({
+      content: "Raid postponed to the end of the Priority queue.",
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -2026,6 +2064,7 @@ describe("Discord requester pull-up workflow", () => {
       messageId: "pull-detail",
     });
     outbound = [];
+    const reviewContext = createExecutionContext();
     const reviewResponse = await worker.fetch(
       await signedRequest(
         pullInteraction({
@@ -2037,11 +2076,11 @@ describe("Discord requester pull-up workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      reviewContext,
     );
-    expect(await reviewResponse.json()).toMatchObject({
-      type: 4,
-      data: { content: expect.stringContaining("/pull-detail"), flags: 64 },
+    await waitOnExecutionContext(reviewContext);
+    expect(await deferredCompletion(reviewResponse, "refresh-pull-selector")).toMatchObject({
+      content: expect.stringContaining("/pull-detail"),
     });
     const detailUpdate = outbound.find(
       (request) => request.method === "PATCH" && request.url.endsWith("/pull-detail"),
@@ -2222,6 +2261,7 @@ describe("Discord requester pull-up workflow", () => {
     });
     await repo.reviewRaid({ groupId: source.id, changedAt });
     outbound = [];
+    const reviewContext = createExecutionContext();
     await worker.fetch(
       await signedRequest(
         pullInteraction({
@@ -2231,8 +2271,9 @@ describe("Discord requester pull-up workflow", () => {
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      reviewContext,
     );
+    await waitOnExecutionContext(reviewContext);
     const detailUpdate = outbound.find(
       (request) => request.method === "PATCH" && request.url.endsWith("/no-source-pull-detail"),
     );
