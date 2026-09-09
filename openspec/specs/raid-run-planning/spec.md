@@ -210,7 +210,7 @@ The planned detail message SHALL expose `Call and start raid`. Its first eligibl
 - **THEN** the raid remains planned and the caller receives a private denial
 
 ### Requirement: Staff can pull one requester into a reviewed or active raid
-A reviewed planned or active raid with requester capacity SHALL expose a `Pull requester up` select menu directly in its raid detail message. The source SHALL have the same game mode and map and SHALL be planned, unreviewed, automatically fillable, and unreserved. Both Priority and Ordinary destinations SHALL accept eligible sources from either queue, including sources before the destination in service order. The system SHALL NOT list an active, reviewed, or leader-reserved source. Only the assigned leader or streamer SHALL use pull controls on an active destination.
+A reviewed planned or active raid with requester capacity SHALL expose a `Pull requester up` select menu directly in its raid detail message. The source SHALL have the same game mode and map and SHALL be planned with no open review message. The source SHALL be automatically fillable or have a reserved leader. A leader reservation SHALL NOT block a manual pull, including when automatic filling is disabled. Both Priority and Ordinary destinations SHALL accept eligible sources from either queue, including sources before the destination in service order. The system SHALL NOT list an active source, a source with an open review message, or a frozen source without a reserved leader. Only the assigned leader or streamer SHALL use pull controls on an active destination.
 
 The menu SHALL show every current requester in one source raid with Twitch identity and goal. `Previous source` and `Next source` buttons SHALL make every eligible source reachable in Priority-first, then stable raid order. Navigation SHALL use bounded indexed lookups and SHALL NOT load the entire queue. When no eligible source exists, the menu SHALL remain visible but disabled and SHALL state that no compatible requester is available. Detail messages SHALL remain within Discord's five action-row limit.
 
@@ -221,7 +221,7 @@ Selecting one listed requester SHALL atomically append that requester to the des
 - **THEN** the pull transaction rejects the stale selection and leaves all memberships unchanged
 
 #### Scenario: Ordinary reviewed raid has an open seat
-- **WHEN** eligible staff request pull candidates and an unreviewed, unreserved planned raid has the same game mode and map
+- **WHEN** eligible staff request pull candidates and an eligible planned raid has the same game mode and map
 - **THEN** the raid detail message contains a `Pull requester up` selector with Twitch identity and goal, and navigation makes every eligible source available
 
 #### Scenario: No eligible source exists
@@ -233,12 +233,21 @@ Selecting one listed requester SHALL atomically append that requester to the des
 - **THEN** source discovery skips the incompatible raid without exposing its requesters
 
 #### Scenario: Source is not safe to modify
-- **WHEN** the next same-mode and same-map raid is active, reviewed, or leader-reserved
+- **WHEN** the next same-mode and same-map raid is active or has an open review message
 - **THEN** its requesters are not offered as pull candidates and no membership changes
 
 #### Scenario: Selected requester is pulled
 - **WHEN** authorized staff select a current source requester while the reviewed or active destination still has capacity
 - **THEN** that requester becomes a current member of the destination, all other source requesters remain active, no attempt starts, and no call is sent
+
+#### Scenario: Two compatible raids have reserved leaders
+- **WHEN** staff review one raid and the other planned raid has no open review message
+- **THEN** its requesters are eligible for a manual pull even if its automatic filling is disabled
+- **AND** any retained source group keeps its leader reservation and automatic-fill setting
+
+#### Scenario: Reserved source still has an open review
+- **WHEN** both compatible reserved raids have open review messages
+- **THEN** neither can be a pull source until its review closes
 
 #### Scenario: Selection becomes stale
 - **WHEN** the destination fills, the source changes state, or the selected requester moves before the selection commits

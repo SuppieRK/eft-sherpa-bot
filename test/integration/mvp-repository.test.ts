@@ -2923,7 +2923,56 @@ describe("requester pull-up", () => {
     },
   );
 
-  it.each(["active", "reviewed", "reserved", "other-map", "other-mode"] as const)(
+  it.each([
+    { automaticFill: 0, sourceCount: 1, active: false },
+    { automaticFill: 1, sourceCount: 1, active: false },
+    { automaticFill: 0, sourceCount: 2, active: false },
+    { automaticFill: 1, sourceCount: 2, active: true },
+  ])(
+    "pulls from a reserved raid without changing its remaining reservation: %j",
+    async ({ automaticFill, sourceCount, active }) => {
+      const repo = repository();
+      await createRequest(repo, 1, "shoreline", "pvp", 4);
+      const destination = await review(
+        repo,
+        (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+      );
+      await env.DB.prepare(
+        `UPDATE raid_groups SET leader_discord_user_id = 'leader', leader_type = 1 WHERE id = ?`,
+      )
+        .bind(destination.id)
+        .run();
+      if (active) await start(repo, destination);
+      for (let index = 2; index <= sourceCount + 1; index += 1)
+        await createRequest(repo, index, "shoreline", "pvp", 4);
+      const source = (await repo.getBoardSnapshot()).ordinaryRaids[1] as StaffBoardRaid;
+      await env.DB.prepare(
+        `UPDATE raid_groups SET leader_discord_user_id = 'source-leader', leader_type = 1, automatic_fill = ? WHERE id = ?`,
+      )
+        .bind(automaticFill, source.id)
+        .run();
+      const candidates = await repo.getPullRequesterCandidates(destination.id);
+      expect(candidates?.source.id).toBe(source.id);
+      const result = await repo.pullRequester({
+        destinationGroupId: destination.id,
+        sourceGroupId: source.id,
+        requestId: source.members[0]?.requestId as number,
+        actionKey: "reserved-source-pull",
+        changedAt: now,
+      });
+      expect(result.destination.members).toHaveLength(2);
+      expect(result.destination.leaderDiscordUserId).toBe("leader");
+      expect(result.destination.state).toBe(active ? "active" : "planned");
+      expect(await repo.getRaid(source.id)).toMatchObject({
+        state: sourceCount === 1 ? "canceled" : "planned",
+        leaderDiscordUserId: "source-leader",
+        automaticFill: automaticFill === 1,
+      });
+      expect((await repo.getRaid(source.id))?.members).toHaveLength(sourceCount - 1);
+    },
+  );
+
+  it.each(["active", "reviewed", "frozen-unreserved", "other-map", "other-mode"] as const)(
     "rejects a forged selection from an %s source",
     async (sourceKind) => {
       const repo = repository();
@@ -2945,10 +2994,8 @@ describe("requester pull-up", () => {
       if (sourceKind === "active") await start(repo, source as StaffBoardRaid);
       if (sourceKind === "reviewed")
         await review(repo, source as StaffBoardRaid, "forged-reviewed-source");
-      if (sourceKind === "reserved")
-        await env.DB.prepare(
-          `UPDATE raid_groups SET leader_discord_user_id = 'another-leader', leader_type = 1 WHERE id = ?`,
-        )
+      if (sourceKind === "frozen-unreserved")
+        await env.DB.prepare("UPDATE raid_groups SET automatic_fill = 0 WHERE id = ?")
           .bind(source?.id)
           .run();
       const before = await repo.getRaid(source?.id as number);
@@ -3115,7 +3162,12 @@ describe("requester pull-up", () => {
     );
   });
 
-  it.each([0, 1])("uses bounded source navigation deep in queue %i", async (isPriority) => {
+  it.each([
+    { isPriority: 0, reserved: false },
+    { isPriority: 1, reserved: false },
+    { isPriority: 0, reserved: true },
+    { isPriority: 1, reserved: true },
+  ])("uses bounded source navigation deep in queue %j", async ({ isPriority, reserved }) => {
     const repo = repository();
     await createRequest(repo, 1);
     const destination = await review(
@@ -3132,6 +3184,9 @@ describe("requester pull-up", () => {
       env.DB.prepare(`INSERT INTO raid_group_members (group_id, request_id, position, created_at, updated_at)
         SELECT id + 10000, id, 1, created_at, updated_at FROM help_requests WHERE state = 0`),
     ]);
+    if (reserved)
+      await env.DB.prepare(`UPDATE raid_groups SET automatic_fill = 0,
+      leader_discord_user_id = 'reserved-source', leader_type = 1 WHERE id >= 10000`).run();
     const metrics = new D1Metrics();
     const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
     const candidates = await measured.getPullRequesterCandidates(destination.id, {
@@ -3180,7 +3235,7 @@ describe("requester pull-up", () => {
     ).toEqual(fartherMembers);
   });
 
-  it("does not offer a reviewed or leader-reserved source", async () => {
+  it("protects an open review but allows a reserved source after its review closes", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
     const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
@@ -3201,7 +3256,9 @@ describe("requester pull-up", () => {
     )
       .bind(source?.id)
       .run();
-    await expect(repo.getPullRequesterCandidates(destination.id)).resolves.toBeUndefined();
+    await expect(repo.getPullRequesterCandidates(destination.id)).resolves.toMatchObject({
+      source: { id: source?.id },
+    });
   });
 
   it("rolls back the complete pull when a push membership write fails", async () => {

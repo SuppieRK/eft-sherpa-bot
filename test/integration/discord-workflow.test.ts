@@ -2066,6 +2066,53 @@ describe("Discord requester pull-up workflow", () => {
     };
   }
 
+  it("pulls between reserved raids after the source review is closed", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "reserved-pull-detail",
+    });
+    await env.DB.prepare(
+      `UPDATE raid_groups SET leader_discord_user_id = ?, leader_type = 0, automatic_fill = 0 WHERE id IN (?, ?)`,
+    )
+      .bind(config.discord.streamerUserId, destination.id, source.id)
+      .run();
+    const pageContext = createExecutionContext();
+    const page = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "reserved-pull-page",
+          customId: `raid:v3:pull_page:${destination.id}:${source.id}`,
+        }),
+      ),
+      testEnvironment,
+      pageContext,
+    );
+    expect(JSON.stringify(await page.json())).toContain(
+      `raid:v3:pull:${destination.id}:${source.id}`,
+    );
+    await waitOnExecutionContext(pageContext);
+    const pullContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "reserved-pull-submit",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      pullContext,
+    );
+    expect(await response.json()).toMatchObject({
+      data: { content: expect.stringContaining("Requester pulled up") },
+    });
+    await waitOnExecutionContext(pullContext);
+    expect((await repo.getRaid(destination.id))?.members).toHaveLength(4);
+    expect((await repo.getRaid(source.id))?.state).toBe("canceled");
+    expect((await repo.getRaid(destination.id))?.leaderDiscordUserId).toBe(
+      config.discord.streamerUserId,
+    );
+  });
+
   it.each(["streamer", "volunteer"] as const)(
     "lets the %s pull into an active raid after browsing sources",
     async (leaderType) => {

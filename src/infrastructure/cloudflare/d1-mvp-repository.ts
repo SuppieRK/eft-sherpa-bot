@@ -455,8 +455,8 @@ function eligiblePullSourceSql(queue: 0 | 1, comparison = "", reverse = false): 
           WHERE source.is_priority = ${queue}
             AND source.game_mode = destination.game_mode AND source.map_id = destination.map_id
             AND source.id <> destination.id
-            AND source.state = 0 AND source.automatic_fill = 1
-            AND source.leader_discord_user_id IS NULL AND source.staff_message_id IS NULL
+            AND source.state = 0 AND source.staff_message_id IS NULL
+            AND (source.automatic_fill = 1 OR source.leader_discord_user_id IS NOT NULL)
             AND source.current_member_count > 0
             ${comparison}
           ORDER BY source.sort_key ${reverse ? "DESC" : "ASC"} LIMIT 1`;
@@ -498,8 +498,8 @@ function pullSourceIdSql(
             FROM destination JOIN raid_groups AS source ON source.id = ${selectedId}
             WHERE source.id <> destination.id
               AND source.game_mode = destination.game_mode AND source.map_id = destination.map_id
-              AND source.state = 0 AND source.automatic_fill = 1
-              AND source.leader_discord_user_id IS NULL AND source.staff_message_id IS NULL
+              AND source.state = 0 AND source.staff_message_id IS NULL
+              AND (source.automatic_fill = 1 OR source.leader_discord_user_id IS NOT NULL)
               AND source.current_member_count > 0
           )
           SELECT groupId ${navigation} FROM selected CROSS JOIN destination`;
@@ -1581,9 +1581,8 @@ export class D1MvpRepository
       destination.staffMessageId === undefined ||
       destination.members.length >= destination.requesterCapacity ||
       source?.state !== "planned" ||
-      !source.automaticFill ||
+      (!source.automaticFill && source.leaderDiscordUserId === undefined) ||
       source.staffMessageId !== undefined ||
-      source.leaderDiscordUserId !== undefined ||
       source.id === destination.id ||
       source.mapId !== destination.mapId ||
       source.gameMode !== destination.gameMode
@@ -1722,8 +1721,8 @@ export class D1MvpRepository
         .prepare(
           `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
                   last_action_key = ?, completed_at = ?, updated_at = ?
-           WHERE id = ? AND state = 0 AND automatic_fill = 1
-             AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+           WHERE id = ? AND state = 0 AND staff_message_id IS NULL
+             AND (automatic_fill = 1 OR leader_discord_user_id IS NOT NULL)
              AND current_member_count = 0`,
         )
         .bind(input.actionKey, plan.timestamp, plan.timestamp, input.sourceGroupId);
@@ -1731,8 +1730,8 @@ export class D1MvpRepository
     return this.database
       .prepare(
         `UPDATE raid_groups SET last_action_key = ?, updated_at = ?
-         WHERE id = ? AND state = 0 AND automatic_fill = 1
-           AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
+         WHERE id = ? AND state = 0 AND staff_message_id IS NULL
+           AND (automatic_fill = 1 OR leader_discord_user_id IS NOT NULL)
            AND current_member_count = ?`,
       )
       .bind(input.actionKey, plan.timestamp, input.sourceGroupId, plan.remainder.length);
@@ -1747,8 +1746,8 @@ export class D1MvpRepository
                                 AND source.current_member_count = 0`;
     let sourceStateBindings: unknown[] = [];
     if (plan.sourceDisposition === "retained") {
-      sourceStateAssertion = `source.state = 0 AND source.automatic_fill = 1
-                              AND source.leader_discord_user_id IS NULL
+      sourceStateAssertion = `source.state = 0
+                              AND (source.automatic_fill = 1 OR source.leader_discord_user_id IS NOT NULL)
                               AND source.staff_message_id IS NULL
                               AND source.current_member_count = ?
                               AND (SELECT count(*) FROM raid_group_members AS current

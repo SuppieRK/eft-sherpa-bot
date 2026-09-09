@@ -1031,6 +1031,34 @@ function operationDefinitions(input: {
       },
     },
     {
+      id: "discord.requester.pull.reserved-source",
+      label: "Discord pull requester from a frozen reserved raid",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        await env.DB.prepare(`UPDATE raid_groups SET automatic_fill = 0,
+          leader_discord_user_id = ?, leader_type = 0 WHERE id = ?`)
+          .bind(streamerId, fixture.source.groupId)
+          .run();
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}reserved-source-pull-${sample}`,
+            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            values: [String(fixture.source.requestIds[0])],
+          }),
+          async verify(response) {
+            expect(await responseText(response)).toContain("Requester pulled up");
+            const source = await new D1MvpRepository(env.DB).getRaid(fixture.source.groupId);
+            expect(source).toMatchObject({
+              state: "canceled",
+              leaderDiscordUserId: streamerId,
+              automaticFill: false,
+            });
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
       id: "discord.requester.pull.navigate",
       label: "Discord browse a different compatible source raid",
       async prepare(seed, sample) {
