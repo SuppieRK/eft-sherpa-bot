@@ -1,13 +1,17 @@
 import type { CommunityConfig } from "../../config/community";
+import { formatModeMap } from "../../domain/game-mode";
 import { resolveTarkovMap } from "../../domain/maps/catalog";
 import { appendRaidBringSuffix } from "../../domain/raid-call";
-import { formatModeMap } from "../../domain/game-mode";
 import { RepositoryInvariantError } from "../../domain/sherpa-repository";
-import { isStaffBoardMember, type StaffBoardRaid } from "../../domain/staff-board";
+import {
+  isStaffBoardMember,
+  type PullRequesterSource,
+  type StaffBoardRaid,
+} from "../../domain/staff-board";
 import { type BoardDrainLease, D1MvpRepository } from "../cloudflare/d1-mvp-repository";
+import { logDiagnostic } from "../cloudflare/diagnostics";
 import type { CloudflareEnvironment } from "../cloudflare/environment";
 import type { TrackedExecutionContext } from "../cloudflare/telemetry";
-import { logDiagnostic } from "../cloudflare/diagnostics";
 import { sendTwitchChatMessage } from "../twitch/twitch-api";
 import {
   DISCORD_EPHEMERAL_MESSAGE_FLAG,
@@ -19,20 +23,20 @@ import {
 } from "./interactions";
 import {
   createDiscordMessage,
-  deleteDiscordMessage,
   DiscordApiError,
+  deleteDiscordMessage,
   discordMessageUrl,
   updateDiscordInteractionResponse,
   updateDiscordMessage,
 } from "./messages";
 import {
+  type DiscordBotMessage,
   parseRaidMessageAction,
   parseStaffBoardAction,
+  type RaidMessageAction,
   renderPullRequesterSelector,
   renderRaidMessage,
   renderStaffBoard,
-  type DiscordBotMessage,
-  type RaidMessageAction,
 } from "./staff-board";
 
 type StaffInteraction = Pick<
@@ -121,14 +125,14 @@ async function raidDetailMessage(input: {
   repository: D1MvpRepository;
   communityConfig: CommunityConfig;
   notificationUserId?: string;
-  pullCandidateSource?: StaffBoardRaid;
+  pullCandidateSource?: PullRequesterSource;
   candidatesPreloaded?: boolean;
 }): Promise<DiscordBotMessage> {
   const canPull =
-    input.raid.state === "planned" &&
+    (input.raid.state === "planned" || input.raid.state === "active") &&
     !input.raid.automaticFill &&
     input.raid.members.length < input.raid.requesterCapacity;
-  let candidates: { source: StaffBoardRaid } | undefined;
+  let candidates: { source: PullRequesterSource } | undefined;
   if (input.candidatesPreloaded) {
     if (input.pullCandidateSource !== undefined) {
       candidates = { source: input.pullCandidateSource };
@@ -380,7 +384,7 @@ async function reconcileRaidMessage(input: {
   environment: CloudflareEnvironment;
   communityConfig: CommunityConfig;
   changedAt: Date;
-  pullCandidateSource?: StaffBoardRaid;
+  pullCandidateSource?: PullRequesterSource;
   candidatesPreloaded?: boolean;
 }): Promise<string | null | undefined> {
   const current = input.raid;
@@ -461,7 +465,7 @@ async function reconcileVisibleRaidMessages(input: {
   const reviewedIds = visibleRaids
     .filter(
       (raid) =>
-        raid.state === "planned" &&
+        (raid.state === "planned" || raid.state === "active") &&
         !raid.automaticFill &&
         raid.members.length < raid.requesterCapacity,
     )
@@ -893,11 +897,28 @@ class StaffBoardHandler {
     });
   }
 
-  private async showPullCandidates(raid: StaffBoardRaid): Promise<Response> {
-    const candidates = await this.repository.getPullRequesterCandidates(raid.id);
+  private async showPullCandidates(
+    raid: StaffBoardRaid,
+    sourceGroupId?: number,
+  ): Promise<Response> {
+    const candidates = await this.repository.getPullRequesterCandidates(
+      raid.id,
+      sourceGroupId === undefined ? {} : { sourceGroupId },
+    );
     if (candidates === undefined) {
-      return ephemeral("No later requester is available for this raid.");
+      return ephemeral(
+        "No compatible requester is available for this raid. Refresh the board to update the list.",
+      );
     }
+    if (sourceGroupId !== undefined)
+      return update(
+        renderRaidMessage(
+          raid,
+          this.dependencies.communityConfig.policies.attemptLimit,
+          undefined,
+          candidates.source,
+        ),
+      );
     return ephemeralMessage(renderPullRequesterSelector(raid, candidates.source));
   }
 
@@ -911,11 +932,12 @@ class StaffBoardHandler {
 
   private async pullRequester(
     interaction: DiscordMessageComponentInteraction,
-    action: Extract<RaidMessageAction, { action: "pull" }>,
+    action: Extract<RaidMessageAction, { sourceRaidId: number }>,
     raid: StaffBoardRaid,
   ): Promise<Response> {
     const pulled = await this.repository.pullRequester({
       destinationGroupId: raid.id,
+      authorizedDestination: raid,
       sourceGroupId: action.sourceRaidId,
       requestId: this.requesterId(interaction),
       actionKey: interaction.interactionId,
@@ -982,7 +1004,9 @@ class StaffBoardHandler {
       },
     );
     this.refreshBoardLater();
-    return update(renderRaidMessage(started, communityConfig.policies.attemptLimit));
+    return update(
+      await raidDetailMessage({ raid: started, repository: this.repository, communityConfig }),
+    );
   }
 
   private assertRaidControlAccess(
@@ -1034,7 +1058,13 @@ class StaffBoardHandler {
     });
     this.refreshBoardLater();
     if (result !== "helped") {
-      return update(renderRaidMessage(updatedRaid, communityConfig.policies.attemptLimit));
+      return update(
+        await raidDetailMessage({
+          raid: updatedRaid,
+          repository: this.repository,
+          communityConfig,
+        }),
+      );
     }
     return this.deferRestWork(interaction, "discord.helped_raid_detail", async (handler) => {
       const deleted = await handler.deleteRaidMessage(raid.staffMessageId);
@@ -1115,7 +1145,15 @@ class StaffBoardHandler {
     if (raid === undefined) throw new RepositoryInvariantError("That raid no longer exists.");
     const isStreamer = interaction.discordUserId === communityConfig.discord.streamerUserId;
     if (action.action === "cancel") return this.cancelReview(interaction, raid);
+    if (
+      action.action === "pull_candidates" ||
+      action.action === "pull_page" ||
+      action.action === "pull"
+    ) {
+      this.assertRaidControlAccess(interaction, raid, isStreamer);
+    }
     if (action.action === "pull_candidates") return this.showPullCandidates(raid);
+    if (action.action === "pull_page") return this.showPullCandidates(raid, action.sourceRaidId);
     if (action.action === "pull") return this.pullRequester(interaction, action, raid);
     if (action.action === "call") return this.callRaid(interaction, raid, isStreamer);
 

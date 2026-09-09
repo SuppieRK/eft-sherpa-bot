@@ -1,6 +1,10 @@
 import { resolveTarkovMap } from "../../domain/maps/catalog";
 import { formatModeMap } from "../../domain/game-mode";
-import type { StaffBoardRaid, StaffBoardSnapshot } from "../../domain/staff-board";
+import type {
+  PullRequesterSource,
+  StaffBoardRaid,
+  StaffBoardSnapshot,
+} from "../../domain/staff-board";
 import { discordMessageUrl } from "./messages";
 
 export const DISCORD_STAFF_BOARD_COMMAND = "board";
@@ -68,7 +72,7 @@ export type RaidMessageAction =
       action: SingleRaidMessageAction;
       raidId: number;
     }
-  | { action: "pull"; raidId: number; sourceRaidId: number };
+  | { action: "pull" | "pull_page"; raidId: number; sourceRaidId: number };
 
 export function parseStaffBoardAction(value: string): StaffBoardAction | undefined {
   const current = /^board:v6:(refresh|review)$/.exec(value);
@@ -79,15 +83,15 @@ export function parseStaffBoardAction(value: string): StaffBoardAction | undefin
 }
 
 export function parseRaidMessageAction(value: string): RaidMessageAction | undefined {
-  const pull = /^raid:v3:pull:(\d+):(\d+)$/.exec(value);
+  const pull = /^raid:v3:(pull|pull_page):(\d+):(\d+)$/.exec(value);
   if (pull !== null) {
-    const raidId = Number(pull[1]);
-    const sourceRaidId = Number(pull[2]);
+    const raidId = Number(pull[2]);
+    const sourceRaidId = Number(pull[3]);
     return Number.isSafeInteger(raidId) &&
       raidId > 0 &&
       Number.isSafeInteger(sourceRaidId) &&
       sourceRaidId > 0
-      ? { action: "pull", raidId, sourceRaidId }
+      ? { action: pull[1] as "pull" | "pull_page", raidId, sourceRaidId }
       : undefined;
   }
   const match = /^raid:v3:(call|result|postpone|remove|pull_candidates|cancel):(\d+)$/.exec(value);
@@ -181,7 +185,7 @@ function raidRequesterFields(raid: StaffBoardRaid): EmbedField[] {
   return fields;
 }
 
-function plannedRaidControls(raid: StaffBoardRaid, pullSource?: StaffBoardRaid): ActionRow[] {
+function plannedRaidControls(raid: StaffBoardRaid): ActionRow[] {
   const callButtons: Button[] = [
     {
       type: 2,
@@ -199,7 +203,20 @@ function plannedRaidControls(raid: StaffBoardRaid, pullSource?: StaffBoardRaid):
     });
   }
   const controls: ActionRow[] = [{ type: 1, components: callButtons }];
-  if (raid.automaticFill || raid.members.length >= raid.requesterCapacity) return controls;
+  return controls;
+}
+
+function pullRequesterControls(
+  raid: StaffBoardRaid,
+  pullSource?: PullRequesterSource,
+): ActionRow[] {
+  if (
+    (raid.state !== "planned" && raid.state !== "active") ||
+    raid.automaticFill ||
+    raid.members.length >= raid.requesterCapacity
+  )
+    return [];
+  const controls: ActionRow[] = [];
 
   const hasCandidates = pullSource !== undefined && pullSource.members.length > 0;
   const customId = hasCandidates
@@ -226,6 +243,20 @@ function plannedRaidControls(raid: StaffBoardRaid, pullSource?: StaffBoardRaid):
       },
     ],
   });
+  const navigation: Button[] = [];
+  for (const [label, sourceId] of [
+    ["Previous source", pullSource?.previousSourceId],
+    ["Next source", pullSource?.nextSourceId],
+  ] as const) {
+    if (sourceId === undefined) continue;
+    navigation.push({
+      type: 2,
+      style: 2,
+      label,
+      custom_id: `${RAID_PREFIX}:pull_page:${raid.id}:${sourceId}`,
+    });
+  }
+  if (navigation.length > 0) controls.push({ type: 1, components: navigation });
   return controls;
 }
 
@@ -401,18 +432,18 @@ export function renderRaidMessage(
   raid: StaffBoardRaid,
   attemptLimit: number,
   notificationUserId?: string,
-  pullSource?: StaffBoardRaid,
+  pullSource?: PullRequesterSource,
 ): DiscordBotMessage {
   const terminal = raid.state === "completed" || raid.state === "canceled";
   const status = raidStatus(raid, attemptLimit);
   const fields = raidRequesterFields(raid);
   let components: ActionRow[] = [];
   if (raid.state === "planned") {
-    components = plannedRaidControls(raid, pullSource);
+    components = plannedRaidControls(raid);
   } else if (!terminal) {
     components = activeRaidControls(raid, attemptLimit);
   }
-  components.push(...requesterControls(raid));
+  components.push(...pullRequesterControls(raid, pullSource), ...requesterControls(raid));
   return {
     content: raidNotification(raid, notificationUserId),
     embeds: [
@@ -432,29 +463,11 @@ export function renderRaidMessage(
 
 export function renderPullRequesterSelector(
   destination: StaffBoardRaid,
-  source: StaffBoardRaid,
+  source: PullRequesterSource,
 ): DiscordBotMessage {
   return {
     content: `Choose one requester to pull into the ${raidName(destination)} raid.`,
     allowed_mentions: { parse: [] },
-    components: [
-      {
-        type: 1,
-        components: [
-          {
-            type: 3,
-            custom_id: `${RAID_PREFIX}:pull:${destination.id}:${source.id}`,
-            placeholder: "Pull requester up",
-            min_values: 1,
-            max_values: 1,
-            options: source.members.map((member) => ({
-              label: `@${member.twitchLogin}`.slice(0, 100),
-              value: String(member.requestId),
-              description: member.objective.slice(0, 100),
-            })),
-          },
-        ],
-      },
-    ],
+    components: pullRequesterControls(destination, source),
   };
 }

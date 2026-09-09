@@ -50,7 +50,7 @@ const expectedPreparationReminders = {
   "the-labyrinth": "Each player: Labrys access keycard. Party: one Knossos LLC facility key.",
   terminal:
     "Each player: Reprogrammed RFID keycard with Mr. Kerman's hash codes + Secure container Alpha-1 with TerraGroup evidence, RFID keycard with unknown name, Reprogrammed RFID keycard with Prapor's hash codes, or Prapor's letter for the port checkpoint. Enter through Shoreline from 21:00 to 06:00.",
-  icebreaker: "Each player: current Rouble entry fee and current Euro exit fee.",
+  icebreaker: "Each player: Sudak-Tudak kit and current Euro exit fee.",
 } as const;
 
 describe("Tarkov map catalog", () => {
@@ -104,9 +104,10 @@ describe("Tarkov map catalog", () => {
     }
   });
 
-  it("names both Icebreaker fee currencies without freezing their amounts", () => {
+  it("requires the Icebreaker entry kit and Euro exit fee, not a Rouble fee", () => {
     const reminder = resolveTarkovMap("icebreaker")?.raidPreparationReminder;
-    expect(reminder).toContain("Rouble entry fee");
+    expect(reminder).toContain("Sudak-Tudak kit");
+    expect(reminder).not.toMatch(/rouble/i);
     expect(reminder).toContain("Euro exit fee");
     expect(reminder).not.toMatch(/\d/);
   });

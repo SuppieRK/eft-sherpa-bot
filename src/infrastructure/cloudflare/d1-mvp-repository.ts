@@ -1,13 +1,13 @@
+import { type GameMode, gameModeCode, gameModeLabel } from "../../domain/game-mode";
+import { resolveTarkovMap } from "../../domain/maps/catalog";
+import { orderByModePresence } from "../../domain/mode-presence-order";
 import {
+  QUEUE_RAID_EXACT_LIMIT,
+  QUEUE_REQUEST_EXACT_LIMIT,
   type QueueCaller,
   type QueueFacts,
   type QueueQueryRepository,
-  QUEUE_RAID_EXACT_LIMIT,
-  QUEUE_REQUEST_EXACT_LIMIT,
 } from "../../domain/queue-queries";
-import { gameModeCode, gameModeLabel, type GameMode } from "../../domain/game-mode";
-import { orderByModePresence } from "../../domain/mode-presence-order";
-import { resolveTarkovMap } from "../../domain/maps/catalog";
 import {
   type CreateHelpRequest,
   type CreateHelpRequestOutcome,
@@ -15,9 +15,9 @@ import {
   StableTwitchIdentityConflictError,
   type UserMapping,
 } from "../../domain/sherpa-repository";
-import { normalizeTwitchLogin } from "../../domain/user-identity";
 import type {
   CallStatus,
+  PullRequesterSource,
   QueueKind,
   StaffBoardMember,
   StaffBoardRaid,
@@ -29,12 +29,13 @@ import type {
   StaffStatisticsRepository,
 } from "../../domain/staff-statistics";
 import {
-  USER_DIRECTORY_PAGE_SIZE,
   type StaffUserDirectoryEntry,
   type StaffUserDirectoryPage,
   type StaffUserDirectoryRepository,
+  USER_DIRECTORY_PAGE_SIZE,
   type UserDirectoryDirection,
 } from "../../domain/staff-user-directory";
+import { normalizeTwitchLogin } from "../../domain/user-identity";
 
 const PLATFORM = { discord: 0, twitch: 1 } as const;
 const LEADER_TYPE = { streamer: 0, volunteer: 1 } as const;
@@ -254,7 +255,13 @@ interface PullBoundaryRow {
 }
 
 export interface PullRequesterCandidates {
-  source: StaffBoardRaid;
+  source: PullRequesterSource;
+}
+
+interface PullSourceRow {
+  groupId: number;
+  previousSourceId?: number | null;
+  nextSourceId?: number | null;
 }
 
 export interface PullRequesterResult {
@@ -265,6 +272,7 @@ export interface PullRequesterResult {
 
 interface PullRequesterInput {
   destinationGroupId: number;
+  authorizedDestination?: Pick<StaffBoardRaid, "state" | "leaderDiscordUserId">;
   sourceGroupId: number;
   requestId: number;
   actionKey: string;
@@ -441,40 +449,68 @@ function boundedBoardRaidSql(): string {
           SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(0, BOARD_ORDINARY_RAID_LIMIT)})`;
 }
 
-function pullSourceIdSql(requireStaffMessage = true): string {
+function eligiblePullSourceSql(queue: 0 | 1, comparison = "", reverse = false): string {
+  return `SELECT source.id
+          FROM raid_groups AS source INDEXED BY raid_groups_pull_source_idx
+          WHERE source.is_priority = ${queue}
+            AND source.game_mode = destination.game_mode AND source.map_id = destination.map_id
+            AND source.id <> destination.id
+            AND source.state = 0 AND source.automatic_fill = 1
+            AND source.leader_discord_user_id IS NULL AND source.staff_message_id IS NULL
+            AND source.current_member_count > 0
+            ${comparison}
+          ORDER BY source.sort_key ${reverse ? "DESC" : "ASC"} LIMIT 1`;
+}
+
+function pullSourceIdSql(
+  requireStaffMessage = true,
+  selectedSource = false,
+  neighbors = false,
+): string {
+  const selectedId = selectedSource
+    ? "?"
+    : `coalesce(
+    (${eligiblePullSourceSql(1)}), (${eligiblePullSourceSql(0)})
+  )`;
+  const navigation = neighbors
+    ? `,
+    CASE selected.is_priority WHEN 1 THEN
+      (${eligiblePullSourceSql(1, "AND source.sort_key < selected.sort_key", true)})
+    ELSE coalesce(
+      (${eligiblePullSourceSql(0, "AND source.sort_key < selected.sort_key", true)}),
+      (${eligiblePullSourceSql(1, "", true)})
+    ) END AS previousSourceId,
+    CASE selected.is_priority WHEN 0 THEN
+      (${eligiblePullSourceSql(0, "AND source.sort_key > selected.sort_key")})
+    ELSE coalesce(
+      (${eligiblePullSourceSql(1, "AND source.sort_key > selected.sort_key")}),
+      (${eligiblePullSourceSql(0)})
+    ) END AS nextSourceId`
+    : "";
   return `WITH destination AS (
             SELECT id, is_priority, game_mode, map_id, sort_key
             FROM raid_groups
-            WHERE id = ? AND state = 0 AND automatic_fill = 0
+            WHERE id = ? AND state IN (0, 1) AND automatic_fill = 0
               ${requireStaffMessage ? "AND staff_message_id IS NOT NULL" : ""}
               AND current_member_count < requester_capacity
           ), selected AS (
-            SELECT coalesce(
-              (SELECT source.id
-               FROM raid_groups AS source INDEXED BY raid_groups_pull_source_idx
-               WHERE source.is_priority = destination.is_priority
-                 AND source.game_mode = destination.game_mode
-                 AND source.map_id = destination.map_id
-                 AND source.state = 0 AND source.automatic_fill = 1
-                 AND source.leader_discord_user_id IS NULL
-                 AND source.staff_message_id IS NULL
-                 AND source.current_member_count > 0
-                 AND source.sort_key > destination.sort_key
-               ORDER BY source.sort_key LIMIT 1),
-              (SELECT source.id
-               FROM raid_groups AS source INDEXED BY raid_groups_pull_source_idx
-               WHERE destination.is_priority = 1 AND source.is_priority = 0
-                 AND source.game_mode = destination.game_mode
-                 AND source.map_id = destination.map_id
-                 AND source.state = 0 AND source.automatic_fill = 1
-                 AND source.leader_discord_user_id IS NULL
-                 AND source.staff_message_id IS NULL
-                 AND source.current_member_count > 0
-               ORDER BY source.sort_key LIMIT 1)
-            ) AS groupId
-            FROM destination
+            SELECT source.id AS groupId, source.is_priority, source.sort_key
+            FROM destination JOIN raid_groups AS source ON source.id = ${selectedId}
+            WHERE source.id <> destination.id
+              AND source.game_mode = destination.game_mode AND source.map_id = destination.map_id
+              AND source.state = 0 AND source.automatic_fill = 1
+              AND source.leader_discord_user_id IS NULL AND source.staff_message_id IS NULL
+              AND source.current_member_count > 0
           )
-          SELECT groupId FROM selected WHERE groupId IS NOT NULL`;
+          SELECT groupId ${navigation} FROM selected CROSS JOIN destination`;
+}
+
+function pullSourceWithNavigation(source: StaffBoardRaid, row: PullSourceRow): PullRequesterSource {
+  return {
+    ...source,
+    ...(row.previousSourceId == null ? {} : { previousSourceId: row.previousSourceId }),
+    ...(row.nextSourceId == null ? {} : { nextSourceId: row.nextSourceId }),
+  };
 }
 
 function materializationBucketKey(row: {
@@ -1458,30 +1494,39 @@ export class D1MvpRepository
 
   async getPullRequesterCandidates(
     destinationGroupId: number,
-    options: { requireStaffMessage?: boolean } = {},
+    options: { requireStaffMessage?: boolean; sourceGroupId?: number } = {},
   ): Promise<PullRequesterCandidates | undefined> {
     const selected = await this.database
-      .prepare(pullSourceIdSql(options.requireStaffMessage ?? true))
-      .bind(destinationGroupId)
-      .first<{ groupId: number }>();
+      .prepare(
+        pullSourceIdSql(
+          options.requireStaffMessage ?? true,
+          options.sourceGroupId !== undefined,
+          true,
+        ),
+      )
+      .bind(
+        destinationGroupId,
+        ...(options.sourceGroupId === undefined ? [] : [options.sourceGroupId]),
+      )
+      .first<PullSourceRow>();
     if (selected === null) return undefined;
     const source = await this.getRaid(selected.groupId);
     if (source === undefined || source.members.length === 0) return undefined;
-    return { source };
+    return { source: pullSourceWithNavigation(source, selected) };
   }
 
   async getPullRequesterCandidatesForRaids(
     destinationGroupIds: readonly number[],
-  ): Promise<ReadonlyMap<number, StaffBoardRaid>> {
+  ): Promise<ReadonlyMap<number, PullRequesterSource>> {
     if (destinationGroupIds.length === 0) return new Map();
-    const selected = await this.database.batch<{ groupId: number }>(
+    const selected = await this.database.batch<PullSourceRow>(
       destinationGroupIds.map((groupId) =>
-        this.database.prepare(pullSourceIdSql(false)).bind(groupId),
+        this.database.prepare(pullSourceIdSql(false, false, true)).bind(groupId),
       ),
     );
     const pairs = destinationGroupIds.flatMap((destinationGroupId, index) => {
-      const sourceGroupId = selected[index]?.results[0]?.groupId;
-      return sourceGroupId === undefined ? [] : [{ destinationGroupId, sourceGroupId }];
+      const row = selected[index]?.results[0];
+      return row === undefined ? [] : [{ destinationGroupId, sourceGroupId: row.groupId, row }];
     });
     const sourceIds = [...new Set(pairs.map((pair) => pair.sourceGroupId))];
     if (sourceIds.length === 0) return new Map();
@@ -1493,7 +1538,9 @@ export class D1MvpRepository
     return new Map(
       pairs.flatMap((pair) => {
         const source = sources.get(pair.sourceGroupId);
-        return source === undefined ? [] : [[pair.destinationGroupId, source] as const];
+        return source === undefined
+          ? []
+          : [[pair.destinationGroupId, pullSourceWithNavigation(source, pair.row)] as const];
       }),
     );
   }
@@ -1523,22 +1570,28 @@ export class D1MvpRepository
   }
 
   private async planPullRequester(input: PullRequesterInput): Promise<PullRequesterPlan> {
-    const [destination, candidates] = await Promise.all([
+    const [destination, source] = await Promise.all([
       this.getRaid(input.destinationGroupId),
-      this.getPullRequesterCandidates(input.destinationGroupId),
+      this.getRaid(input.sourceGroupId),
     ]);
     if (
-      destination?.state !== "planned" ||
+      destination === undefined ||
+      !["planned", "active"].includes(destination.state) ||
       destination.automaticFill ||
       destination.staffMessageId === undefined ||
       destination.members.length >= destination.requesterCapacity ||
-      candidates?.source.id !== input.sourceGroupId
+      source?.state !== "planned" ||
+      !source.automaticFill ||
+      source.staffMessageId !== undefined ||
+      source.leaderDiscordUserId !== undefined ||
+      source.id === destination.id ||
+      source.mapId !== destination.mapId ||
+      source.gameMode !== destination.gameMode
     ) {
       throw new RepositoryInvariantError(
         "That pull selection is out of date. Review the raid again.",
       );
     }
-    const source = candidates.source;
     if (!source.members.some((member) => member.requestId === input.requestId)) {
       throw new RepositoryInvariantError("That requester is no longer available to pull.");
     }
@@ -1567,7 +1620,7 @@ export class D1MvpRepository
       boundary,
       canPush,
       sourceDisposition,
-      crossQueue: destination.queueKind === "priority" && source.queueKind === "ordinary",
+      crossQueue: destination.queueKind !== source.queueKind,
       timestamp: epoch(input.changedAt),
     };
   }
@@ -1580,14 +1633,15 @@ export class D1MvpRepository
     return [
       this.database
         .prepare(
-          `UPDATE help_requests SET is_priority = 1, updated_at = ?
-           WHERE id = ? AND state = 1 AND is_priority = 0
+          `UPDATE help_requests SET is_priority = ?, updated_at = ?
+           WHERE id = ? AND state = 1
              AND EXISTS (
                SELECT 1 FROM raid_group_members
                WHERE group_id = ? AND request_id = ? AND state = 2 AND updated_at = ?
              )`,
         )
         .bind(
+          plan.destination.queueKind === "priority" ? 1 : 0,
           plan.timestamp,
           input.requestId,
           input.sourceGroupId,
@@ -1688,6 +1742,7 @@ export class D1MvpRepository
     input: PullRequesterInput,
     plan: PullRequesterPlan,
   ): D1PreparedStatement {
+    const authorizedDestination = input.authorizedDestination ?? plan.destination;
     let sourceStateAssertion = `source.state = 3 AND source.outcome = 1
                                 AND source.current_member_count = 0`;
     let sourceStateBindings: unknown[] = [];
@@ -1756,7 +1811,8 @@ export class D1MvpRepository
            (group_id, request_id, position, created_at, updated_at)
          SELECT
            CASE WHEN
-             destination.state = 0 AND destination.automatic_fill = 0
+             destination.state = ? AND destination.automatic_fill = 0
+             AND destination.leader_discord_user_id IS ?
              AND destination.staff_message_id IS NOT NULL
              AND destination.current_member_count < destination.requester_capacity
              AND destination.game_mode = source.game_mode
@@ -1783,6 +1839,8 @@ export class D1MvpRepository
          WHERE destination.id = ?`,
       )
       .bind(
+        authorizedDestination.state === "active" ? 1 : 0,
+        authorizedDestination.leaderDiscordUserId ?? null,
         ...sourceStateBindings,
         plan.timestamp,
         ...pushBindings,
@@ -1803,7 +1861,7 @@ export class D1MvpRepository
         .prepare(
           `UPDATE raid_group_members SET state = 2, updated_at = ?
            WHERE group_id = ? AND request_id = ? AND state = 0
-             AND ? = (${pullSourceIdSql()})`,
+             AND ? = (${pullSourceIdSql(true, true)})`,
         )
         .bind(
           timestamp,
@@ -1811,6 +1869,7 @@ export class D1MvpRepository
           input.requestId,
           input.sourceGroupId,
           input.destinationGroupId,
+          input.sourceGroupId,
         ),
       ...this.pullCrossQueueStatements(input, plan),
       ...this.pullPushStatements(input, plan),

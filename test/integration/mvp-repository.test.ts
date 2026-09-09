@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { TARKOV_MAPS } from "../../src/domain/maps/catalog";
 import type { GameMode } from "../../src/domain/game-mode";
+import { TARKOV_MAPS } from "../../src/domain/maps/catalog";
 import type { StaffBoardRaid } from "../../src/domain/staff-board";
 import { D1Metrics, instrumentD1Database } from "../../src/infrastructure/cloudflare/d1-metrics";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
@@ -2622,6 +2622,50 @@ describe("schedule-independent dual queues", () => {
 });
 
 describe("requester pull-up", () => {
+  it.each(["ordinary", "priority"] as const)(
+    "pulls from a selected later source into an active %s raid without changing its run",
+    async (queueKind) => {
+      const repo = repository();
+      for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
+      const [first, skipped, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+      let destination = await start(repo, first as StaffBoardRaid);
+      if (queueKind === "priority") {
+        destination = await repo.postponeRaid({
+          groupId: destination.id,
+          actionKey: "priority-active-pull",
+          changedAt: now,
+        });
+        destination = await start(repo, destination);
+      }
+      await repo.removeRequester({
+        groupId: destination.id,
+        requestId: destination.members[0]?.requestId as number,
+        actionKey: "active-pull-seat",
+        changedAt: now,
+      });
+      const result = await repo.pullRequester({
+        destinationGroupId: destination.id,
+        sourceGroupId: source?.id as number,
+        requestId: source?.members[0]?.requestId as number,
+        actionKey: "active-selected-pull",
+        changedAt: now,
+      });
+      expect(result.destination).toMatchObject({
+        state: "active",
+        queueKind,
+        leaderDiscordUserId: destination.leaderDiscordUserId,
+        attemptCount: destination.attemptCount,
+        startedAt: destination.startedAt,
+        discordCallStatus: destination.discordCallStatus,
+        twitchCallStatus: destination.twitchCallStatus,
+      });
+      expect(result.destination.members.map((member) => member.requestId)).toContain(
+        source?.members[0]?.requestId,
+      );
+      expect((await repo.getRaid(skipped?.id as number))?.members).toEqual(skipped?.members);
+    },
+  );
+
   it("pulls one requester and pushes the complete source remainder into one successor", async () => {
     const repo = repository();
     for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
@@ -2848,31 +2892,79 @@ describe("requester pull-up", () => {
     ).toEqual(sourceBefore);
   });
 
-  it.each(TARKOV_MAPS)("enforces $name requester capacity during a pull", async (map) => {
-    const repo = repository();
-    const requesterCapacity = map.sherpaPartyCapacity - 1;
-    for (let index = 1; index <= requesterCapacity + 1; index += 1) {
-      await createRequest(repo, index, map.id, "pve", 99);
-    }
-    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
-    const reviewed = await review(repo, first as StaffBoardRaid, "icebreaker-pull");
-    await repo.removeRequester({
-      groupId: reviewed.id,
-      requestId: reviewed.members[0]?.requestId as number,
-      actionKey: "icebreaker-open-seat",
-      changedAt: now,
-    });
-    const result = await repo.pullRequester({
-      destinationGroupId: reviewed.id,
-      sourceGroupId: source?.id as number,
-      requestId: source?.members[0]?.requestId as number,
-      actionKey: "icebreaker-pull-requester",
-      changedAt: now,
-    });
-    expect(result.destination.members).toHaveLength(requesterCapacity);
-    expect(result.destination.requesterCapacity).toBe(requesterCapacity);
-    await expect(currentMemberCount(result.destination.id)).resolves.toBe(requesterCapacity);
-  });
+  it.each(TARKOV_MAPS.flatMap((map) => ["planned", "active"].map((state) => ({ map, state }))))(
+    "enforces $map.name requester capacity during a $state pull",
+    async ({ map, state }) => {
+      const repo = repository();
+      const requesterCapacity = map.sherpaPartyCapacity - 1;
+      for (let index = 1; index <= requesterCapacity + 1; index += 1) {
+        await createRequest(repo, index, map.id, "pve", 99);
+      }
+      const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+      const reviewed = await review(repo, first as StaffBoardRaid, "icebreaker-pull");
+      if (state === "active") await start(repo, reviewed);
+      await repo.removeRequester({
+        groupId: reviewed.id,
+        requestId: reviewed.members[0]?.requestId as number,
+        actionKey: "icebreaker-open-seat",
+        changedAt: now,
+      });
+      const result = await repo.pullRequester({
+        destinationGroupId: reviewed.id,
+        sourceGroupId: source?.id as number,
+        requestId: source?.members[0]?.requestId as number,
+        actionKey: "icebreaker-pull-requester",
+        changedAt: now,
+      });
+      expect(result.destination.members).toHaveLength(requesterCapacity);
+      expect(result.destination.requesterCapacity).toBe(requesterCapacity);
+      expect(result.destination.state).toBe(state);
+      await expect(currentMemberCount(result.destination.id)).resolves.toBe(requesterCapacity);
+    },
+  );
+
+  it.each(["active", "reviewed", "reserved", "other-map", "other-mode"] as const)(
+    "rejects a forged selection from an %s source",
+    async (sourceKind) => {
+      const repo = repository();
+      for (let index = 1; index <= 3; index += 1) await createRequest(repo, index);
+      await createRequest(
+        repo,
+        4,
+        sourceKind === "other-map" ? "woods" : "customs",
+        sourceKind === "other-mode" ? "pvp" : "pve",
+      );
+      const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+      const destination = await start(repo, first as StaffBoardRaid);
+      await repo.removeRequester({
+        groupId: destination.id,
+        requestId: destination.members[0]?.requestId as number,
+        actionKey: "forged-seat",
+        changedAt: now,
+      });
+      if (sourceKind === "active") await start(repo, source as StaffBoardRaid);
+      if (sourceKind === "reviewed")
+        await review(repo, source as StaffBoardRaid, "forged-reviewed-source");
+      if (sourceKind === "reserved")
+        await env.DB.prepare(
+          `UPDATE raid_groups SET leader_discord_user_id = 'another-leader', leader_type = 1 WHERE id = ?`,
+        )
+          .bind(source?.id)
+          .run();
+      const before = await repo.getRaid(source?.id as number);
+      await expect(
+        repo.pullRequester({
+          destinationGroupId: destination.id,
+          sourceGroupId: source?.id as number,
+          requestId: source?.members[0]?.requestId as number,
+          actionKey: "forged-pull",
+          changedAt: now,
+        }),
+      ).rejects.toThrow("out of date");
+      expect(await repo.getRaid(source?.id as number)).toEqual(before);
+      expect((await repo.getRaid(destination.id))?.members).toHaveLength(2);
+    },
+  );
 
   it("skips different modes and maps before selecting the first compatible source", async () => {
     const repo = repository();
@@ -2936,13 +3028,18 @@ describe("requester pull-up", () => {
     expect(candidates?.source.queueKind).toBe("priority");
   });
 
-  it("never offers a Priority source to an Ordinary destination", async () => {
+  it("offers an unreserved Priority source to an Ordinary destination and changes only the selected request queue", async () => {
     const repo = repository();
     for (let index = 1; index <= 9; index += 1) await createRequest(repo, index);
     const [prioritySeed, ordinaryDestinationSeed, ordinarySource] = (await repo.getBoardSnapshot())
       .ordinaryRaids;
     await postpone(repo, prioritySeed as StaffBoardRaid, "priority-before-ordinary-pull");
     const priority = (await repo.getBoardSnapshot()).priorityRaids[0] as StaffBoardRaid;
+    await env.DB.prepare(
+      `UPDATE raid_groups SET automatic_fill = 1, leader_discord_user_id = NULL, leader_type = NULL WHERE id = ?`,
+    )
+      .bind(priority.id)
+      .run();
     const destination = await review(
       repo,
       ordinaryDestinationSeed as StaffBoardRaid,
@@ -2956,9 +3053,96 @@ describe("requester pull-up", () => {
     });
 
     const candidates = await repo.getPullRequesterCandidates(destination.id);
-    expect(candidates?.source.id).toBe(ordinarySource?.id);
-    expect(candidates?.source.id).not.toBe(priority.id);
-    expect(candidates?.source.queueKind).toBe("ordinary");
+    expect(candidates?.source.id).toBe(priority.id);
+    expect(candidates?.source.nextSourceId).toBe(ordinarySource?.id);
+    const selected = priority.members[0]?.requestId as number;
+    const pulled = await repo.pullRequester({
+      destinationGroupId: destination.id,
+      sourceGroupId: priority.id,
+      requestId: selected,
+      actionKey: "priority-to-ordinary-pull",
+      changedAt: now,
+    });
+    expect(pulled.destination.queueKind).toBe("ordinary");
+    await expect(
+      env.DB.prepare(`SELECT is_priority AS priority FROM help_requests WHERE id = ?`)
+        .bind(selected)
+        .first(),
+    ).resolves.toEqual({ priority: 0 });
+    await expect(
+      env.DB.prepare(
+        `SELECT DISTINCT is_priority AS priority FROM help_requests WHERE id IN (?, ?)`,
+      )
+        .bind(priority.members[1]?.requestId, priority.members[2]?.requestId)
+        .all(),
+    ).resolves.toMatchObject({ results: [{ priority: 1 }] });
+  });
+
+  it("browses every compatible source in both directions, including sources before the destination", async () => {
+    const repo = repository();
+    for (let index = 1; index <= 10; index += 1) await createRequest(repo, index);
+    const [earlier, first, second, last] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const destination = await review(repo, second as StaffBoardRaid, "browse-destination");
+    await repo.removeRequester({
+      groupId: destination.id,
+      requestId: destination.members[0]?.requestId as number,
+      actionKey: "browse-seat",
+      changedAt: now,
+    });
+    const initial = await repo.getPullRequesterCandidates(destination.id);
+    expect(initial?.source.id).toBe(earlier?.id);
+    expect(initial?.source.previousSourceId).toBeUndefined();
+    expect(initial?.source.nextSourceId).toBe(first?.id);
+    const next = await repo.getPullRequesterCandidates(destination.id, {
+      sourceGroupId: first?.id as number,
+    });
+    expect(next?.source.previousSourceId).toBe(earlier?.id);
+    expect(next?.source.nextSourceId).toBe(last?.id);
+    const final = await repo.getPullRequesterCandidates(destination.id, {
+      sourceGroupId: last?.id as number,
+    });
+    expect(final?.source.previousSourceId).toBe(first?.id);
+    expect(final?.source.nextSourceId).toBeUndefined();
+    const pulled = await repo.pullRequester({
+      destinationGroupId: destination.id,
+      sourceGroupId: earlier?.id as number,
+      requestId: earlier?.members[0]?.requestId as number,
+      actionKey: "pull-earlier-source",
+      changedAt: now,
+    });
+    expect(pulled.destination.members.map((member) => member.requestId)).toContain(
+      earlier?.members[0]?.requestId,
+    );
+  });
+
+  it.each([0, 1])("uses bounded source navigation deep in queue %i", async (isPriority) => {
+    const repo = repository();
+    await createRequest(repo, 1);
+    const destination = await review(
+      repo,
+      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+      "deep-source-review",
+    );
+    await seedWaitingRequests(1_000, { offset: 1_000, isPriority: () => isPriority });
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO raid_groups
+        (id, is_priority, sort_key, map_id, game_mode, requester_capacity, created_at, updated_at)
+        SELECT id + 10000, is_priority, (id + 10000) * 1000000, map_id, game_mode, 4, created_at, updated_at
+        FROM help_requests WHERE state = 0`),
+      env.DB.prepare(`INSERT INTO raid_group_members (group_id, request_id, position, created_at, updated_at)
+        SELECT id + 10000, id, 1, created_at, updated_at FROM help_requests WHERE state = 0`),
+    ]);
+    const metrics = new D1Metrics();
+    const measured = new D1MvpRepository(instrumentD1Database(env.DB, metrics));
+    const candidates = await measured.getPullRequesterCandidates(destination.id, {
+      sourceGroupId: 10500,
+    });
+    expect(candidates?.source).toMatchObject({
+      id: 10500,
+      previousSourceId: 10499,
+      nextSourceId: 10501,
+    });
+    expect(metrics.snapshot().rowsRead).toBeLessThan(50);
   });
 
   it("stops push-down at a reviewed compatible boundary", async () => {

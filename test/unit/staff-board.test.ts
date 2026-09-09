@@ -178,7 +178,7 @@ describe("split staff board", () => {
     expect(message.allowed_mentions.users).toEqual(["reviewer"]);
   });
 
-  it("shows Pull requester up only during a planned frozen review with capacity", () => {
+  it("shows Pull requester up in reviewed or active raids with capacity", () => {
     const pullSource = { ...raid, id: 8, sortKey: 2_000_000 };
     expect(JSON.stringify(renderRaidMessage(raid, 3))).not.toContain("Pull requester up");
     expect(
@@ -239,8 +239,29 @@ describe("split staff board", () => {
           pullSource,
         ),
       ),
-    ).not.toContain("Pull requester up");
+    ).toContain("Pull requester up");
   });
+
+  it.each(["planned", "active"] as const)(
+    "keeps %s source navigation within five Discord rows",
+    (state) => {
+      const message = renderRaidMessage({ ...raid, state, automaticFill: false }, 3, undefined, {
+        ...raid,
+        id: 8,
+        previousSourceId: 6,
+        nextSourceId: 9,
+      });
+      expect(message.components).toHaveLength(5);
+      expect(JSON.stringify(message)).toContain("raid:v3:pull_page:7:6");
+      expect(JSON.stringify(message)).toContain("raid:v3:pull_page:7:9");
+      expect(JSON.stringify(message)).toContain("Pull requester up");
+      expect(parseRaidMessageAction("raid:v3:pull_page:7:9")).toEqual({
+        action: "pull_page",
+        raidId: 7,
+        sourceRaidId: 9,
+      });
+    },
+  );
 
   it("renders full raid disclosure and the attempt-dependent controls", () => {
     const active = {

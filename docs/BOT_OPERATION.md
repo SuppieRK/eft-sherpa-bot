@@ -36,9 +36,11 @@ The planned raid message has these controls:
 
 Use **Move requester to next raid** or **Remove requester** before you call the raid when the proposed group must change. Automatic grouping and requester limits do not change. A reviewed raid does not accept a new automatic requester.
 
-Use the **Pull requester up** list to fill an open requester place from a later raid with the same mode and map. The list is in the raid review message. It shows each Twitch name and goal. Select one requester after you review the goals. The list is disabled and shows **No compatible requester available** when no suitable later request exists.
+Use the **Pull requester up** list to fill an open requester place in a reviewed or active raid. You can select a requester from any planned raid with the same mode and map. The source raid must not be under review or reserved for a leader. You cannot take a requester from an active raid. Only the raid leader or streamer can pull a requester into an active raid.
 
-The pull does not call a requester, assign a leader, or start an attempt. A priority raid can pull one selected ordinary requester. Only that selected request becomes priority.
+The list shows the Twitch names and goals from one source raid. Select **Previous source** or **Next source** to see other source raids. Priority sources appear first. The list is disabled and shows **No compatible requester available** when no suitable request exists.
+
+The pull does not call a requester, assign a leader, or start an attempt. An active raid keeps its current attempt count. Both Priority and Ordinary raids can pull from either queue. Only the selected request changes to the destination queue.
 
 Select **Cancel review**, next to **Call and start raid**, to close the planned review message. This control does not cancel the raid or a help request. The raid stays frozen on the board. Select the raid from **Review a raid** when you want to open new details.
 

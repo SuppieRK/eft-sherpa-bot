@@ -209,17 +209,23 @@ The planned detail message SHALL expose `Call and start raid`. Its first eligibl
 - **WHEN** a volunteer other than the retained leader attempts to call and start a reserved postponed raid
 - **THEN** the raid remains planned and the caller receives a private denial
 
-### Requirement: Staff can pull one requester into a reviewed raid
-A reviewed planned raid with requester capacity SHALL expose a `Pull requester up` select menu directly in its raid detail message. When the first eligible later source exists, the menu SHALL list every current requester in that source with Twitch identity and goal. When no eligible source exists, the menu SHALL remain visible but disabled and SHALL state that no compatible requester is available. The source SHALL have the same game mode and map and SHALL be planned, unreviewed, automatically fillable, unreserved, and later in service order. An Ordinary destination SHALL search only later Ordinary raids. A Priority destination SHALL search later Priority raids before Ordinary raids. The system SHALL NOT list an active, reviewed, or leader-reserved source.
+### Requirement: Staff can pull one requester into a reviewed or active raid
+A reviewed planned or active raid with requester capacity SHALL expose a `Pull requester up` select menu directly in its raid detail message. The source SHALL have the same game mode and map and SHALL be planned, unreviewed, automatically fillable, and unreserved. Both Priority and Ordinary destinations SHALL accept eligible sources from either queue, including sources before the destination in service order. The system SHALL NOT list an active, reviewed, or leader-reserved source. Only the assigned leader or streamer SHALL use pull controls on an active destination.
 
-Selecting one listed requester SHALL atomically append that requester to the reviewed destination without exceeding requester capacity. It SHALL retain the destination's planned state, attempt count, leader reservation, automatic-fill state, and call statuses. It SHALL send no Discord or Twitch requester call. The reviewed detail message and canonical board SHALL refresh from the committed state.
+The menu SHALL show every current requester in one source raid with Twitch identity and goal. `Previous source` and `Next source` buttons SHALL make every eligible source reachable in Priority-first, then stable raid order. Navigation SHALL use bounded indexed lookups and SHALL NOT load the entire queue. When no eligible source exists, the menu SHALL remain visible but disabled and SHALL state that no compatible requester is available. Detail messages SHALL remain within Discord's five action-row limit.
+
+Selecting one listed requester SHALL atomically append that requester to the destination without exceeding requester capacity. It SHALL retain the destination's planned or active state, attempt count, start time, leader reservation, automatic-fill state, and call statuses. It SHALL send no Discord or Twitch requester call. The detail message and canonical board SHALL refresh from the committed state. Selection SHALL revalidate the selected source itself rather than require it to be the first eligible source.
+
+#### Scenario: Destination starts during selection
+- **WHEN** another staff member starts the destination or changes its leader after the caller's access check
+- **THEN** the pull transaction rejects the stale selection and leaves all memberships unchanged
 
 #### Scenario: Ordinary reviewed raid has an open seat
-- **WHEN** eligible staff request pull candidates and the first later unreviewed Ordinary raid has the same game mode and map
-- **THEN** the raid review message contains a `Pull requester up` selector that lists every current requester in that one source raid with Twitch identity and goal
+- **WHEN** eligible staff request pull candidates and an unreviewed, unreserved planned raid has the same game mode and map
+- **THEN** the raid detail message contains a `Pull requester up` selector with Twitch identity and goal, and navigation makes every eligible source available
 
 #### Scenario: No eligible source exists
-- **WHEN** a reviewed raid has requester capacity but no eligible later source
+- **WHEN** a reviewed or active raid has requester capacity but no eligible source
 - **THEN** its raid review message contains a disabled `Pull requester up` selector that states `No compatible requester available`
 
 #### Scenario: Earlier later raid is incompatible
@@ -231,12 +237,20 @@ Selecting one listed requester SHALL atomically append that requester to the rev
 - **THEN** its requesters are not offered as pull candidates and no membership changes
 
 #### Scenario: Selected requester is pulled
-- **WHEN** authorized staff select a current source requester while the reviewed destination still has capacity
+- **WHEN** authorized staff select a current source requester while the reviewed or active destination still has capacity
 - **THEN** that requester becomes a current member of the destination, all other source requesters remain active, no attempt starts, and no call is sent
 
 #### Scenario: Selection becomes stale
 - **WHEN** the destination fills, the source changes state, or the selected requester moves before the selection commits
 - **THEN** the entire transition is rejected without changing a request, membership, raid, call, or attempt
+
+#### Scenario: Active raid accepts a requester
+- **WHEN** the assigned leader or streamer selects a compatible requester for an active raid with capacity
+- **THEN** the requester joins without resetting the attempt count or start time, changing the leader, or sending another call
+
+#### Scenario: Another volunteer attempts an active pull
+- **WHEN** a volunteer other than the assigned leader uses pull, candidate, or source-navigation controls on an active raid
+- **THEN** the bot privately denies the action and changes no memberships
 
 ### Requirement: Deleted planned raid review details are dismissed
 A board Refresh or repeat Review action for a frozen planned raid SHALL update its stored Discord detail message with current controls. When Discord reports that the planned detail message does not exist, the system SHALL atomically clear the stale reference, SHALL NOT create a replacement, and SHALL refresh the canonical board without a details link. It SHALL NOT assign a leader, start an attempt, or send a call. A later explicit Review action MAY create a fresh detail message.
@@ -289,20 +303,20 @@ The system SHALL reject a stale or duplicate message, an unreviewed raid, and an
 - **WHEN** the planned reference clears but Discord returns an error other than `404` for message deletion
 - **THEN** the system attempts to restore the same reference, makes no raid-state change, and tells staff to retry
 
-### Requirement: Priority pull explicitly promotes one Ordinary request
-A reviewed Priority raid MAY pull a selected requester from the first eligible Ordinary source when no eligible later Priority source precedes it. The transaction SHALL promote only the selected help request to Priority before creating its compatible Priority membership. Every other source request SHALL remain Ordinary. Any push-down after that pull SHALL use only an Ordinary destination. An Ordinary raid SHALL NOT pull a Priority requester.
+### Requirement: Cross-queue pull adopts the destination queue
+A reviewed or active raid MAY pull a selected requester from either queue. Before creating the destination membership, the transaction SHALL set only the selected request's queue kind to the destination's queue kind. Every other source request SHALL keep its queue kind. Any push-down SHALL remain in the source queue.
 
 #### Scenario: Postponed Priority raid pulls from Ordinary
 - **WHEN** authorized staff select an Ordinary requester with the same game mode and map for a reviewed postponed Priority raid with capacity
 - **THEN** only the selected request and its new membership become Priority while the source remainder stays Ordinary
 
 #### Scenario: Later Priority source exists
-- **WHEN** a reviewed Priority destination has an eligible later Priority source before the first eligible Ordinary source
-- **THEN** the selector uses the Priority source and does not expose the Ordinary source
+- **WHEN** a destination has eligible Priority and Ordinary sources
+- **THEN** the selector initially shows the first Priority source and navigation also exposes the Ordinary sources
 
 #### Scenario: Ordinary destination requests candidates
-- **WHEN** staff use `Pull requester up` on an Ordinary reviewed raid
-- **THEN** the selector does not expose any Priority requester
+- **WHEN** staff pull an eligible Priority requester into an Ordinary reviewed or active raid
+- **THEN** only that request becomes Ordinary and all other source requests remain Priority
 
 ### Requirement: Pull attempts one bounded push-down
 After a pull removes the selected requester from its source, the same atomic transition SHALL examine the source remainder. If no requester remains, the source SHALL close as not run. Otherwise, the system SHALL consider only the immediately following planned, unreviewed, automatically fillable, unreserved raid in the source queue with the same game mode and map. If that one raid has capacity for the complete remainder, every remaining source requester SHALL move together into it in stable source order and the empty source SHALL close as not run. If the complete remainder does not fit or no eligible immediate raid exists, no remainder member SHALL move and the source SHALL remain planned.
@@ -341,7 +355,7 @@ The catalog SHALL define these reminders:
 - The Lab: each player needs a TerraGroup Labs access keycard.
 - The Labyrinth: each player needs a Labrys access keycard, and the party needs one Knossos LLC facility key.
 - Terminal: each player needs one accepted access option: a Reprogrammed RFID keycard with Mr. Kerman's hash codes together with the Secure container Alpha-1 with TerraGroup evidence, an RFID keycard with unknown name, a Reprogrammed RFID keycard with Prapor's hash codes, or Prapor's letter for the port checkpoint. Entry is through Shoreline from 21:00 to 06:00.
-- Icebreaker: each player needs the current Rouble entry fee and the current Euro exit fee; the reminder SHALL NOT commit numeric amounts.
+- Icebreaker: each player needs a `Sudak-Tudak kit` and the current Euro exit fee; the reminder SHALL NOT list a Rouble fee or commit numeric amounts.
 
 When `Call and start raid` requests a platform call for a restricted location, the Discord call and any requested Twitch call SHALL append concise `Bring:` guidance derived from that location's catalog entry. Both calls SHALL retain their existing requester identities, Discord mention allowlist, mode and map, delivery rules, and call-status transitions. Calls for all other committed locations SHALL add no preparation-requirement text. Reminders SHALL NOT include extraction items or fees except for Icebreaker's required Euro exit fee, optional room keys, equipment recommendations, or quest objectives.
 
@@ -357,9 +371,9 @@ When `Call and start raid` requests a platform call for a restricted location, t
 - **WHEN** a Terminal raid call is sent
 - **THEN** it identifies the accepted per-player access alternatives, the combined Mr. Kerman-card and Alpha-1-container option, and the Shoreline 21:00-to-06:00 entry condition
 
-#### Scenario: Icebreaker call covers entry and exit fees
+#### Scenario: Icebreaker call covers the entry kit and exit fee
 - **WHEN** an Icebreaker raid call is sent
-- **THEN** it tells each player to bring the current Rouble entry fee and current Euro exit fee without naming numeric amounts
+- **THEN** both platform calls tell each player to bring a `Sudak-Tudak kit` and the current Euro exit fee, with no Rouble fee or numeric amounts
 
 #### Scenario: Standard map call remains concise
 - **WHEN** a raid call is sent for a committed map without an entry requirement
