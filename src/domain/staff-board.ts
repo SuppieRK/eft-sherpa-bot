@@ -42,6 +42,11 @@ export interface StaffBoardSnapshot {
   ordinaryRaids: StaffBoardRaid[];
 }
 
+export interface PullRequesterSource extends StaffBoardRaid {
+  previousSourceId?: number;
+  nextSourceId?: number;
+}
+
 export function isStaffBoardMember(input: {
   discordUserId: string;
   discordRoleIds: readonly string[];

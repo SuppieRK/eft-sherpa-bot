@@ -30,6 +30,8 @@ Migration `0004` backfills compact staff statistics from retained request and ra
 
 Migration `0006` repairs duplicate active requests that have the same stable Twitch user ID, mode, and map. It keeps the oldest request. It cancels later duplicates and removes their open memberships. Before deployment, record the value of `stableIdentityRepairCount` from `/internal/status`. Stop if the value is not expected.
 
+Apply migration `0010` before the Worker update that allows reserved pull sources. It replaces only the pull-source index. It preserves all requests, raids, leaders, and automatic-fill settings. The previous Worker query remains compatible with this index.
+
 The local benchmark is regression evidence. Cloudflare D1 Analytics is the source for billed D1 use. Compare both sources for the same Worker version and time period. Investigate a material difference. Do not change a local fixture only to make the values look equal.
 
 ## Complete the smoke test

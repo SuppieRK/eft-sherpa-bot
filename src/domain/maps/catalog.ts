@@ -137,7 +137,7 @@ export const TARKOV_MAPS = [
     name: "Icebreaker",
     aliases: ["icebreaker", "ice breaker", "boreas"],
     sherpaPartyCapacity: 3,
-    raidPreparationReminder: "Each player: current Rouble entry fee and current Euro exit fee.",
+    raidPreparationReminder: "Each player: Sudak-Tudak kit and current Euro exit fee.",
     sourceLocationIds: ["69af492a4819ea4ba10a69c5"],
     sourceNormalizedNames: ["icebreaker"],
   },

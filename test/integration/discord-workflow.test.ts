@@ -1,8 +1,8 @@
-import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { type CommunityConfig, validateCommunityConfig } from "../../src/config/community";
 import { createWorker } from "../../src";
+import { type CommunityConfig, validateCommunityConfig } from "../../src/config/community";
 import type { StaffBoardRaid } from "../../src/domain/staff-board";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
@@ -874,6 +874,13 @@ describe("Discord progressive raid workflow", () => {
       expect(twitchMessage).toContain("@twitchviewer");
       expect(twitchMessage).toContain("Bring:");
       expect(twitchMessage).toContain(expectedReminder);
+      if (mapId === "icebreaker") {
+        for (const message of [discordCall?.body.content, twitchMessage]) {
+          expect(message).toContain("Sudak-Tudak kit");
+          expect(message).toContain("current Euro exit fee");
+          expect(message).not.toMatch(/rouble/i);
+        }
+      }
       expect(await repo.getRaid(raid.id)).toMatchObject({
         state: "active",
         discordCallStatus: "sent",
@@ -2059,6 +2066,219 @@ describe("Discord requester pull-up workflow", () => {
     };
   }
 
+  it("pulls between reserved raids after the source review is closed", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "reserved-pull-detail",
+    });
+    await env.DB.prepare(
+      `UPDATE raid_groups SET leader_discord_user_id = ?, leader_type = 0, automatic_fill = 0 WHERE id IN (?, ?)`,
+    )
+      .bind(config.discord.streamerUserId, destination.id, source.id)
+      .run();
+    const pageContext = createExecutionContext();
+    const page = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "reserved-pull-page",
+          customId: `raid:v3:pull_page:${destination.id}:${source.id}`,
+        }),
+      ),
+      testEnvironment,
+      pageContext,
+    );
+    expect(JSON.stringify(await page.json())).toContain(
+      `raid:v3:pull:${destination.id}:${source.id}`,
+    );
+    await waitOnExecutionContext(pageContext);
+    const pullContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        pullInteraction({
+          id: "reserved-pull-submit",
+          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          values: [String(source.members[0]?.requestId)],
+        }),
+      ),
+      testEnvironment,
+      pullContext,
+    );
+    expect(await response.json()).toMatchObject({
+      data: { content: expect.stringContaining("Requester pulled up") },
+    });
+    await waitOnExecutionContext(pullContext);
+    expect((await repo.getRaid(destination.id))?.members).toHaveLength(4);
+    expect((await repo.getRaid(source.id))?.state).toBe("canceled");
+    expect((await repo.getRaid(destination.id))?.leaderDiscordUserId).toBe(
+      config.discord.streamerUserId,
+    );
+  });
+
+  it.each(["streamer", "volunteer"] as const)(
+    "lets the %s pull into an active raid after browsing sources",
+    async (leaderType) => {
+      const { repo, destination, source } = await reviewedDestinationWithSource({
+        requestCount: 10,
+        messageId: "active-browse-detail",
+      });
+      const discordUserId = leaderType === "streamer" ? config.discord.streamerUserId : "volunteer";
+      const roleIds = leaderType === "volunteer" ? [config.discord.volunteerRoleId] : [];
+      const callContext = createExecutionContext();
+      const startedResponse = await worker.fetch(
+        await signedRequest(
+          pullInteraction({
+            id: "active-browse-start",
+            customId: `raid:v3:call:${destination.id}`,
+            discordUserId,
+            roleIds,
+          }),
+        ),
+        testEnvironment,
+        callContext,
+      );
+      expect(JSON.stringify(await startedResponse.json())).toContain("Pull requester up");
+      await waitOnExecutionContext(callContext);
+      const active = await repo.getRaid(destination.id);
+      const candidates = await repo.getPullRequesterCandidates(destination.id);
+      const nextId = candidates?.source.nextSourceId as number;
+      expect(nextId).toBeGreaterThan(source.id);
+      const next = (await repo.getRaid(nextId)) as StaffBoardRaid;
+      outbound = [];
+      const pageContext = createExecutionContext();
+      const pageResponse = await worker.fetch(
+        await signedRequest(
+          pullInteraction({
+            id: "active-browse-page",
+            customId: `raid:v3:pull_page:${destination.id}:${nextId}`,
+            discordUserId,
+            roleIds,
+          }),
+        ),
+        testEnvironment,
+        pageContext,
+      );
+      expect(JSON.stringify(await pageResponse.json())).toContain(
+        `raid:v3:pull:${destination.id}:${nextId}`,
+      );
+      await waitOnExecutionContext(pageContext);
+      const pullContext = createExecutionContext();
+      const response = await worker.fetch(
+        await signedRequest(
+          pullInteraction({
+            id: "active-browse-pull",
+            customId: `raid:v3:pull:${destination.id}:${nextId}`,
+            values: [String(next.members[0]?.requestId)],
+            discordUserId,
+            roleIds,
+          }),
+        ),
+        testEnvironment,
+        pullContext,
+      );
+      expect(await response.json()).toMatchObject({
+        data: { content: expect.stringContaining("Requester pulled up") },
+      });
+      await waitOnExecutionContext(pullContext);
+      expect(await repo.getRaid(destination.id)).toMatchObject({
+        state: "active",
+        attemptCount: active?.attemptCount,
+        startedAt: active?.startedAt,
+        leaderDiscordUserId: discordUserId,
+        discordCallStatus: active?.discordCallStatus,
+        twitchCallStatus: active?.twitchCallStatus,
+      });
+      expect(
+        (await repo.getRaid(destination.id))?.members.map((member) => member.requestId),
+      ).toContain(next.members[0]?.requestId);
+      expect(
+        outbound.some(
+          (request) =>
+            request.method === "POST" &&
+            request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("rejects a planned pull if another volunteer starts the raid before the mutation", async () => {
+    const { repo, destination, source } = await reviewedDestinationWithSource({
+      messageId: "concurrent-start-detail",
+    });
+    const originalPull = repo.pullRequester.bind(repo);
+    const pull = vi
+      .spyOn(D1MvpRepository.prototype, "pullRequester")
+      .mockImplementationOnce(async (input) => {
+        await activateRaid({
+          repo,
+          raid: destination,
+          leaderDiscordUserId: "new-leader",
+          staffMessageId: "concurrent-start-detail",
+        });
+        return originalPull(input);
+      });
+    const executionContext = createExecutionContext();
+    try {
+      const response = await worker.fetch(
+        await signedRequest(
+          pullInteraction({
+            id: "concurrent-start-pull",
+            customId: `raid:v3:pull:${destination.id}:${source.id}`,
+            values: [String(source.members[0]?.requestId)],
+            discordUserId: "other-volunteer",
+            roleIds: [config.discord.volunteerRoleId],
+          }),
+        ),
+        testEnvironment,
+        executionContext,
+      );
+      expect(await response.json()).toMatchObject({
+        data: { content: expect.stringContaining("out of date") },
+      });
+      await waitOnExecutionContext(executionContext);
+      expect((await repo.getRaid(destination.id))?.members).toEqual(destination.members);
+      expect((await repo.getRaid(source.id))?.members).toEqual(source.members);
+    } finally {
+      pull.mockRestore();
+    }
+  });
+
+  it.each(["pull", "pull_page", "pull_candidates"] as const)(
+    "denies active %s controls to another volunteer",
+    async (action) => {
+      const { repo, destination, source } = await reviewedDestinationWithSource({
+        messageId: "protected-active-detail",
+      });
+      await activateRaid({
+        repo,
+        raid: destination,
+        leaderDiscordUserId: "assigned-leader",
+        staffMessageId: "protected-active-detail",
+      });
+      const executionContext = createExecutionContext();
+      const response = await worker.fetch(
+        await signedRequest(
+          pullInteraction({
+            id: `unauthorized-${action}`,
+            customId:
+              action === "pull_candidates"
+                ? `raid:v3:${action}:${destination.id}`
+                : `raid:v3:${action}:${destination.id}:${source.id}`,
+            values: [String(source.members[0]?.requestId)],
+            discordUserId: "other-volunteer",
+            roleIds: [config.discord.volunteerRoleId],
+          }),
+        ),
+        testEnvironment,
+        executionContext,
+      );
+      expect(await response.json()).toMatchObject({
+        data: { content: expect.stringContaining("Only this raid's leader") },
+      });
+      await waitOnExecutionContext(executionContext);
+      expect((await repo.getRaid(destination.id))?.members).toEqual(destination.members);
+      expect((await repo.getRaid(source.id))?.members).toEqual(source.members);
+    },
+  );
+
   it("shows Twitch nicknames with goals and pulls without starting or calling", async () => {
     const { repo, destination, source } = await reviewedDestinationWithSource({
       messageId: "pull-detail",
@@ -2299,7 +2519,10 @@ describe("Discord requester pull-up workflow", () => {
     );
     expect(await response.json()).toMatchObject({
       type: 4,
-      data: { content: "No later requester is available for this raid." },
+      data: {
+        content:
+          "No compatible requester is available for this raid. Refresh the board to update the list.",
+      },
     });
   });
 

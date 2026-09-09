@@ -9,6 +9,7 @@ import {
   type D1StatementUsage,
 } from "../src/infrastructure/cloudflare/d1-metrics";
 import type { CloudflareEnvironment } from "../src/infrastructure/cloudflare/environment";
+import { D1MvpRepository } from "../src/infrastructure/cloudflare/d1-mvp-repository";
 import { testCommunityConfig } from "../test/fixtures/community";
 import {
   BENCHMARK_SAMPLES,
@@ -932,6 +933,10 @@ function operationDefinitions(input: {
       label: "Discord direct pull requester selector",
       async prepare(seed, sample) {
         const fixture = await seedPullFixture(seed);
+        const initialSource = (
+          await new D1MvpRepository(env.DB).getPullRequesterCandidates(fixture.destination.groupId)
+        )?.source;
+        if (initialSource === undefined) throw new Error("Pull benchmark has no eligible source");
         return {
           request: await component({
             id: `${OPERATION_PREFIX}pull-candidates-${sample}`,
@@ -945,10 +950,10 @@ function operationDefinitions(input: {
                 call.method === "PATCH" && call.url.endsWith(`/${OPERATION_PREFIX}detail-pull`),
             );
             expect(detailUpdate?.body).toContain(
-              `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+              `raid:v3:pull:${fixture.destination.groupId}:${initialSource.id}`,
             );
-            expect(detailUpdate?.body).toContain("@op_pull_source_1");
-            expect(detailUpdate?.body).toContain("Benchmark goal 1");
+            expect(detailUpdate?.body).toContain(`@${initialSource.members[0]?.twitchLogin}`);
+            expect(detailUpdate?.body).toContain(initialSource.members[0]?.objective);
           },
         };
       },
@@ -986,6 +991,91 @@ function operationDefinitions(input: {
               .first<{ isPriority: number }>();
             expect(selected?.isPriority).toBe(1);
             expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.requester.pull.active",
+      label: "Discord pull requester into an active Priority raid",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        const repository = new D1MvpRepository(env.DB);
+        const active = await repository.startRaid({
+          groupId: fixture.destination.groupId,
+          leaderDiscordUserId: streamerId,
+          leaderType: "streamer",
+          requestTwitchCall: false,
+          changedAt: new Date("2096-08-15T21:00:00.000Z"),
+        });
+        const selected = fixture.source.requestIds[0] as number;
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}active-pull-${sample}`,
+            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            values: [String(selected)],
+          }),
+          async verify(response) {
+            expect(await responseText(response)).toContain("Requester pulled up");
+            const updated = await repository.getRaid(active.id);
+            expect(updated).toMatchObject({
+              state: "active",
+              startedAt: active.startedAt,
+              attemptCount: active.attemptCount,
+              leaderDiscordUserId: streamerId,
+            });
+            expect(updated?.members.map((member) => member.requestId)).toContain(selected);
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.requester.pull.reserved-source",
+      label: "Discord pull requester from a frozen reserved raid",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        await env.DB.prepare(`UPDATE raid_groups SET automatic_fill = 0,
+          leader_discord_user_id = ?, leader_type = 0 WHERE id = ?`)
+          .bind(streamerId, fixture.source.groupId)
+          .run();
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}reserved-source-pull-${sample}`,
+            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            values: [String(fixture.source.requestIds[0])],
+          }),
+          async verify(response) {
+            expect(await responseText(response)).toContain("Requester pulled up");
+            const source = await new D1MvpRepository(env.DB).getRaid(fixture.source.groupId);
+            expect(source).toMatchObject({
+              state: "canceled",
+              leaderDiscordUserId: streamerId,
+              automaticFill: false,
+            });
+            expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
+          },
+        };
+      },
+    },
+    {
+      id: "discord.requester.pull.navigate",
+      label: "Discord browse a different compatible source raid",
+      async prepare(seed, sample) {
+        const fixture = await seedPullFixture(seed);
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}navigate-pull-${sample}`,
+            customId: `raid:v3:pull_page:${fixture.destination.groupId}:${fixture.pushTarget.groupId}`,
+          }),
+          async verify(response) {
+            const body = await responseText(response);
+            expect(body).toContain(
+              `raid:v3:pull:${fixture.destination.groupId}:${fixture.pushTarget.groupId}`,
+            );
+            expect(body).toContain("@op_pull_target_1");
+            expect(body).toContain("Benchmark goal 1");
+            expect(body).toContain("Previous source");
           },
         };
       },

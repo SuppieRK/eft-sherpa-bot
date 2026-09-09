@@ -333,12 +333,13 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     }
   }
   if (operationId === "discord.board.refresh") {
+    // The active-raid fixture also refreshes its pull selector: one source lookup and one hydration.
     if (
       operationResults.some(
-        (result) => result.aggregate.statements.max > 6 || result.aggregate.rowsRead.max > 250,
+        (result) => result.aggregate.statements.max > 8 || result.aggregate.rowsRead.max > 250,
       )
     ) {
-      fail(`${operationId} exceeded its six-statement or 250-row-read limit`);
+      fail(`${operationId} exceeded its eight-statement or 250-row-read limit`);
     }
   }
   if (
