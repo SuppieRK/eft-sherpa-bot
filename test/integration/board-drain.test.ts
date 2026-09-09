@@ -1,9 +1,9 @@
-import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { afterEach, expect, it, vi } from "vitest";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
-import { synchronizeCanonicalBoard } from "../../src/infrastructure/discord/staff-board-handler";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
+import { synchronizeCanonicalBoard } from "../../src/infrastructure/discord/raid-messages";
 import { testCommunityConfig } from "../fixtures/community";
 
 const now = new Date("2096-08-15T21:00:00.000Z");

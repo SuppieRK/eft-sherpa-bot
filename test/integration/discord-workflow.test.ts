@@ -6,7 +6,7 @@ import { type CommunityConfig, validateCommunityConfig } from "../../src/config/
 import type { StaffBoardRaid } from "../../src/domain/staff-board";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
-import { synchronizeCanonicalBoard } from "../../src/infrastructure/discord/staff-board-handler";
+import { synchronizeCanonicalBoard } from "../../src/infrastructure/discord/raid-messages";
 import { testCommunityConfig } from "../fixtures/community";
 
 const callbackUrl = "https://example.com/webhooks/discord/interactions";
@@ -2526,29 +2526,59 @@ describe("Discord requester pull-up workflow", () => {
     });
   });
 
-  it("dismisses a manually deleted destination detail after a pull", async () => {
-    const { repo, destination, source } = await reviewedDestinationWithSource({
-      messageId: "deleted-pull-detail",
-    });
-    messagePatchStatuses.set("deleted-pull-detail", 404);
-    const response = await worker.fetch(
-      await signedRequest(
-        pullInteraction({
-          id: "pull-deleted-detail",
-          customId: `raid:v3:pull:${destination.id}:${source.id}`,
-          values: [String(source.members[0]?.requestId)],
-        }),
-      ),
-      testEnvironment,
-      createExecutionContext(),
-    );
-    expect(await response.json()).toMatchObject({
-      type: 4,
-      data: { content: expect.stringContaining("Requester pulled up"), flags: 64 },
-    });
-    expect((await repo.getRaid(destination.id))?.staffMessageId).toBeUndefined();
-    expect(outbound.some((request) => request.method === "POST")).toBe(false);
-  });
+  it.each(["planned", "active"] as const)(
+    "handles a deleted %s destination detail once after a pull",
+    async (state) => {
+      const { repo, destination, source } = await reviewedDestinationWithSource({
+        messageId: "deleted-pull-detail",
+      });
+      if (state === "active") {
+        await repo.startRaid({
+          groupId: destination.id,
+          leaderDiscordUserId: config.discord.streamerUserId,
+          leaderType: "streamer",
+          requestTwitchCall: true,
+          changedAt,
+        });
+      }
+      messagePatchStatuses.set("deleted-pull-detail", 404);
+      const executionContext = createExecutionContext();
+      const response = await worker.fetch(
+        await signedRequest(
+          pullInteraction({
+            id: "pull-deleted-detail",
+            customId: `raid:v3:pull:${destination.id}:${source.id}`,
+            values: [String(source.members[0]?.requestId)],
+          }),
+        ),
+        testEnvironment,
+        executionContext,
+      );
+      await waitOnExecutionContext(executionContext);
+      expect(await response.json()).toMatchObject({
+        type: 4,
+        data: { content: expect.stringContaining("Requester pulled up"), flags: 64 },
+      });
+      const current = await repo.getRaid(destination.id);
+      expect(current?.state).toBe(state);
+      expect(current?.attemptCount).toBe(state === "active" ? 1 : 0);
+      if (state === "planned") expect(current?.staffMessageId).toBeUndefined();
+      else expect(current?.staffMessageId).toMatch(/^message-/);
+      expect(
+        outbound.filter(
+          (request) => request.method === "PATCH" && request.url.endsWith("/deleted-pull-detail"),
+        ),
+      ).toHaveLength(1);
+      expect(outbound.filter((request) => request.method === "POST")).toHaveLength(
+        state === "active" ? 1 : 0,
+      );
+      expect(
+        outbound.some((request) =>
+          request.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("denies pull controls to a non-staff user", async () => {
     const { destination } = await reviewedDestinationWithSource({
