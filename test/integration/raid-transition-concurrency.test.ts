@@ -51,6 +51,7 @@ function beforeFirstBatch(action: () => Promise<unknown>): D1Database {
 }
 
 describe("concurrent staff transitions", () => {
+  // This runs 25 complete workflows; CI coverage overhead is not a latency requirement.
   it("keeps follow-ups ordered after more than twenty pull and postpone cycles", async () => {
     const { repo, source } = await setup();
     await repo.createRequest({
@@ -119,7 +120,7 @@ describe("concurrent staff transitions", () => {
       });
       expect((await repo.getRaid(tail.id))?.sortKey).toBe(tail.sortKey);
     }
-  });
+  }, 30_000);
 
   it("does not complete requests when whole-raid postponement wins against Helped", async () => {
     const { repo, source, requestId } = await setup();
