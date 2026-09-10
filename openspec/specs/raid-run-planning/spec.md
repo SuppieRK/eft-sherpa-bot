@@ -31,7 +31,7 @@ New requests SHALL enter the ordinary queue. Whole-raid postponement SHALL move 
 - **THEN** the same raid moves after earlier outstanding priority raids
 
 ### Requirement: One leader and bounded capacity
-Each started raid SHALL have one leader who is the configured streamer or eligible volunteer. Requester capacity SHALL be `min(3, map party capacity - 1)`.
+Each started raid SHALL have one leader who is the configured streamer or eligible volunteer. Requester capacity SHALL be `min(configured recipient limit, map party capacity - 1)`.
 
 The disposable D1 baseline SHALL accept only committed map identifiers and SHALL reject a stored requester capacity above `map party capacity - 1`. Standard five-person maps SHALL accept at most four requesters and three-person Icebreaker SHALL accept at most two. Membership insert and move triggers SHALL enforce the stored validated capacity.
 
@@ -542,7 +542,7 @@ Best-effort Discord and Twitch call completion SHALL update a raid only when it 
 - **THEN** it writes no raid row
 
 ### Requirement: Follow-up relationships use source-owned lifecycle
-The system SHALL store a follow-up relationship only while its source raid remains open after requester postponement. Reusing an existing relationship SHALL not update an unused timestamp. Closing a source raid SHALL delete only relationships owned by that source through an indexed source-key lookup. Closing a target SHALL NOT scan the complete follow-up table; readers SHALL ignore closed targets until their owning sources close.
+The system SHALL store a follow-up relationship only while both its source and target raids remain open. Reusing an existing relationship SHALL not update an unused timestamp. Closing a source raid SHALL delete relationships owned by that source through an indexed source-key lookup. Closing a target SHALL delete relationships to that target through an indexed target-key lookup and SHALL NOT scan the complete follow-up table. Cleanup SHALL preserve unrelated live relationships.
 
 #### Scenario: Last requester is postponed
 - **WHEN** postponement closes the source raid and creates or reuses a compatible destination
@@ -554,8 +554,8 @@ The system SHALL store a follow-up relationship only while its source raid remai
 
 #### Scenario: Source closes with unrelated history present
 - **WHEN** a source closes while many relationships belong to other sources
-- **THEN** cleanup deletes only that source's relationships through the source-key order
+- **THEN** cleanup deletes that source's relationships and any relationships targeting that source through their respective indexes, without changing unrelated relationships
 
 #### Scenario: Target closes before source
 - **WHEN** a target raid closes while its source remains open
-- **THEN** candidate queries ignore the closed target and later source closure removes the retained relationship
+- **THEN** cleanup removes its relationships immediately so later source queries do not read closed target history
