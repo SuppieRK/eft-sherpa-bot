@@ -2602,6 +2602,233 @@ describe("Discord requester pull-up workflow", () => {
   });
 });
 
+describe("Discord mutation receipt lifecycle", () => {
+  const actions = ["link", "discord", "eft", "raid"] as const;
+
+  async function mutationInteraction(action: (typeof actions)[number]) {
+    const repo = new D1MvpRepository(env.DB);
+    await repo.observeTwitchIdentity({
+      twitchLogin: "receipt_viewer",
+      twitchUserId: "receipt-twitch",
+      observedAt: changedAt,
+    });
+    const staff = {
+      channel_id: config.discord.staffChannelId,
+      member: {
+        user: { id: "volunteer", username: "Volunteer" },
+        roles: [config.discord.volunteerRoleId],
+      },
+      id: `receipt-${action}`,
+    };
+    if (action === "link") {
+      return context({
+        ...staff,
+        type: 2,
+        data: {
+          type: 1,
+          name: "link-twitch",
+          options: [{ name: "name", type: 3, value: "receipt_viewer" }],
+        },
+      });
+    }
+    if (action === "discord") {
+      return context({
+        ...staff,
+        type: 3,
+        data: {
+          custom_id: "users:v1:add_discord:receipt_viewer:receipt_viewer",
+          values: ["selected-member"],
+          resolved: {
+            users: { "selected-member": { id: "selected-member", username: "Selected" } },
+            members: { "selected-member": { roles: [] } },
+          },
+        },
+      });
+    }
+    if (action === "eft") {
+      return context({
+        ...staff,
+        type: 5,
+        data: {
+          custom_id: "users:v1:add_eft:receipt_viewer:receipt_viewer",
+          components: [
+            { type: 18, component: { type: 4, custom_id: "users:eft-name", value: "Receipt PMC" } },
+          ],
+        },
+      });
+    }
+    await createRepositoryRequest(repo, 989);
+    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0];
+    return context({
+      ...staff,
+      type: 3,
+      data: { custom_id: "board:v6:review", values: [String(raid?.id)] },
+    });
+  }
+
+  it.each(actions)("keeps the %s claim pending when completion storage fails", async (action) => {
+    const body = await mutationInteraction(action);
+    const completion = vi
+      .spyOn(D1MvpRepository.prototype, "completeDiscordMutation")
+      .mockRejectedValue(new Error("completion storage failed"));
+    const executionContext = createExecutionContext();
+    await expect(
+      worker.fetch(await signedRequest(body), testEnvironment, executionContext),
+    ).rejects.toThrow("completion storage failed");
+    await waitOnExecutionContext(executionContext);
+    const receipt = await env.DB.prepare(
+      "SELECT discord_mutation_status AS status, discord_claim_until AS claimUntil, discord_claim_token AS token FROM event_receipts WHERE platform = 0 AND delivery_id = ?",
+    )
+      .bind(body.id)
+      .first();
+    expect(receipt).toMatchObject({
+      status: 0,
+      claimUntil: expect.any(Number),
+      token: expect.any(String),
+    });
+    const mapping = await new D1MvpRepository(env.DB).findUserMappingByTwitchLogin(
+      "receipt_viewer",
+    );
+    if (action === "link") expect(mapping?.discordUserId).toBe("volunteer");
+    if (action === "discord") expect(mapping?.discordUserId).toBe("selected-member");
+    if (action === "eft") expect(mapping?.inGameName).toBe("Receipt PMC");
+    if (action === "raid") {
+      expect(
+        (await new D1MvpRepository(env.DB).getBoardSnapshot(changedAt)).ordinaryRaids[0],
+      ).toMatchObject({ automaticFill: false, staffMessageId: expect.any(String) });
+    }
+    const callsAfterMutation = outbound.length;
+    completion.mockRestore();
+    const repeatedContext = createExecutionContext();
+    const repeated = await worker.fetch(
+      await signedRequest(body),
+      testEnvironment,
+      repeatedContext,
+    );
+    await waitOnExecutionContext(repeatedContext);
+    expect(JSON.stringify(await repeated.json())).toContain("already received");
+    expect(outbound).toHaveLength(callsAfterMutation);
+    expect(
+      await env.DB.prepare(
+        "SELECT discord_mutation_status AS status, discord_claim_until AS claimUntil, discord_claim_token AS token FROM event_receipts WHERE platform = 0 AND delivery_id = ?",
+      )
+        .bind(body.id)
+        .first(),
+    ).toEqual(receipt);
+  });
+
+  it.each(actions)(
+    "releases a failed %s action and permits one successful retry",
+    async (action) => {
+      const body = await mutationInteraction(action);
+      const methods = {
+        link: "linkDiscordToTwitch",
+        discord: "completeMissingDiscordAndGet",
+        eft: "completeMissingInGameNameAndGet",
+        raid: "reviewRaid",
+      } as const;
+      vi.spyOn(D1MvpRepository.prototype, methods[action]).mockRejectedValueOnce(
+        new Error("action storage failed"),
+      );
+      const failedContext = createExecutionContext();
+      await expect(
+        worker.fetch(await signedRequest(body), testEnvironment, failedContext),
+      ).rejects.toThrow("action storage failed");
+      await waitOnExecutionContext(failedContext);
+      expect(
+        await env.DB.prepare(
+          "SELECT delivery_id FROM event_receipts WHERE platform = 0 AND delivery_id = ?",
+        )
+          .bind(body.id)
+          .first(),
+      ).toBeNull();
+
+      const retryContext = createExecutionContext();
+      const retry = await worker.fetch(await signedRequest(body), testEnvironment, retryContext);
+      await waitOnExecutionContext(retryContext);
+      expect(retry.status).toBe(200);
+      expect(
+        await env.DB.prepare(
+          "SELECT discord_mutation_status AS status, discord_claim_token AS token FROM event_receipts WHERE platform = 0 AND delivery_id = ?",
+        )
+          .bind(body.id)
+          .first(),
+      ).toEqual({ status: 1, token: null });
+      const outboundAfterRetry = outbound.length;
+      const duplicateContext = createExecutionContext();
+      const duplicate = await worker.fetch(
+        await signedRequest(body),
+        testEnvironment,
+        duplicateContext,
+      );
+      await waitOnExecutionContext(duplicateContext);
+      expect(JSON.stringify(await duplicate.json())).toContain("already received");
+      expect(outbound).toHaveLength(outboundAfterRetry);
+    },
+  );
+
+  it.each(actions)("keeps the %s result successful when tracked cleanup fails", async (action) => {
+    const body = await mutationInteraction(action);
+    const logs = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(D1MvpRepository.prototype, "maintainExpiredReceipts").mockRejectedValueOnce(
+      new Error("cleanup failed"),
+    );
+    const executionContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(body),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+    expect(response.status).toBe(200);
+    expect(
+      await env.DB.prepare(
+        "SELECT discord_mutation_status AS status FROM event_receipts WHERE platform = 0 AND delivery_id = ?",
+      )
+        .bind(body.id)
+        .first(),
+    ).toEqual({ status: 1 });
+    expect(logs.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual(
+      expect.objectContaining({
+        code: "worker_background_task",
+        task: "discord.receipt_cleanup",
+        outcome: "exception",
+      }),
+    );
+  });
+
+  it("completes a rejected staff action without applying it or repeating it", async () => {
+    const body = {
+      ...(await mutationInteraction("raid")),
+      data: { custom_id: "board:v6:review", values: ["999999"] },
+    };
+    const executionContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(body),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+    expect(await response.json()).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(
+      await env.DB.prepare(
+        "SELECT discord_mutation_status AS status FROM event_receipts WHERE platform = 0 AND delivery_id = ?",
+      )
+        .bind(body.id)
+        .first(),
+    ).toEqual({ status: 1 });
+    expect(outbound).toHaveLength(0);
+    const repeatedContext = createExecutionContext();
+    const repeated = await worker.fetch(
+      await signedRequest(body),
+      testEnvironment,
+      repeatedContext,
+    );
+    await waitOnExecutionContext(repeatedContext);
+    expect(JSON.stringify(await repeated.json())).toContain("already received");
+  });
+});
+
 describe("Discord staff insights workflow", () => {
   function staffCommand(name: "stats" | "users", staff = true) {
     return context({

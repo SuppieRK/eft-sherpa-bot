@@ -22,6 +22,7 @@ import {
   discordMessageUrl,
   updateDiscordInteractionResponse,
 } from "./messages";
+import { executeDiscordMutation } from "./mutation-lifecycle";
 import {
   deleteRaidDetailMessage,
   raidDetailMessage,
@@ -207,33 +208,6 @@ class StaffBoardHandler {
       },
     );
     return deferredEphemeral();
-  }
-
-  private async claimMutation(deliveryId: string, eventType: string): Promise<string | undefined> {
-    return this.repository.claimDiscordMutation(
-      deliveryId,
-      eventType,
-      this.dependencies.changedAt,
-      new Date(),
-    );
-  }
-
-  private async completeMutation(deliveryId: string, claimToken: string): Promise<void> {
-    await this.repository.completeDiscordMutation(deliveryId, claimToken);
-    scheduleBackground(
-      this.dependencies.context,
-      "discord.receipt_cleanup",
-      this.dependencies.environment,
-      async (environment) => {
-        await new D1MvpRepository(environment.DB).maintainExpiredReceipts(
-          this.dependencies.changedAt,
-        );
-      },
-    );
-  }
-
-  private releaseMutation(deliveryId: string, claimToken: string): Promise<void> {
-    return this.repository.releaseDiscordMutation(deliveryId, claimToken);
   }
 
   private refreshBoardLater(): void {
@@ -686,34 +660,29 @@ class StaffBoardHandler {
       this.refreshAndReconcileBoardLater();
       return ephemeral("Refreshing the sherpa board.");
     }
-    const claimToken = await this.claimMutation(
-      interaction.interactionId,
-      boardAction === undefined ? `raid:${raidAction?.action}` : "raid:review",
-    );
-    if (claimToken === undefined) {
-      return ephemeral("That action was already received.");
-    }
-    try {
-      let response: Response;
-      if (boardAction?.action === "review") {
-        response = await this.reviewRaid(interaction);
-      } else {
-        if (raidAction === undefined) {
-          await this.completeMutation(interaction.interactionId, claimToken);
-          return new Response("Unsupported component", { status: 400 });
+    const mutation = await executeDiscordMutation(
+      {
+        ...this.dependencies,
+        repository: this.repository,
+        deliveryId: interaction.interactionId,
+        eventType: boardAction === undefined ? `raid:${raidAction?.action}` : "raid:review",
+      },
+      async () => {
+        try {
+          if (boardAction?.action === "review") return await this.reviewRaid(interaction);
+          if (raidAction === undefined)
+            return new Response("Unsupported component", { status: 400 });
+          return await this.handleRaidAction(interaction, raidAction);
+        } catch (error) {
+          // A domain rejection is a handled action, not a retryable infrastructure failure.
+          if (error instanceof RepositoryInvariantError) return ephemeral(error.message);
+          throw error;
         }
-        response = await this.handleRaidAction(interaction, raidAction);
-      }
-      await this.completeMutation(interaction.interactionId, claimToken);
-      return response;
-    } catch (error) {
-      if (error instanceof RepositoryInvariantError) {
-        await this.completeMutation(interaction.interactionId, claimToken);
-        return ephemeral(error.message);
-      }
-      await this.releaseMutation(interaction.interactionId, claimToken);
-      throw error;
-    }
+      },
+    );
+    return mutation.outcome === "duplicate"
+      ? ephemeral("That action was already received.")
+      : mutation.value;
   }
 }
 

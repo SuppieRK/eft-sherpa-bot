@@ -29,11 +29,4 @@ export interface QueueQueryRepository {
   getQueueFacts(caller: QueueCaller): Promise<QueueFacts>;
 }
 
-export class QueueQueryService {
-  constructor(private readonly repository: QueueQueryRepository) {}
-
-  queue(caller: QueueCaller): Promise<QueueFacts> {
-    return this.repository.getQueueFacts(caller);
-  }
-}
 import type { GameMode } from "./game-mode";
