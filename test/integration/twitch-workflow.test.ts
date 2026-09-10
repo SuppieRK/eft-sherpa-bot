@@ -1,9 +1,10 @@
-import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorker } from "../../src";
-import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
+import { D1Metrics, instrumentD1Database } from "../../src/infrastructure/cloudflare/d1-metrics";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
+import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
 import { createTwitchEventSubSignature } from "../../src/infrastructure/twitch/eventsub";
 import { testCommunityConfig } from "../fixtures/community";
 
@@ -103,8 +104,13 @@ async function seedLegacyWaitingRequest(input: {
 describe("Twitch private-pilot commands", () => {
   it.each([
     ["!request", "use !request [mode] [map] [goal]"],
+    ["!request customs task", "modes: seasonal, pvp, pve"],
+    ["!request pve", "use !request [mode] [map] [goal]"],
+    ["!request pve somewhere task", "i do not know that map"],
+    ["!request seasonal custms task", "try !request pvp-seasonal customs [goal]"],
     [`!request pve customs ${"x".repeat(151)}`, "150 characters"],
   ])("answers %s with the expected public guidance", async (command, expectedText) => {
+    const metrics = new D1Metrics();
     const twitchFetch = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(() =>
@@ -115,12 +121,18 @@ describe("Twitch private-pilot commands", () => {
       (
         await worker.fetch(
           await eventSubRequest(command, `delivery-${command}`),
-          testEnvironment,
+          { ...testEnvironment, DB: instrumentD1Database(env.DB, metrics) },
           context,
         )
       ).status,
     ).toBe(204);
     await waitOnExecutionContext(context);
+    expect(metrics.snapshot()).toMatchObject({
+      bindingCalls: 0,
+      statements: 0,
+      rowsRead: 0,
+      rowsWritten: 0,
+    });
     const request = twitchFetch.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(requestBody(request?.body).toLowerCase()).toContain(expectedText);
     await expect(
@@ -132,6 +144,7 @@ describe("Twitch private-pilot commands", () => {
   });
 
   it("does not run receipt maintenance for invalid request guidance", async () => {
+    const metrics = new D1Metrics();
     const twitchFetch = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(Response.json({ data: [{ message_id: "sent-message", is_sent: true }] }));
@@ -143,11 +156,17 @@ describe("Twitch private-pilot commands", () => {
 
     await worker.fetch(
       await eventSubRequest("!request pve", "invalid-with-expired-receipt"),
-      testEnvironment,
+      { ...testEnvironment, DB: instrumentD1Database(env.DB, metrics) },
       context,
     );
     await waitOnExecutionContext(context);
 
+    expect(metrics.snapshot()).toMatchObject({
+      bindingCalls: 0,
+      statements: 0,
+      rowsRead: 0,
+      rowsWritten: 0,
+    });
     expect(twitchFetch).toHaveBeenCalledTimes(1);
     await expect(
       env.DB.prepare(
@@ -184,6 +203,56 @@ describe("Twitch private-pilot commands", () => {
       env.DB.prepare(`SELECT count(*) AS count FROM event_receipts`).first(),
     ).resolves.toEqual({ count: 0 });
   });
+
+  it.each([
+    ["  !REQUEST PvP Seasonal big red Saving the Mole  ", 0, "Saving the Mole"],
+    ["!request pvp-seasonal customs", 0, "General raid help"],
+    ["!request seasonal customs Keep Case", 0, "Keep Case"],
+    ["!request pvp customs PvP goal", 1, "PvP goal"],
+  ] as const)("stores prepared mode, map, and goal for %s", async (text, gameMode, objective) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ data: [{ message_id: "prepared-message", is_sent: true }] }),
+    );
+    const context = createExecutionContext();
+    const response = await worker.fetch(await eventSubRequest(text), testEnvironment, context);
+    await waitOnExecutionContext(context);
+    expect(response.status).toBe(204);
+    expect(
+      await env.DB.prepare(
+        `SELECT request.game_mode AS gameMode, request.map_id AS mapId, request.objective,
+              request.state, member.state AS memberState
+       FROM help_requests AS request JOIN raid_group_members AS member ON member.request_id = request.id`,
+      ).first(),
+    ).toEqual({ gameMode, mapId: "customs", objective, state: 1, memberState: 0 });
+  });
+
+  it.each(["ordinary chat", "!queue customs", "!position", "!stats"])(
+    "ignores %s without D1 or platform work",
+    async (text) => {
+      const calls = vi
+        .spyOn(globalThis, "fetch")
+        .mockRejectedValue(new Error("Unexpected platform request"));
+      const metrics = new D1Metrics();
+      const context = createExecutionContext();
+      const response = await worker.fetch(
+        await eventSubRequest(text),
+        {
+          ...testEnvironment,
+          DB: instrumentD1Database(env.DB, metrics),
+        },
+        context,
+      );
+      await waitOnExecutionContext(context);
+      expect(response.status).toBe(204);
+      expect(calls).not.toHaveBeenCalled();
+      expect(metrics.snapshot()).toMatchObject({
+        bindingCalls: 0,
+        statements: 0,
+        rowsRead: 0,
+        rowsWritten: 0,
+      });
+    },
+  );
 
   it("creates a Twitch-native request and keeps one active request per mode and map", async () => {
     const twitchFetch = vi
