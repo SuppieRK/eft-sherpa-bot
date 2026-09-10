@@ -5,15 +5,15 @@ import type { CommunityConfig } from "../src/config/community";
 import { TARKOV_MAPS } from "../src/domain/maps/catalog";
 import {
   D1Metrics,
-  instrumentD1Database,
   type D1StatementUsage,
+  instrumentD1Database,
 } from "../src/infrastructure/cloudflare/d1-metrics";
-import type { CloudflareEnvironment } from "../src/infrastructure/cloudflare/environment";
 import { D1MvpRepository } from "../src/infrastructure/cloudflare/d1-mvp-repository";
+import type { CloudflareEnvironment } from "../src/infrastructure/cloudflare/environment";
 import { testCommunityConfig } from "../test/fixtures/community";
 import {
-  BENCHMARK_SAMPLES,
   BENCHMARK_SAMPLE_OVERRIDE,
+  BENCHMARK_SAMPLES,
   BENCHMARK_SCALES,
   BENCHMARK_SCALES_BY_OPERATION,
   BENCHMARK_WARMUPS,
@@ -26,17 +26,17 @@ import {
   discordRequestModal,
   encodeHex,
   OPERATION_PREFIX,
-  queueRequestId,
   prepareStatisticsSeed,
   prepareUserDirectorySeed,
+  queueRequestId,
   resetOperationFixture,
   runWorkerRequest,
+  type SeedState,
   seedDatabase,
   seedExpiredReceiptBacklog,
   seedOperationMapping,
   seedOperationRaid,
   seedRemovedMembershipHistory,
-  type SeedState,
   signedDiscordRequest,
   signedTwitchRequest,
 } from "./support";
@@ -1171,9 +1171,12 @@ function operationDefinitions(input: {
         };
       },
     })),
-    {
-      id: "discord.requester.postpone.removed-history",
-      label: "Discord postpone requester with 10,000 removed source memberships",
+    ...(["removed-members", "closed-follow-ups"] as const).map<OperationDefinition>((history) => ({
+      id:
+        history === "removed-members"
+          ? "discord.requester.postpone.removed-history"
+          : "discord.requester.postpone.closed-follow-ups",
+      label: `Discord postpone requester with 10,000 ${history}`,
       async prepare(seed, sample) {
         const raid = await seedOperationRaid({
           seed,
@@ -1184,7 +1187,27 @@ function operationDefinitions(input: {
           isPriority: true,
           visibleFirst: true,
         });
-        await seedRemovedMembershipHistory(seed, 10_000, raid.groupId);
+        if (history === "removed-members") {
+          await seedRemovedMembershipHistory(seed, 10_000, raid.groupId);
+        } else {
+          const ids = Array.from(
+            { length: 10_000 },
+            (_, index) => seed.groupCount + 100_000 + index,
+          );
+          await env.DB.prepare(`INSERT INTO raid_groups
+            (id, is_priority, game_mode, sort_key, map_id, requester_capacity, created_at, updated_at)
+            SELECT value, 1, 2, value * 1000000, 'customs', 4, 10, 10 FROM json_each(?)`)
+            .bind(JSON.stringify(ids))
+            .run();
+          await env.DB.prepare(`INSERT INTO raid_group_follow_ups
+            SELECT ?, value, 10, 10 FROM json_each(?)`)
+            .bind(raid.groupId, JSON.stringify(ids))
+            .run();
+          await env.DB.prepare(`UPDATE raid_groups SET state = 2, outcome = 1, completed_at = 20
+            WHERE id >= ?`)
+            .bind(seed.groupCount + 100_000)
+            .run();
+        }
         const requestId = raid.requestIds[0] as number;
         return {
           request: await component({
@@ -1204,7 +1227,7 @@ function operationDefinitions(input: {
           },
         };
       },
-    },
+    })),
     ...([false, true] as const).map<OperationDefinition>((last) => ({
       id: last ? "discord.requester.remove.last" : "discord.requester.remove.remaining",
       label: `Discord remove requester (${last ? "last requester" : "source remains"})`,

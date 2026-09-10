@@ -2,6 +2,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorker } from "../../src";
+import { TARKOV_MAPS } from "../../src/domain/maps/catalog";
 import { D1Metrics, instrumentD1Database } from "../../src/infrastructure/cloudflare/d1-metrics";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
@@ -102,6 +103,39 @@ async function seedLegacyWaitingRequest(input: {
 }
 
 describe("Twitch private-pilot commands", () => {
+  it("delivers a bounded queue reply with every mode and map active", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (const gameMode of ["pve", "pvp", "pvp-seasonal"] as const) {
+      for (const map of TARKOV_MAPS) {
+        await repo.createRequest({
+          sourcePlatform: "twitch",
+          sourceDeliveryId: `${gameMode}-${map.id}`,
+          twitchUserId: "twitch-viewer",
+          twitchLogin: "viewer",
+          gameMode,
+          inGameName: "PMC",
+          mapId: map.id,
+          objective: "Task",
+          recipientLimit: 4,
+          observedAt: new Date(),
+        });
+      }
+    }
+    const sent: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      const message = (JSON.parse(requestBody(init?.body)) as { message: string }).message;
+      sent.push(message);
+      return Promise.resolve(Response.json({ data: [{ message_id: "bounded", is_sent: true }] }));
+    });
+    const context = createExecutionContext();
+    await worker.fetch(await eventSubRequest("!queue", "all-pairs"), testEnvironment, context);
+    await waitOnExecutionContext(context);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.length).toBeLessThanOrEqual(500);
+    expect(sent[0]).toContain("1st in the PvE queue");
+    expect(sent[0]).toMatch(/\d+ more/);
+  });
+
   it.each([
     ["!request", "use !request [mode] [map] [goal]"],
     ["!request customs task", "modes: seasonal, pvp, pve"],

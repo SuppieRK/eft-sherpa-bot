@@ -1,10 +1,10 @@
 {
   "schemaVersion": 4,
   "databaseBytes": {
-    "100": 204800,
-    "1000": 798720,
-    "10000": 6406144,
-    "100000": 65560576
+    "100": 208896,
+    "1000": 802816,
+    "10000": 6410240,
+    "100000": 65564672
   },
   "operations": {
     "100:discord.request.form.prefilled": {
@@ -14,21 +14,21 @@
       "rowsWritten": 0
     },
     "100:discord.request.submit.created": {
-      "statements": 15,
+      "statements": 16,
       "bindingCalls": 5,
-      "rowsRead": 248,
+      "rowsRead": 249,
       "rowsWritten": 28
     },
     "100:discord.request.submit.already-active": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 26,
+      "rowsRead": 27,
       "rowsWritten": 4
     },
     "100:discord.request.submit.exact-replay": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 33,
+      "rowsRead": 34,
       "rowsWritten": 4
     },
     "100:discord.queue.p10": {
@@ -50,7 +50,7 @@
       "rowsWritten": 0
     },
     "100:discord.link.self": {
-      "statements": 5,
+      "statements": 6,
       "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 6
@@ -142,19 +142,19 @@
     "100:discord.requester.pull.with-push": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 364,
+      "rowsRead": 365,
       "rowsWritten": 43
     },
     "100:discord.requester.pull.active": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 364,
+      "rowsRead": 365,
       "rowsWritten": 43
     },
     "100:discord.requester.pull.reserved-source": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 364,
+      "rowsRead": 365,
       "rowsWritten": 40
     },
     "100:discord.requester.pull.navigate": {
@@ -164,33 +164,33 @@
       "rowsWritten": 3
     },
     "100:discord.raid.result.helped": {
-      "statements": 18,
+      "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 305,
+      "rowsRead": 307,
       "rowsWritten": 29
     },
     "100:discord.requester.postpone.remaining": {
-      "statements": 28,
+      "statements": 29,
       "bindingCalls": 22,
-      "rowsRead": 271,
-      "rowsWritten": 31
+      "rowsRead": 273,
+      "rowsWritten": 32
     },
     "100:discord.requester.postpone.last": {
-      "statements": 24,
+      "statements": 25,
       "bindingCalls": 19,
-      "rowsRead": 257,
+      "rowsRead": 260,
       "rowsWritten": 29
     },
     "100:discord.requester.remove.remaining": {
-      "statements": 22,
+      "statements": 23,
       "bindingCalls": 17,
-      "rowsRead": 255,
+      "rowsRead": 257,
       "rowsWritten": 13
     },
     "100:discord.requester.remove.last": {
-      "statements": 19,
+      "statements": 20,
       "bindingCalls": 14,
-      "rowsRead": 235,
+      "rowsRead": 238,
       "rowsWritten": 15
     },
     "100:discord.stats.all-time": {
@@ -226,7 +226,7 @@
     "100:operator.status": {
       "statements": 3,
       "bindingCalls": 1,
-      "rowsRead": 63,
+      "rowsRead": 64,
       "rowsWritten": 0
     },
     "1000:discord.request.form.prefilled": {
@@ -236,21 +236,21 @@
       "rowsWritten": 0
     },
     "1000:discord.request.submit.created": {
-      "statements": 15,
+      "statements": 16,
       "bindingCalls": 5,
-      "rowsRead": 257,
+      "rowsRead": 258,
       "rowsWritten": 28
     },
     "1000:discord.request.submit.already-active": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 26,
+      "rowsRead": 27,
       "rowsWritten": 4
     },
     "1000:discord.request.submit.exact-replay": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 33,
+      "rowsRead": 34,
       "rowsWritten": 4
     },
     "1000:discord.queue.p10": {
@@ -272,7 +272,7 @@
       "rowsWritten": 0
     },
     "1000:discord.link.self": {
-      "statements": 5,
+      "statements": 6,
       "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 6
@@ -406,19 +406,19 @@
     "1000:discord.requester.pull.with-push": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 373,
+      "rowsRead": 374,
       "rowsWritten": 43
     },
     "1000:discord.requester.pull.active": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 373,
+      "rowsRead": 374,
       "rowsWritten": 43
     },
     "1000:discord.requester.pull.reserved-source": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 373,
+      "rowsRead": 374,
       "rowsWritten": 40
     },
     "1000:discord.requester.pull.navigate": {
@@ -430,43 +430,49 @@
     "1000:discord.requester.pull.removed-history": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 373,
+      "rowsRead": 374,
       "rowsWritten": 43
     },
     "1000:discord.raid.result.helped": {
-      "statements": 18,
+      "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 314,
+      "rowsRead": 316,
       "rowsWritten": 29
     },
     "1000:discord.requester.postpone.remaining": {
-      "statements": 28,
+      "statements": 29,
       "bindingCalls": 22,
-      "rowsRead": 291,
-      "rowsWritten": 31
+      "rowsRead": 293,
+      "rowsWritten": 32
     },
     "1000:discord.requester.postpone.last": {
-      "statements": 24,
+      "statements": 25,
       "bindingCalls": 19,
-      "rowsRead": 266,
+      "rowsRead": 269,
       "rowsWritten": 29
     },
     "1000:discord.requester.postpone.removed-history": {
-      "statements": 28,
+      "statements": 29,
       "bindingCalls": 22,
-      "rowsRead": 291,
-      "rowsWritten": 31
+      "rowsRead": 293,
+      "rowsWritten": 32
+    },
+    "1000:discord.requester.postpone.closed-follow-ups": {
+      "statements": 29,
+      "bindingCalls": 22,
+      "rowsRead": 293,
+      "rowsWritten": 32
     },
     "1000:discord.requester.remove.remaining": {
-      "statements": 22,
+      "statements": 23,
       "bindingCalls": 17,
-      "rowsRead": 263,
+      "rowsRead": 265,
       "rowsWritten": 13
     },
     "1000:discord.requester.remove.last": {
-      "statements": 19,
+      "statements": 20,
       "bindingCalls": 14,
-      "rowsRead": 244,
+      "rowsRead": 247,
       "rowsWritten": 15
     },
     "1000:discord.stats.all-time": {
@@ -508,13 +514,13 @@
     "1000:operator.follow-up.close-history": {
       "statements": 1,
       "bindingCalls": 1,
-      "rowsRead": 6,
+      "rowsRead": 7,
       "rowsWritten": 3
     },
     "1000:operator.status": {
       "statements": 3,
       "bindingCalls": 1,
-      "rowsRead": 63,
+      "rowsRead": 64,
       "rowsWritten": 0
     },
     "10000:discord.request.form.prefilled": {
@@ -524,21 +530,21 @@
       "rowsWritten": 0
     },
     "10000:discord.request.submit.created": {
-      "statements": 15,
+      "statements": 16,
       "bindingCalls": 5,
-      "rowsRead": 257,
+      "rowsRead": 258,
       "rowsWritten": 28
     },
     "10000:discord.request.submit.already-active": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 26,
+      "rowsRead": 27,
       "rowsWritten": 4
     },
     "10000:discord.request.submit.exact-replay": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 33,
+      "rowsRead": 34,
       "rowsWritten": 4
     },
     "10000:discord.queue.p10": {
@@ -560,7 +566,7 @@
       "rowsWritten": 0
     },
     "10000:discord.link.self": {
-      "statements": 5,
+      "statements": 6,
       "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 6
@@ -658,19 +664,19 @@
     "10000:discord.requester.pull.with-push": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 373,
+      "rowsRead": 374,
       "rowsWritten": 43
     },
     "10000:discord.requester.pull.active": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 373,
+      "rowsRead": 374,
       "rowsWritten": 43
     },
     "10000:discord.requester.pull.reserved-source": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 373,
+      "rowsRead": 374,
       "rowsWritten": 40
     },
     "10000:discord.requester.pull.navigate": {
@@ -680,33 +686,33 @@
       "rowsWritten": 3
     },
     "10000:discord.raid.result.helped": {
-      "statements": 18,
+      "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 314,
+      "rowsRead": 316,
       "rowsWritten": 29
     },
     "10000:discord.requester.postpone.remaining": {
-      "statements": 28,
+      "statements": 29,
       "bindingCalls": 22,
-      "rowsRead": 291,
-      "rowsWritten": 31
+      "rowsRead": 293,
+      "rowsWritten": 32
     },
     "10000:discord.requester.postpone.last": {
-      "statements": 24,
+      "statements": 25,
       "bindingCalls": 19,
-      "rowsRead": 266,
+      "rowsRead": 269,
       "rowsWritten": 29
     },
     "10000:discord.requester.remove.remaining": {
-      "statements": 22,
+      "statements": 23,
       "bindingCalls": 17,
-      "rowsRead": 263,
+      "rowsRead": 265,
       "rowsWritten": 13
     },
     "10000:discord.requester.remove.last": {
-      "statements": 19,
+      "statements": 20,
       "bindingCalls": 14,
-      "rowsRead": 244,
+      "rowsRead": 247,
       "rowsWritten": 15
     },
     "10000:discord.stats.all-time": {
@@ -742,7 +748,7 @@
     "10000:operator.status": {
       "statements": 3,
       "bindingCalls": 1,
-      "rowsRead": 63,
+      "rowsRead": 64,
       "rowsWritten": 0
     },
     "100000:discord.request.form.prefilled": {
@@ -752,21 +758,21 @@
       "rowsWritten": 0
     },
     "100000:discord.request.submit.created": {
-      "statements": 15,
+      "statements": 16,
       "bindingCalls": 5,
-      "rowsRead": 262,
+      "rowsRead": 263,
       "rowsWritten": 28
     },
     "100000:discord.request.submit.already-active": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 26,
+      "rowsRead": 27,
       "rowsWritten": 4
     },
     "100000:discord.request.submit.exact-replay": {
-      "statements": 10,
+      "statements": 11,
       "bindingCalls": 1,
-      "rowsRead": 33,
+      "rowsRead": 34,
       "rowsWritten": 4
     },
     "100000:discord.queue.p10": {
@@ -788,7 +794,7 @@
       "rowsWritten": 0
     },
     "100000:discord.link.self": {
-      "statements": 5,
+      "statements": 6,
       "bindingCalls": 4,
       "rowsRead": 6,
       "rowsWritten": 6
@@ -886,19 +892,19 @@
     "100000:discord.requester.pull.with-push": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 378,
+      "rowsRead": 379,
       "rowsWritten": 43
     },
     "100000:discord.requester.pull.active": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 378,
+      "rowsRead": 379,
       "rowsWritten": 43
     },
     "100000:discord.requester.pull.reserved-source": {
       "statements": 27,
       "bindingCalls": 19,
-      "rowsRead": 378,
+      "rowsRead": 379,
       "rowsWritten": 40
     },
     "100000:discord.requester.pull.navigate": {
@@ -908,33 +914,33 @@
       "rowsWritten": 3
     },
     "100000:discord.raid.result.helped": {
-      "statements": 18,
+      "statements": 19,
       "bindingCalls": 14,
-      "rowsRead": 319,
+      "rowsRead": 321,
       "rowsWritten": 29
     },
     "100000:discord.requester.postpone.remaining": {
-      "statements": 28,
+      "statements": 29,
       "bindingCalls": 22,
-      "rowsRead": 296,
-      "rowsWritten": 31
+      "rowsRead": 298,
+      "rowsWritten": 32
     },
     "100000:discord.requester.postpone.last": {
-      "statements": 24,
+      "statements": 25,
       "bindingCalls": 19,
-      "rowsRead": 271,
+      "rowsRead": 274,
       "rowsWritten": 29
     },
     "100000:discord.requester.remove.remaining": {
-      "statements": 22,
+      "statements": 23,
       "bindingCalls": 17,
-      "rowsRead": 268,
+      "rowsRead": 270,
       "rowsWritten": 13
     },
     "100000:discord.requester.remove.last": {
-      "statements": 19,
+      "statements": 20,
       "bindingCalls": 14,
-      "rowsRead": 249,
+      "rowsRead": 252,
       "rowsWritten": 15
     },
     "100000:discord.stats.all-time": {
@@ -970,12 +976,17 @@
     "100000:operator.status": {
       "statements": 3,
       "bindingCalls": 1,
-      "rowsRead": 63,
+      "rowsRead": 64,
       "rowsWritten": 0
     }
   },
   "focusedOperations": {
     "100:discord.request.submit.created": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -1053,6 +1064,11 @@
       }
     },
     "100:discord.request.submit.exact-replay": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -1669,6 +1685,11 @@
         "rowsRead": 1,
         "rowsWritten": 0
       },
+      "sql.cd0e383c": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
       "sql.b3d155be": {
         "statements": 1,
         "rowsRead": 3,
@@ -1692,7 +1713,7 @@
       "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
-        "rowsWritten": 1
+        "rowsWritten": 2
       },
       "sql.f4961de7": {
         "statements": 1,
@@ -1748,7 +1769,7 @@
     "100:operator.status": {
       "sql.7ff2d7a5": {
         "statements": 1,
-        "rowsRead": 60,
+        "rowsRead": 61,
         "rowsWritten": 0
       },
       "sql.91816b53": {
@@ -1763,6 +1784,11 @@
       }
     },
     "1000:discord.request.submit.created": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -1840,6 +1866,11 @@
       }
     },
     "1000:discord.request.submit.exact-replay": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -2546,7 +2577,7 @@
       },
       "sql.a1ce8b6c": {
         "statements": 1,
-        "rowsRead": 4,
+        "rowsRead": 5,
         "rowsWritten": 4
       },
       "sql.39620dae": {
@@ -2626,6 +2657,11 @@
         "rowsRead": 1,
         "rowsWritten": 0
       },
+      "sql.cd0e383c": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
       "sql.b3d155be": {
         "statements": 1,
         "rowsRead": 3,
@@ -2649,7 +2685,7 @@
       "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
-        "rowsWritten": 1
+        "rowsWritten": 2
       },
       "sql.f4961de7": {
         "statements": 1,
@@ -2728,6 +2764,11 @@
         "rowsRead": 1,
         "rowsWritten": 0
       },
+      "sql.cd0e383c": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
       "sql.b3d155be": {
         "statements": 1,
         "rowsRead": 3,
@@ -2751,7 +2792,114 @@
       "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
+        "rowsWritten": 2
+      },
+      "sql.f4961de7": {
+        "statements": 1,
+        "rowsRead": 0,
         "rowsWritten": 1
+      },
+      "sql.7428cadd": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.88f27a18": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.40257d93": {
+        "statements": 1,
+        "rowsRead": 6,
+        "rowsWritten": 0
+      },
+      "sql.ceb3b83b": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.261d5b0a": {
+        "statements": 1,
+        "rowsRead": 30,
+        "rowsWritten": 0
+      },
+      "sql.dc07d1c": {
+        "statements": 1,
+        "rowsRead": 165,
+        "rowsWritten": 0
+      },
+      "sql.bb3567b1": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 1
+      },
+      "sql.133cbde1": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 1
+      },
+      "sql.f3d18b1f": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      }
+    },
+    "1000:discord.requester.postpone.closed-follow-ups": {
+      "sql.a507c292": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 2
+      },
+      "sql.51a6977d": {
+        "statements": 5,
+        "rowsRead": 5,
+        "rowsWritten": 0
+      },
+      "sql.8822164a": {
+        "statements": 5,
+        "rowsRead": 34,
+        "rowsWritten": 0
+      },
+      "sql.974bc67a": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.db64ed97": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
+      "sql.cd0e383c": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
+      "sql.b3d155be": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 5
+      },
+      "sql.8fdcf18b": {
+        "statements": 1,
+        "rowsRead": 10,
+        "rowsWritten": 9
+      },
+      "sql.704deec8": {
+        "statements": 1,
+        "rowsRead": 5,
+        "rowsWritten": 3
+      },
+      "sql.9d3d612a": {
+        "statements": 1,
+        "rowsRead": 15,
+        "rowsWritten": 7
+      },
+      "sql.178f4b2f": {
+        "statements": 1,
+        "rowsRead": 3,
+        "rowsWritten": 2
       },
       "sql.f4961de7": {
         "statements": 1,
@@ -2849,14 +2997,14 @@
     "1000:operator.follow-up.close-history": {
       "sql.6d8d04c5": {
         "statements": 1,
-        "rowsRead": 6,
+        "rowsRead": 7,
         "rowsWritten": 3
       }
     },
     "1000:operator.status": {
       "sql.7ff2d7a5": {
         "statements": 1,
-        "rowsRead": 60,
+        "rowsRead": 61,
         "rowsWritten": 0
       },
       "sql.91816b53": {
@@ -2871,6 +3019,11 @@
       }
     },
     "10000:discord.request.submit.created": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -2948,6 +3101,11 @@
       }
     },
     "10000:discord.request.submit.exact-replay": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -3564,6 +3722,11 @@
         "rowsRead": 1,
         "rowsWritten": 0
       },
+      "sql.cd0e383c": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
       "sql.b3d155be": {
         "statements": 1,
         "rowsRead": 3,
@@ -3587,7 +3750,7 @@
       "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
-        "rowsWritten": 1
+        "rowsWritten": 2
       },
       "sql.f4961de7": {
         "statements": 1,
@@ -3643,7 +3806,7 @@
     "10000:operator.status": {
       "sql.7ff2d7a5": {
         "statements": 1,
-        "rowsRead": 60,
+        "rowsRead": 61,
         "rowsWritten": 0
       },
       "sql.91816b53": {
@@ -3658,6 +3821,11 @@
       }
     },
     "100000:discord.request.submit.created": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -3735,6 +3903,11 @@
       }
     },
     "100000:discord.request.submit.exact-replay": {
+      "sql.227487ff": {
+        "statements": 1,
+        "rowsRead": 1,
+        "rowsWritten": 0
+      },
       "sql.9d4a1c53": {
         "statements": 1,
         "rowsRead": 1,
@@ -4351,6 +4524,11 @@
         "rowsRead": 1,
         "rowsWritten": 0
       },
+      "sql.cd0e383c": {
+        "statements": 1,
+        "rowsRead": 2,
+        "rowsWritten": 0
+      },
       "sql.b3d155be": {
         "statements": 1,
         "rowsRead": 3,
@@ -4374,7 +4552,7 @@
       "sql.178f4b2f": {
         "statements": 1,
         "rowsRead": 3,
-        "rowsWritten": 1
+        "rowsWritten": 2
       },
       "sql.f4961de7": {
         "statements": 1,
@@ -4430,7 +4608,7 @@
     "100000:operator.status": {
       "sql.7ff2d7a5": {
         "statements": 1,
-        "rowsRead": 60,
+        "rowsRead": 61,
         "rowsWritten": 0
       },
       "sql.91816b53": {

@@ -35,7 +35,11 @@ import {
   type UserDirectoryDirection,
 } from "../../domain/staff-user-directory";
 import { normalizeTwitchLogin } from "../../domain/user-identity";
-import { D1IdentityTransitions, type UserMappingRow } from "./d1-identity-transitions";
+import {
+  D1IdentityTransitions,
+  rethrowDiscordAttachmentConflict,
+  type UserMappingRow,
+} from "./d1-identity-transitions";
 
 const PLATFORM = { discord: 0, twitch: 1 } as const;
 const LEADER_TYPE = { streamer: 0, volunteer: 1 } as const;
@@ -284,6 +288,13 @@ interface PullRequesterPlan {
 
 function epoch(date: Date): number {
   return date.getTime();
+}
+
+function rethrowStaleRaidTransition(error: unknown): never {
+  if (error instanceof Error && error.message.includes("malformed JSON")) {
+    throw new RepositoryInvariantError("That action is out of date. Review the raid again.");
+  }
+  throw error;
 }
 
 function requesterFollowUpSortKey(
@@ -705,6 +716,9 @@ export class D1MvpRepository
         ? { twitchObservationTimestamp: timestamp }
         : {}),
     });
+    if (input.discordUserId !== undefined && input.canReplaceDiscordLink !== true) {
+      statements.unshift(this.identities.discordAttachmentGuard(twitchLogin, input.discordUserId));
+    }
     const requestInsertIndex = statements.length;
     statements.push(
       this.database
@@ -859,7 +873,7 @@ export class D1MvpRepository
         )
         .bind(twitchLogin, gameModeCode(input.gameMode), input.mapId),
     );
-    const results = await this.database.batch(statements);
+    const results = await this.database.batch(statements).catch(rethrowDiscordAttachmentConflict);
     const request = (results[deliverySelectedIndex]?.results[0] ??
       results[stableSelectedIndex]?.results[0] ??
       results[loginSelectedIndex]?.results[0]) as SelectedRequestRow | undefined;
@@ -1878,30 +1892,39 @@ export class D1MvpRepository
       if (Number(result?.meta.changes ?? 0) !== 1)
         throw new RepositoryInvariantError("That attempt was already recorded.");
     } else {
-      const results = await this.database.batch([
-        this.database
-          .prepare(
-            `UPDATE raid_group_members SET state = 1, updated_at = ? WHERE group_id = ? AND state = 0`,
-          )
-          .bind(timestamp, input.groupId),
-        this.database
-          .prepare(
-            `UPDATE help_requests SET state = 2, updated_at = ?
+      const results = await this.database
+        .batch([
+          this.database
+            .prepare(
+              `SELECT json(CASE WHEN EXISTS (
+             SELECT 1 FROM raid_groups WHERE id = ? AND state = 1
+           ) THEN 'true' ELSE 'stale raid result' END)`,
+            )
+            .bind(input.groupId),
+          this.database
+            .prepare(
+              `UPDATE raid_group_members SET state = 1, updated_at = ? WHERE group_id = ? AND state = 0`,
+            )
+            .bind(timestamp, input.groupId),
+          this.database
+            .prepare(
+              `UPDATE help_requests SET state = 2, updated_at = ?
            WHERE state = 1 AND id IN (
              SELECT request_id FROM raid_group_members WHERE group_id = ? AND state = 1
            )`,
-          )
-          .bind(timestamp, input.groupId),
-        this.database
-          .prepare(
-            `UPDATE raid_groups SET state = 2, outcome = 0, staff_message_id = NULL,
+            )
+            .bind(timestamp, input.groupId),
+          this.database
+            .prepare(
+              `UPDATE raid_groups SET state = 2, outcome = 0, staff_message_id = NULL,
              last_action_key = ?, completed_at = ?, updated_at = ?
            WHERE id = ? AND state = 1`,
-          )
-          .bind(input.actionKey, timestamp, timestamp, input.groupId),
-        this.boardDirtyStatement(timestamp),
-      ]);
-      if (Number(results[2]?.meta.changes ?? 0) < 1)
+            )
+            .bind(input.actionKey, timestamp, timestamp, input.groupId),
+          this.boardDirtyStatement(timestamp),
+        ])
+        .catch(rethrowStaleRaidTransition);
+      if (Number(results[3]?.meta.changes ?? 0) < 1)
         throw new RepositoryInvariantError("That raid result was already recorded.");
     }
     const updated = await this.getRaid(input.groupId);
@@ -1967,6 +1990,7 @@ export class D1MvpRepository
 
   private async requirePostponableRequester(input: PostponeRequesterInput): Promise<{
     sourceBecomesEmpty: boolean;
+    source: StaffBoardRaid;
     window: RequesterFollowUpWindow;
   }> {
     const source = await this.getRaid(input.groupId);
@@ -1982,15 +2006,64 @@ export class D1MvpRepository
     if (window === null) {
       throw new RepositoryInvariantError("That raid is no longer available.");
     }
-    return { sourceBecomesEmpty: source.members.length === 1, window };
+    return { sourceBecomesEmpty: source.members.length === 1, source, window };
   }
 
   async postponeRequester(
     input: PostponeRequesterInput,
   ): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
-    const { sourceBecomesEmpty, window } = await this.requirePostponableRequester(input);
+    const { sourceBecomesEmpty, source, window } = await this.requirePostponableRequester(input);
     const reusableGroupId = window.reusableGroupId;
-    const followUpSortKey = requesterFollowUpSortKey(sourceBecomesEmpty, window);
+    let followUpSortKey = requesterFollowUpSortKey(sourceBecomesEmpty, window);
+    const orderingStatements: D1PreparedStatement[] = [];
+    if (
+      reusableGroupId === null &&
+      followUpSortKey === window.anchorSortKey &&
+      !(sourceBecomesEmpty && window.followUpCount === 0) &&
+      window.nextSortKey !== null
+    ) {
+      const gap = await this.database
+        .prepare(
+          `WITH RECURSIVE dense(sort_key) AS (
+           SELECT ? UNION ALL
+           SELECT raid.sort_key FROM dense JOIN raid_groups AS raid
+             ON raid.sort_key = dense.sort_key + 1
+            AND raid.is_priority = ? AND raid.state IN (0, 1)
+         )
+         SELECT max(sort_key) AS endSortKey,
+           (SELECT max(sort_key) FROM raid_groups WHERE is_priority = ? AND state IN (0, 1)) AS maximum,
+           (SELECT min(sort_key) FROM raid_groups WHERE is_priority = ? AND state IN (0, 1)
+             AND sort_key > (SELECT max(sort_key) FROM dense)) AS nextAfterDense
+         FROM dense`,
+        )
+        .bind(window.nextSortKey, window.isPriority, window.isPriority, window.isPriority)
+        .first<{ endSortKey: number; maximum: number; nextAfterDense: number | null }>();
+      if (gap === null) throw new RepositoryInvariantError("Raid ordering was not found.");
+      const { maximum, endSortKey, nextAfterDense } = gap;
+      const shift =
+        nextAfterDense === null ? SORT_STEP : Math.floor((nextAfterDense - endSortKey) / 2);
+      const lift = maximum + SORT_STEP;
+      if (!Number.isSafeInteger(lift * 2))
+        throw new RepositoryInvariantError("Raid ordering is too large.");
+      // Move only adjacent occupied keys into the next gap; do not rewrite the queue tail.
+      // Lift them above every live key first so UNIQUE remains valid in either update order.
+      orderingStatements.push(
+        this.database
+          .prepare(`SELECT json(CASE WHEN
+          (SELECT max(sort_key) FROM raid_groups WHERE is_priority = ? AND state IN (0, 1)) = ?
+          THEN 'true' ELSE 'stale raid ordering' END)`)
+          .bind(window.isPriority, maximum),
+        this.database
+          .prepare(`UPDATE raid_groups SET sort_key = sort_key + ?
+          WHERE is_priority = ? AND state IN (0, 1) AND sort_key BETWEEN ? AND ?`)
+          .bind(lift, window.isPriority, window.nextSortKey, endSortKey),
+        this.database
+          .prepare(`UPDATE raid_groups SET sort_key = sort_key - ? + ?
+          WHERE is_priority = ? AND state IN (0, 1) AND sort_key > ?`)
+          .bind(lift, shift, window.isPriority, maximum),
+      );
+      followUpSortKey = Math.floor((window.anchorSortKey + window.nextSortKey + shift) / 2);
+    }
     const timestamp = epoch(input.changedAt);
     const followUpAction = `${input.actionKey}:postponed`;
     const sourceUpdate = this.database
@@ -2024,7 +2097,25 @@ export class D1MvpRepository
        WHERE group_id = ? AND request_id = ? AND state = 0`,
       )
       .bind(timestamp, input.groupId, input.requestId);
-    const statements = [sourceUpdate];
+    const statements = [
+      this.database
+        .prepare(
+          `SELECT json(CASE WHEN EXISTS (
+           SELECT 1 FROM raid_groups WHERE id = ? AND state = ? AND current_member_count = ?
+             AND EXISTS (SELECT 1 FROM raid_group_members
+                         WHERE group_id = ? AND request_id = ? AND state = 0)
+         ) THEN 'true' ELSE 'stale requester postponement' END)`,
+        )
+        .bind(
+          input.groupId,
+          source.state === "active" ? 1 : 0,
+          source.members.length,
+          input.groupId,
+          input.requestId,
+        ),
+      ...orderingStatements,
+      sourceUpdate,
+    ];
     if (reusableGroupId === null) {
       statements.push(
         this.database
@@ -2090,10 +2181,13 @@ export class D1MvpRepository
       );
     }
     statements.push(this.boardDirtyStatement(timestamp));
-    const results = await this.database.batch(statements);
+    const results = await this.database.batch(statements).catch(rethrowStaleRaidTransition);
     if (
       results.some(
-        (result, index) => index !== followUpStatementIndex && Number(result.meta.changes) < 1,
+        (result, index) =>
+          index > orderingStatements.length &&
+          index !== followUpStatementIndex &&
+          Number(result.meta.changes) < 1,
       )
     ) {
       throw new RepositoryInvariantError("The requester was not postponed atomically.");
@@ -2128,31 +2222,42 @@ export class D1MvpRepository
     if (!source.members.some((member) => member.requestId === input.requestId))
       throw new RepositoryInvariantError("That requester is no longer in this raid.");
     const timestamp = epoch(input.changedAt);
-    await this.database.batch([
-      this.database
-        .prepare(
-          `UPDATE raid_group_members SET state = 2, updated_at = ? WHERE group_id = ? AND request_id = ? AND state = 0`,
-        )
-        .bind(timestamp, input.groupId, input.requestId),
-      this.database
-        .prepare(`UPDATE help_requests SET state = 3, updated_at = ? WHERE id = ? AND state = 1`)
-        .bind(timestamp, input.requestId),
-      this.database
-        .prepare(
-          `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
+    await this.database
+      .batch([
+        this.database
+          .prepare(
+            `SELECT json(CASE WHEN EXISTS (
+           SELECT 1 FROM raid_groups AS raid
+           JOIN raid_group_members AS member ON member.group_id = raid.id
+           WHERE raid.id = ? AND raid.state = ? AND member.request_id = ? AND member.state = 0
+         ) THEN 'true' ELSE 'stale requester removal' END)`,
+          )
+          .bind(input.groupId, source.state === "active" ? 1 : 0, input.requestId),
+        this.database
+          .prepare(
+            `UPDATE raid_group_members SET state = 2, updated_at = ? WHERE group_id = ? AND request_id = ? AND state = 0`,
+          )
+          .bind(timestamp, input.groupId, input.requestId),
+        this.database
+          .prepare(`UPDATE help_requests SET state = 3, updated_at = ? WHERE id = ? AND state = 1`)
+          .bind(timestamp, input.requestId),
+        this.database
+          .prepare(
+            `UPDATE raid_groups SET state = 3, outcome = 1, staff_message_id = NULL,
            last_action_key = ?, completed_at = ?, updated_at = ?
          WHERE id = ? AND state IN (0, 1) AND NOT EXISTS (
            SELECT 1 FROM raid_group_members WHERE group_id = ? AND state = 0
          )`,
-        )
-        .bind(input.actionKey, timestamp, timestamp, input.groupId, input.groupId),
-      this.database
-        .prepare(
-          `UPDATE raid_groups SET last_action_key = ?, updated_at = ? WHERE id = ? AND state IN (0, 1)`,
-        )
-        .bind(input.actionKey, timestamp, input.groupId),
-      this.boardDirtyStatement(timestamp),
-    ]);
+          )
+          .bind(input.actionKey, timestamp, timestamp, input.groupId, input.groupId),
+        this.database
+          .prepare(
+            `UPDATE raid_groups SET last_action_key = ?, updated_at = ? WHERE id = ? AND state IN (0, 1)`,
+          )
+          .bind(input.actionKey, timestamp, input.groupId),
+        this.boardDirtyStatement(timestamp),
+      ])
+      .catch(rethrowStaleRaidTransition);
     const updated = await this.getRaid(input.groupId);
     if (updated === undefined)
       throw new RepositoryInvariantError("The requester removal was not stored.");
@@ -2653,12 +2758,16 @@ export class D1MvpRepository
     discordDisplayName?: string;
     inGameName?: string;
     linkedAt: Date;
+    canReplaceDiscordLink?: boolean;
   }): Promise<void> {
     const twitchLogin = normalizeTwitchLogin(input.twitchLogin);
     if (twitchLogin === undefined) throw new RepositoryInvariantError("Enter a valid Twitch name.");
     return this.database
-      .batch(
-        this.identities.mappingStatements({
+      .batch([
+        ...(input.canReplaceDiscordLink === true
+          ? []
+          : [this.identities.discordAttachmentGuard(twitchLogin, input.discordUserId)]),
+        ...this.identities.mappingStatements({
           twitchLogin,
           discordUserId: input.discordUserId,
           ...(input.discordDisplayName === undefined
@@ -2667,8 +2776,9 @@ export class D1MvpRepository
           ...(input.inGameName === undefined ? {} : { inGameName: input.inGameName }),
           timestamp: epoch(input.linkedAt),
         }),
-      )
-      .then(() => undefined);
+      ])
+      .then(() => undefined)
+      .catch(rethrowDiscordAttachmentConflict);
   }
 
   async claimTwitchCommand(input: {

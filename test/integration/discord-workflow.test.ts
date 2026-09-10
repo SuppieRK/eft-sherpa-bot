@@ -2602,6 +2602,205 @@ describe("Discord requester pull-up workflow", () => {
   });
 });
 
+describe("Discord output limits", () => {
+  it("reviews maximum escaped details without exceeding embed field limits", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    for (const index of [1, 2, 3, 4]) {
+      await repo.createRequest({
+        sourcePlatform: "discord",
+        sourceDeliveryId: `max-${index}`,
+        discordUserId: `100000000000000000${index}`,
+        twitchLogin: "_".repeat(24) + index,
+        gameMode: "pve",
+        inGameName: "*".repeat(64),
+        mapId: "customs",
+        objective: "*".repeat(150),
+        notes: "*".repeat(250),
+        recipientLimit: 4,
+        observedAt: changedAt,
+      });
+    }
+    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0];
+    const execution = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "maximum-review",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          member: { user: { id: "volunteer" }, roles: [config.discord.volunteerRoleId] },
+          data: { custom_id: "board:v6:review", values: [String(raid?.id)] },
+        }),
+      ),
+      testEnvironment,
+      execution,
+    );
+    await waitOnExecutionContext(execution);
+    expect(response.status).toBe(200);
+    const message = outbound.find(
+      (item) =>
+        item.method === "POST" && JSON.stringify(item.body).includes("review this proposed raid"),
+    );
+    const embeds = message?.body.embeds as Array<{
+      title?: string;
+      description?: string;
+      fields: Array<{ name: string; value: string }>;
+    }>;
+    expect(embeds).toHaveLength(1);
+    let total = 0;
+    for (const embed of embeds) {
+      total += (embed.title?.length ?? 0) + (embed.description?.length ?? 0);
+      expect(embed.fields.length).toBeLessThanOrEqual(25);
+      for (const field of embed.fields) {
+        expect(field.value.length).toBeLessThanOrEqual(1024);
+        total += field.name.length + field.value.length;
+      }
+      const contents = embed.fields.map((field) => field.value).join("\n");
+      expect(contents.split(`Goal: ${"\\*".repeat(150)}`)).toHaveLength(5);
+      expect(contents.split(`Notes: ${"\\*".repeat(250)}`)).toHaveLength(5);
+    }
+    expect(total).toBeLessThanOrEqual(6000);
+  });
+});
+
+describe("Discord self-service identity attachment", () => {
+  it.each([
+    ["link", "unlinked"],
+    ["request", "unlinked"],
+    ["link", "same"],
+    ["request", "same"],
+    ["link", "volunteer"],
+    ["request", "volunteer"],
+    ["link", "streamer"],
+    ["request", "streamer"],
+  ])("permits %s attachment for %s", async (command, policy) => {
+    const repo = new D1MvpRepository(env.DB);
+    const userId = policy === "streamer" ? config.discord.streamerUserId : "requester";
+    if (policy !== "unlinked") {
+      await repo.linkDiscordToTwitch({
+        twitchLogin: "twitchviewer",
+        discordUserId: policy === "same" ? userId : "original",
+        linkedAt: changedAt,
+      });
+    } else {
+      await repo.observeTwitchIdentity({
+        twitchLogin: "twitchviewer",
+        twitchUserId: "stable",
+        observedAt: changedAt,
+      });
+    }
+    const body =
+      command === "request"
+        ? requestModal("allowed-attachment")
+        : context({
+            id: "allowed-attachment",
+            type: 2,
+            data: {
+              type: 1,
+              name: "link-twitch",
+              options: [
+                { name: "name", type: 3, value: "twitchviewer" },
+                { name: "eft", type: 3, value: "Helpful PMC" },
+              ],
+            },
+          });
+    const execution = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest({
+        ...body,
+        member: {
+          user: { id: userId, username: "Caller" },
+          roles: policy === "volunteer" ? [config.discord.volunteerRoleId] : [],
+        },
+      }),
+      testEnvironment,
+      execution,
+    );
+    await waitOnExecutionContext(execution);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(await repo.findUserMappingByDiscordId(userId)).toMatchObject({
+      twitchLogin: "twitchviewer",
+      inGameName: "Helpful PMC",
+    });
+  });
+
+  it("rejects public request submission that would replace another Discord member", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    await repo.linkDiscordToTwitch({
+      twitchLogin: "twitchviewer",
+      discordUserId: "original",
+      inGameName: "Original PMC",
+      linkedAt: changedAt,
+    });
+    const execution = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(requestModal("replace-via-request")),
+      testEnvironment,
+      execution,
+    );
+    await waitOnExecutionContext(execution);
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { flags: 64, content: expect.stringContaining("Ask staff") },
+    });
+    expect(await repo.findUserMappingByDiscordId("original")).toMatchObject({
+      twitchLogin: "twitchviewer",
+      inGameName: "Original PMC",
+    });
+    expect((await repo.getBoardSnapshot()).ordinaryRaids).toHaveLength(0);
+    expect(await repo.findUserMappingByDiscordId("requester")).toBeUndefined();
+  });
+
+  it("rejects public link replacement without changing either member's identity", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    await repo.linkDiscordToTwitch({
+      twitchLogin: "twitchviewer",
+      discordUserId: "original",
+      inGameName: "Original PMC",
+      linkedAt: changedAt,
+    });
+    await repo.linkDiscordToTwitch({
+      twitchLogin: "caller",
+      discordUserId: "requester",
+      inGameName: "Caller PMC",
+      linkedAt: changedAt,
+    });
+    const execution = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "replace-link",
+          type: 2,
+          data: {
+            type: 1,
+            name: "link-twitch",
+            options: [
+              { name: "name", type: 3, value: "twitchviewer" },
+              { name: "eft", type: 3, value: "Wrong PMC" },
+            ],
+          },
+        }),
+      ),
+      testEnvironment,
+      execution,
+    );
+    await waitOnExecutionContext(execution);
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { flags: 64, content: expect.stringContaining("Ask staff") },
+    });
+    expect(await repo.findUserMappingByDiscordId("original")).toMatchObject({
+      twitchLogin: "twitchviewer",
+      inGameName: "Original PMC",
+    });
+    expect(await repo.findUserMappingByDiscordId("requester")).toMatchObject({
+      twitchLogin: "caller",
+      inGameName: "Caller PMC",
+    });
+  });
+});
+
 describe("Discord mutation receipt lifecycle", () => {
   const actions = ["link", "discord", "eft", "raid"] as const;
 
