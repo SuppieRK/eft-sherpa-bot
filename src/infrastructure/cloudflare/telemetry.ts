@@ -8,6 +8,21 @@ export interface TrackedExecutionContext extends ExecutionContext {
   waitUntilTask(name: string, task: (environment: CloudflareEnvironment) => Promise<unknown>): void;
 }
 
+export function scheduleBackground(
+  context: ExecutionContext | TrackedExecutionContext | undefined,
+  name: string,
+  environment: CloudflareEnvironment,
+  task: (measured: CloudflareEnvironment) => Promise<unknown>,
+): void {
+  if (context === undefined) return;
+  const tracked = context as Partial<TrackedExecutionContext>;
+  if (typeof tracked.waitUntilTask === "function") {
+    tracked.waitUntilTask(name, task);
+  } else {
+    context.waitUntil(task(environment));
+  }
+}
+
 function requestClass(request: Request): { route: string; requestClass: string } {
   const { pathname } = new URL(request.url);
   if (request.method === "GET" && pathname === "/health") {

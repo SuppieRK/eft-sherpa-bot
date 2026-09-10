@@ -1,15 +1,15 @@
 import {
-  communityConfigFromEnvironment,
   type CommunityConfig,
+  communityConfigFromEnvironment,
   validateCommunityConfig,
 } from "./config/community";
-import { QueueQueryService } from "./domain/queue-queries";
-import { StaffStatisticsQueryService } from "./domain/staff-statistics";
 import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
-import { parseTwitchRequestInput } from "./domain/twitch-request";
-import { isStaffBoardMember } from "./domain/staff-board";
+import { QueueQueryService } from "./domain/queue-queries";
 import { StableTwitchIdentityConflictError } from "./domain/sherpa-repository";
+import { isStaffBoardMember } from "./domain/staff-board";
+import { StaffStatisticsQueryService } from "./domain/staff-statistics";
+import { parseTwitchRequestInput } from "./domain/twitch-request";
 import {
   D1MvpRepository,
   type TwitchReplyDeliveryClaim,
@@ -27,11 +27,11 @@ import {
   DISCORD_INTERACTION_RESPONSE_MODAL,
   DISCORD_INTERACTION_RESPONSE_PONG,
   DISCORD_INTERACTION_RESPONSE_UPDATE_MESSAGE,
-  parseDiscordInteraction,
-  readDiscordInteractionTimestamp,
   type DiscordApplicationCommandInteraction,
   type DiscordMessageComponentInteraction,
   type ParsedDiscordInteraction,
+  parseDiscordInteraction,
+  readDiscordInteractionTimestamp,
   verifyDiscordInteractionRequest,
 } from "./infrastructure/discord/interactions";
 import {
@@ -40,6 +40,7 @@ import {
   parseEftNameOption,
   parseTwitchNameOption,
 } from "./infrastructure/discord/link-twitch";
+import { synchronizeCanonicalBoard } from "./infrastructure/discord/raid-messages";
 import {
   buildDiscordRequestCreatedReply,
   buildDiscordRequestModal,
@@ -50,15 +51,14 @@ import {
   validateDiscordRequestModal,
 } from "./infrastructure/discord/request-form";
 import {
-  handleDiscordStaffBoardComponent,
-  openDiscordStaffBoard,
-  synchronizeCanonicalBoard,
-} from "./infrastructure/discord/staff-board-handler";
-import {
   DISCORD_STAFF_BOARD_COMMAND,
   parseRaidMessageAction,
   parseStaffBoardAction,
 } from "./infrastructure/discord/staff-board";
+import {
+  handleDiscordStaffBoardComponent,
+  openDiscordStaffBoard,
+} from "./infrastructure/discord/staff-board-handler";
 import {
   buildEftNameModal,
   DISCORD_STAFF_STATS_COMMAND,

@@ -1,9 +1,11 @@
-import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { afterEach, expect, it, vi } from "vitest";
-import { observeWorkerRequest } from "../../src/infrastructure/cloudflare/telemetry";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
-import { scheduleBackground } from "../../src/infrastructure/discord/staff-board-handler";
+import {
+  observeWorkerRequest,
+  scheduleBackground,
+} from "../../src/infrastructure/cloudflare/telemetry";
 
 afterEach(() => vi.restoreAllMocks());
 
