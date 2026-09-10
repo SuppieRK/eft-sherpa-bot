@@ -1,5 +1,5 @@
-import { resolveTarkovMap } from "../../domain/maps/catalog";
 import { formatModeMap } from "../../domain/game-mode";
+import { resolveTarkovMap } from "../../domain/maps/catalog";
 import type {
   PullRequesterSource,
   StaffBoardRaid,
@@ -169,7 +169,7 @@ function raidStatus(raid: StaffBoardRaid, attemptLimit: number): string {
 }
 
 function raidRequesterFields(raid: StaffBoardRaid): EmbedField[] {
-  const fields: EmbedField[] = raid.members.map((member) => {
+  const fields: EmbedField[] = raid.members.flatMap((member) => {
     const identity = [
       `Twitch: @${escapeMarkdown(member.twitchLogin)}`,
       ...(member.discordUserId === undefined ? [] : [`Discord: <@${member.discordUserId}>`]),
@@ -177,7 +177,14 @@ function raidRequesterFields(raid: StaffBoardRaid): EmbedField[] {
       `Goal: ${escapeMarkdown(member.objective)}`,
       ...(member.notes === undefined ? [] : [`Notes: ${escapeMarkdown(member.notes)}`]),
     ];
-    return { name: `Requester ${member.position}`, value: identity.join("\n"), inline: false };
+    const name = `Requester ${member.position}`;
+    const value = identity.join("\n");
+    if (value.length <= 1024) return [{ name, value, inline: false }];
+    const notes = identity.pop();
+    return [
+      { name, value: identity.join("\n"), inline: false },
+      { name: `${name} notes`, value: notes ?? "No notes", inline: false },
+    ];
   });
   if (fields.length === 0) {
     fields.push({ name: "No current requesters", value: "This raid will not run.", inline: false });

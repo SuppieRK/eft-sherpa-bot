@@ -1,5 +1,5 @@
-import type { QueueFacts } from "../domain/queue-queries";
 import { formatModeMap, gameModeLabel } from "../domain/game-mode";
+import type { QueueFacts } from "../domain/queue-queries";
 
 function plural(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
@@ -41,5 +41,17 @@ export function renderQueueFacts(facts: QueueFacts, platform: "discord" | "twitc
     facts.caller.queuePosition.kind === "more_than"
       ? `${raidName}: More than ${facts.caller.queuePosition.requestsAhead} requests ahead in this mode`
       : `${raidName}: ${ordinal(facts.caller.queuePosition.ordinal)} in the ${gameModeLabel(facts.caller.gameMode)} queue`;
-  return `${position}, ${ahead}.${other}`;
+  const primary = `${position}, ${ahead}.`;
+  if (platform === "discord" || primary.length + other.length <= 500) return primary + other;
+  let additional = "";
+  let included = 0;
+  const names = facts.caller.otherActiveModeMapNames;
+  for (const name of names) {
+    const candidate = additional + (included === 0 ? " Also queued: " : ", ") + name;
+    const remaining = names.length - included - 1;
+    if (primary.length + candidate.length + `; ${remaining} more.`.length > 500) break;
+    additional = candidate;
+    included++;
+  }
+  return `${primary}${additional}; ${names.length - included} more.`;
 }

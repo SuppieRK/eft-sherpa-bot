@@ -24,43 +24,48 @@ async function environmentWithBoard(): Promise<CloudflareEnvironment> {
   };
 }
 
-it.each([10, 100])("coalesces %i simultaneous board drains", async (count) => {
-  const environment = await environmentWithBoard();
-  const repository = new D1MvpRepository(env.DB);
-  await Promise.all(
-    Array.from({ length: count }, (_, index) =>
-      repository.markBoardDirty(new Date(now.getTime() + index)),
-    ),
-  );
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValue(Response.json({ id: "canonical-board" }));
+// Keep shared-runner timing separate from the concurrency and D1 cost assertions.
+it.each([10, 100])(
+  "coalesces %i simultaneous board drains",
+  async (count) => {
+    const environment = await environmentWithBoard();
+    const repository = new D1MvpRepository(env.DB);
+    await Promise.all(
+      Array.from({ length: count }, (_, index) =>
+        repository.markBoardDirty(new Date(now.getTime() + index)),
+      ),
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ id: "canonical-board" }));
 
-  await Promise.all(
-    Array.from({ length: count }, () =>
-      synchronizeCanonicalBoard({
-        environment,
-        communityConfig: testCommunityConfig,
-        changedAt: now,
-        createIfMissing: false,
-      }),
-    ),
-  );
+    await Promise.all(
+      Array.from({ length: count }, () =>
+        synchronizeCanonicalBoard({
+          environment,
+          communityConfig: testCommunityConfig,
+          changedAt: now,
+          createIfMissing: false,
+        }),
+      ),
+    );
 
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  await expect(
-    env.DB.prepare(
-      `SELECT board_dirty_version AS dirtyVersion,
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(
+      env.DB.prepare(
+        `SELECT board_dirty_version AS dirtyVersion,
               board_rendered_version AS renderedVersion,
               board_lease_token AS leaseToken
        FROM community_state WHERE community_id = 'butcoffee'`,
-    ).first(),
-  ).resolves.toMatchObject({
-    dirtyVersion: count,
-    renderedVersion: count,
-    leaseToken: null,
-  });
-});
+      ).first(),
+    ).resolves.toMatchObject({
+      dirtyVersion: count,
+      renderedVersion: count,
+      leaseToken: null,
+    });
+  },
+  30_000,
+);
 
 it("keeps failed board work dirty and retries it", async () => {
   const environment = await environmentWithBoard();

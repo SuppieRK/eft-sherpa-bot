@@ -1,4 +1,5 @@
 import {
+  DiscordIdentityConflictError,
   RepositoryInvariantError,
   StableTwitchIdentityConflictError,
 } from "../../domain/sherpa-repository";
@@ -61,6 +62,18 @@ function resolveObservation(
 
 export class D1IdentityTransitions {
   constructor(private readonly database: D1Database) {}
+
+  discordAttachmentGuard(twitchLogin: string, discordUserId: string): D1PreparedStatement {
+    // An invalid JSON path aborts the batch without writing a guard row.
+    return this.database
+      .prepare(
+        `SELECT json_extract('{}', CASE WHEN EXISTS (
+         SELECT 1 FROM user_mappings WHERE twitch_login = ?
+           AND discord_user_id IS NOT NULL AND discord_user_id <> ?
+       ) THEN 'discord_link_conflict' ELSE '$' END)`,
+      )
+      .bind(twitchLogin, discordUserId);
+  }
 
   async assertNoStableIdentityCollision(twitchLogin: string, twitchUserId: string): Promise<void> {
     const target = await this.database
@@ -338,4 +351,13 @@ export class D1IdentityTransitions {
       }),
     );
   }
+}
+
+export function rethrowDiscordAttachmentConflict(error: unknown): never {
+  if (error instanceof Error && error.message.includes("discord_link_conflict")) {
+    throw new DiscordIdentityConflictError(
+      "That Twitch name is linked to another Discord member. Ask staff to change the link.",
+    );
+  }
+  throw error;
 }

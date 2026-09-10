@@ -5,7 +5,10 @@ import {
 } from "./config/community";
 import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
-import { StableTwitchIdentityConflictError } from "./domain/sherpa-repository";
+import {
+  DiscordIdentityConflictError,
+  StableTwitchIdentityConflictError,
+} from "./domain/sherpa-repository";
 import { isStaffBoardMember } from "./domain/staff-board";
 import {
   D1MvpRepository,
@@ -204,15 +207,13 @@ async function handleDiscordLinkCommand(
   }
   const selectsDiscordMember = interaction.options.discord !== undefined;
   const targetDiscordUserId = interaction.options.discord ?? interaction.discordUserId;
-  if (
-    selectsDiscordMember &&
-    !isStaffBoardMember({
-      discordUserId: interaction.discordUserId,
-      discordRoleIds: interaction.discordRoleIds,
-      streamerDiscordUserId: communityConfig.discord.streamerUserId,
-      volunteerRoleId: communityConfig.discord.volunteerRoleId,
-    })
-  ) {
+  const canReplaceDiscordLink = isStaffBoardMember({
+    discordUserId: interaction.discordUserId,
+    discordRoleIds: interaction.discordRoleIds,
+    streamerDiscordUserId: communityConfig.discord.streamerUserId,
+    volunteerRoleId: communityConfig.discord.volunteerRoleId,
+  });
+  if (selectsDiscordMember && !canReplaceDiscordLink) {
     return discordEphemeralMessage(
       "Only the streamer or a volunteer sherpa can use the Discord member option.",
     );
@@ -229,6 +230,7 @@ async function handleDiscordLinkCommand(
           ? interaction.discordDisplayName
           : interaction.resolvedUserDisplayNames[targetDiscordUserId];
       await repository.linkDiscordToTwitch({
+        canReplaceDiscordLink,
         twitchLogin,
         discordUserId: targetDiscordUserId,
         ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
@@ -432,6 +434,12 @@ async function handleDiscordRequestModal(
   }
   const created = await repository.createRequest({
     sourcePlatform: "discord",
+    canReplaceDiscordLink: isStaffBoardMember({
+      discordUserId: interaction.discordUserId,
+      discordRoleIds: interaction.discordRoleIds,
+      streamerDiscordUserId: communityConfig.discord.streamerUserId,
+      volunteerRoleId: communityConfig.discord.volunteerRoleId,
+    }),
     sourceDeliveryId: interaction.interactionId,
     discordUserId: interaction.discordUserId,
     ...(interaction.discordDisplayName === undefined
@@ -514,12 +522,19 @@ async function handleDiscordInteraction(
     repository: new D1MvpRepository(environment.DB),
   };
   if (interaction.type === "application_command") {
-    return handleDiscordApplicationCommand(interaction, dependencies);
+    return handleDiscordApplicationCommand(interaction, dependencies).catch(
+      discordIdentityErrorResponse,
+    );
   }
   if (interaction.type === "message_component") {
     return handleDiscordMessageComponent(interaction, dependencies);
   }
-  return handleDiscordModalSubmit(interaction, dependencies);
+  return handleDiscordModalSubmit(interaction, dependencies).catch(discordIdentityErrorResponse);
+}
+
+function discordIdentityErrorResponse(error: unknown): Response {
+  if (error instanceof DiscordIdentityConflictError) return discordEphemeralMessage(error.message);
+  throw error;
 }
 
 async function buildTwitchPublicReply(

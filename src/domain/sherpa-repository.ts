@@ -22,6 +22,7 @@ export interface CreateHelpRequest {
   notes?: string;
   recipientLimit: number;
   observedAt: Date;
+  canReplaceDiscordLink?: boolean;
 }
 
 export type CreateHelpRequestOutcome =
@@ -44,4 +45,9 @@ export class RepositoryInvariantError extends Error {
 export class StableTwitchIdentityConflictError extends RepositoryInvariantError {
   override readonly name = "StableTwitchIdentityConflictError";
 }
+
+export class DiscordIdentityConflictError extends RepositoryInvariantError {
+  override readonly name = "DiscordIdentityConflictError";
+}
+
 import type { GameMode } from "./game-mode";
