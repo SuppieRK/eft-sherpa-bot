@@ -2009,15 +2009,14 @@ export class D1MvpRepository
     return { sourceBecomesEmpty: source.members.length === 1, source, window };
   }
 
-  async postponeRequester(
-    input: PostponeRequesterInput,
-  ): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
-    const { sourceBecomesEmpty, source, window } = await this.requirePostponableRequester(input);
-    const reusableGroupId = window.reusableGroupId;
+  private async requesterFollowUpOrdering(
+    sourceBecomesEmpty: boolean,
+    window: RequesterFollowUpWindow,
+  ): Promise<{ followUpSortKey: number; orderingStatements: D1PreparedStatement[] }> {
     let followUpSortKey = requesterFollowUpSortKey(sourceBecomesEmpty, window);
     const orderingStatements: D1PreparedStatement[] = [];
     if (
-      reusableGroupId === null &&
+      window.reusableGroupId === null &&
       followUpSortKey === window.anchorSortKey &&
       !(sourceBecomesEmpty && window.followUpCount === 0) &&
       window.nextSortKey !== null
@@ -2064,6 +2063,18 @@ export class D1MvpRepository
       );
       followUpSortKey = Math.floor((window.anchorSortKey + window.nextSortKey + shift) / 2);
     }
+    return { followUpSortKey, orderingStatements };
+  }
+
+  async postponeRequester(
+    input: PostponeRequesterInput,
+  ): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
+    const { sourceBecomesEmpty, source, window } = await this.requirePostponableRequester(input);
+    const reusableGroupId = window.reusableGroupId;
+    const { followUpSortKey, orderingStatements } = await this.requesterFollowUpOrdering(
+      sourceBecomesEmpty,
+      window,
+    );
     const timestamp = epoch(input.changedAt);
     const followUpAction = `${input.actionKey}:postponed`;
     const sourceUpdate = this.database
