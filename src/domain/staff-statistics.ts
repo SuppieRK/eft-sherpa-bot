@@ -17,11 +17,3 @@ export interface StaffStatistics {
 export interface StaffStatisticsRepository {
   getStaffStatistics(): Promise<StaffStatistics>;
 }
-
-export class StaffStatisticsQueryService {
-  constructor(private readonly repository: StaffStatisticsRepository) {}
-
-  getAllTime(): Promise<StaffStatistics> {
-    return this.repository.getStaffStatistics();
-  }
-}

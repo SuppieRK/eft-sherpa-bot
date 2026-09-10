@@ -5,10 +5,8 @@ import {
 } from "./config/community";
 import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
-import { QueueQueryService } from "./domain/queue-queries";
 import { StableTwitchIdentityConflictError } from "./domain/sherpa-repository";
 import { isStaffBoardMember } from "./domain/staff-board";
-import { StaffStatisticsQueryService } from "./domain/staff-statistics";
 import { parseTwitchRequestInput } from "./domain/twitch-request";
 import {
   D1MvpRepository,
@@ -40,6 +38,7 @@ import {
   parseEftNameOption,
   parseTwitchNameOption,
 } from "./infrastructure/discord/link-twitch";
+import { executeDiscordMutation } from "./infrastructure/discord/mutation-lifecycle";
 import { synchronizeCanonicalBoard } from "./infrastructure/discord/raid-messages";
 import {
   buildDiscordRequestCreatedReply,
@@ -156,38 +155,6 @@ interface DiscordInteractionDependencies {
   repository: D1MvpRepository;
 }
 
-async function claimDiscordMutation(
-  dependencies: DiscordInteractionDependencies,
-  deliveryId: string,
-  eventType: string,
-): Promise<string | undefined> {
-  return dependencies.repository.claimDiscordMutation(
-    deliveryId,
-    eventType,
-    dependencies.changedAt,
-    new Date(),
-  );
-}
-
-async function completeDiscordMutation(
-  dependencies: DiscordInteractionDependencies,
-  deliveryId: string,
-  claimToken: string,
-): Promise<void> {
-  await dependencies.repository.completeDiscordMutation(deliveryId, claimToken);
-  dependencies.context.waitUntilTask("discord.receipt_cleanup", async (environment) => {
-    await new D1MvpRepository(environment.DB).maintainExpiredReceipts(dependencies.changedAt);
-  });
-}
-
-async function releaseDiscordMutation(
-  dependencies: DiscordInteractionDependencies,
-  deliveryId: string,
-  claimToken: string,
-): Promise<void> {
-  await dependencies.repository.releaseDiscordMutation(deliveryId, claimToken);
-}
-
 async function handleStaffInsightsCommand(
   interaction: DiscordApplicationCommandInteraction,
   dependencies: DiscordInteractionDependencies,
@@ -195,8 +162,7 @@ async function handleStaffInsightsCommand(
   const { communityConfig, repository } = dependencies;
   if (!hasStaffAccess(interaction, communityConfig)) return staffDenied();
   if (interaction.commandName === DISCORD_STAFF_STATS_COMMAND) {
-    const service = new StaffStatisticsQueryService(repository);
-    return discordEphemeralInsights(renderStaffStatistics(await service.getAllTime()));
+    return discordEphemeralInsights(renderStaffStatistics(await repository.getStaffStatistics()));
   }
   return discordEphemeralInsights(
     renderUserDirectory(await repository.getUserDirectoryPage({ direction: "first" })),
@@ -252,33 +218,31 @@ async function handleDiscordLinkCommand(
       "Only the streamer or a volunteer sherpa can use the Discord member option.",
     );
   }
-  const claimToken = await claimDiscordMutation(
-    dependencies,
-    interaction.interactionId,
-    "identity:link-twitch",
+  const mutation = await executeDiscordMutation(
+    {
+      ...dependencies,
+      deliveryId: interaction.interactionId,
+      eventType: "identity:link-twitch",
+    },
+    async () => {
+      const discordDisplayName =
+        targetDiscordUserId === interaction.discordUserId
+          ? interaction.discordDisplayName
+          : interaction.resolvedUserDisplayNames[targetDiscordUserId];
+      await repository.linkDiscordToTwitch({
+        twitchLogin,
+        discordUserId: targetDiscordUserId,
+        ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
+        ...(inGameName === undefined ? {} : { inGameName }),
+        linkedAt: changedAt,
+      });
+    },
   );
-  if (claimToken === undefined)
-    return discordEphemeralMessage("That link command was already received.");
-  try {
-    const discordDisplayName =
-      targetDiscordUserId === interaction.discordUserId
-        ? interaction.discordDisplayName
-        : interaction.resolvedUserDisplayNames[targetDiscordUserId];
-    await repository.linkDiscordToTwitch({
-      twitchLogin,
-      discordUserId: targetDiscordUserId,
-      ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
-      ...(inGameName === undefined ? {} : { inGameName }),
-      linkedAt: changedAt,
-    });
-    await completeDiscordMutation(dependencies, interaction.interactionId, claimToken);
-    return discordEphemeralMessage(
-      buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
-    );
-  } catch (error) {
-    await releaseDiscordMutation(dependencies, interaction.interactionId, claimToken);
-    throw error;
-  }
+  return discordEphemeralMessage(
+    mutation.outcome === "duplicate"
+      ? "That link command was already received."
+      : buildTwitchLinkedReply(twitchLogin, targetDiscordUserId, inGameName),
+  );
 }
 
 async function handleDiscordQueueCommand(
@@ -286,10 +250,9 @@ async function handleDiscordQueueCommand(
   dependencies: DiscordInteractionDependencies,
 ): Promise<Response> {
   const { repository } = dependencies;
-  const queryService = new QueueQueryService(repository);
   return discordEphemeralMessage(
     renderQueueFacts(
-      await queryService.queue({ platform: "discord", userId: interaction.discordUserId }),
+      await repository.getQueueFacts({ platform: "discord", userId: interaction.discordUserId }),
       "discord",
     ),
   );
@@ -343,28 +306,26 @@ async function completeMissingDiscord(
   if (!hasResolvedMember || discordUserId === undefined) {
     return discordEphemeralMessage("Select a current member of this Discord server.");
   }
-  const claimToken = await claimDiscordMutation(
-    dependencies,
-    interaction.interactionId,
-    "identity:complete-discord",
+  const mutation = await executeDiscordMutation(
+    {
+      ...dependencies,
+      deliveryId: interaction.interactionId,
+      eventType: "identity:complete-discord",
+    },
+    async () => {
+      const discordDisplayName = interaction.resolvedUserDisplayNames[discordUserId];
+      return repository.completeMissingDiscordAndGet({
+        twitchLogin: action.twitchLogin,
+        discordUserId,
+        ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
+        changedAt,
+      });
+    },
   );
-  if (claimToken === undefined) {
+  if (mutation.outcome === "duplicate") {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
   }
-  try {
-    const discordDisplayName = interaction.resolvedUserDisplayNames[discordUserId];
-    const result = await repository.completeMissingDiscordAndGet({
-      twitchLogin: action.twitchLogin,
-      discordUserId,
-      ...(discordDisplayName === undefined ? {} : { discordDisplayName }),
-      changedAt,
-    });
-    await completeDiscordMutation(dependencies, interaction.interactionId, claimToken);
-    return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
-  } catch (error) {
-    await releaseDiscordMutation(dependencies, interaction.interactionId, claimToken);
-    throw error;
-  }
+  return updatedUserDetail(mutation.value.outcome, mutation.value.entry, action.pageFirst);
 }
 
 async function handleUserDirectoryComponent(
@@ -435,26 +396,23 @@ async function handleUserDirectoryEftModal(
   if (inGameName === undefined || inGameName.length < 1 || inGameName.length > 64) {
     return discordEphemeralMessage("Enter an Escape from Tarkov name from 1 to 64 characters.");
   }
-  const claimToken = await claimDiscordMutation(
-    dependencies,
-    interaction.interactionId,
-    "identity:complete-eft",
+  const mutation = await executeDiscordMutation(
+    {
+      ...dependencies,
+      deliveryId: interaction.interactionId,
+      eventType: "identity:complete-eft",
+    },
+    () =>
+      repository.completeMissingInGameNameAndGet({
+        twitchLogin: action.twitchLogin,
+        inGameName,
+        changedAt,
+      }),
   );
-  if (claimToken === undefined) {
+  if (mutation.outcome === "duplicate") {
     return discordEphemeralMessage("That user update was already received. Open `/users` again.");
   }
-  const result = await repository
-    .completeMissingInGameNameAndGet({
-      twitchLogin: action.twitchLogin,
-      inGameName,
-      changedAt,
-    })
-    .catch(async (error: unknown) => {
-      await releaseDiscordMutation(dependencies, interaction.interactionId, claimToken);
-      throw error;
-    });
-  await completeDiscordMutation(dependencies, interaction.interactionId, claimToken);
-  return updatedUserDetail(result.outcome, result.entry, action.pageFirst);
+  return updatedUserDetail(mutation.value.outcome, mutation.value.entry, action.pageFirst);
 }
 
 async function handleDiscordRequestModal(
@@ -605,10 +563,9 @@ async function buildTwitchPublicReply(
     twitchLogin,
     observedAt,
   });
-  const queryService = new QueueQueryService(repository);
   return {
     replyText: renderQueueFacts(
-      await queryService.queue({ platform: "twitch", userId: twitchUserId }),
+      await repository.getQueueFacts({ platform: "twitch", userId: twitchUserId }),
       "twitch",
     ),
     boardChanged: false,
