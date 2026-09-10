@@ -7,7 +7,6 @@ import { formatModeMap, parseGameMode } from "./domain/game-mode";
 import { resolveTarkovMap } from "./domain/maps/catalog";
 import { StableTwitchIdentityConflictError } from "./domain/sherpa-repository";
 import { isStaffBoardMember } from "./domain/staff-board";
-import { parseTwitchRequestInput } from "./domain/twitch-request";
 import {
   D1MvpRepository,
   type TwitchReplyDeliveryClaim,
@@ -75,8 +74,8 @@ import {
   verifyTwitchEventSubRequest,
 } from "./infrastructure/twitch/eventsub";
 import {
-  parseTwitchPublicCommand,
-  type TwitchPublicCommand,
+  type PreparedTwitchCommand,
+  prepareTwitchPublicCommand,
 } from "./infrastructure/twitch/public-commands";
 import {
   sendTwitchChatMessage,
@@ -524,7 +523,7 @@ async function handleDiscordInteraction(
 }
 
 async function buildTwitchPublicReply(
-  command: TwitchPublicCommand,
+  command: PreparedTwitchCommand,
   twitchUserId: string,
   twitchLogin: string,
   deliveryId: string,
@@ -533,23 +532,19 @@ async function buildTwitchPublicReply(
   communityConfig: CommunityConfig,
 ): Promise<{ replyText: string; boardChanged: boolean }> {
   if (command.name === "request") {
-    const parsed = parseTwitchRequestInput(command.input);
-    if (!parsed.valid) {
-      return { replyText: invalidTwitchRequestReply(parsed), boardChanged: false };
-    }
     const result = await repository.createRequest({
       sourcePlatform: "twitch",
       sourceDeliveryId: deliveryId,
       twitchUserId,
       twitchLogin,
-      gameMode: parsed.gameMode,
+      gameMode: command.gameMode,
       inGameName: twitchLogin,
-      mapId: parsed.map.id,
-      objective: parsed.goal,
+      mapId: command.map.id,
+      objective: command.goal,
       recipientLimit: communityConfig.policies.recipientLimit,
       observedAt,
     });
-    const raidName = formatModeMap(parsed.gameMode, parsed.map.name);
+    const raidName = formatModeMap(command.gameMode, command.map.name);
     return {
       replyText:
         result.outcome === "already_active"
@@ -570,24 +565,6 @@ async function buildTwitchPublicReply(
     ),
     boardChanged: false,
   };
-}
-
-type InvalidTwitchRequest = Extract<ReturnType<typeof parseTwitchRequestInput>, { valid: false }>;
-
-function invalidTwitchRequestReply(parsed: InvalidTwitchRequest): string {
-  if (parsed.reason === "missing_mode" || parsed.reason === "unknown_mode") {
-    return "Use !request [mode] [map] [goal]. Modes: seasonal, pvp, pve.";
-  }
-  if (parsed.reason === "missing_map") {
-    return "Use !request [mode] [map] [goal].";
-  }
-  if (parsed.reason === "goal_too_long") {
-    return "Keep the goal to 150 characters or fewer.";
-  }
-  if (parsed.suggestion === undefined) {
-    return "I do not know that map. Use !request [mode] [map] [goal].";
-  }
-  return `Did you mean ${parsed.suggestion.name}? Try !request ${parsed.gameMode ?? "pve"} ${parsed.suggestion.id} [goal].`;
 }
 
 type VerifiedEventSubHeaders = Extract<
@@ -746,7 +723,7 @@ async function handleExistingTwitchReceipt(input: {
 }
 
 async function buildClaimedTwitchCommandResult(input: {
-  command: TwitchPublicCommand;
+  command: PreparedTwitchCommand;
   chatterUserId: string;
   chatterUserLogin: string;
   deliveryId: string;
@@ -808,24 +785,22 @@ async function handleTwitchEventSub(
   );
   if (acceptedEvent instanceof Response) return acceptedEvent;
   const event = acceptedEvent;
-  const command = parseTwitchPublicCommand(event.text);
-  if (command === undefined) {
+  const prepared = prepareTwitchPublicCommand(event.text);
+  if (prepared.kind === "ignored") {
     return new Response(null, { status: 204 });
   }
-  if (command.name === "request") {
-    const parsedRequest = parseTwitchRequestInput(command.input);
-    if (!parsedRequest.valid) {
-      context.waitUntilTask("twitch.invalid_request_guidance", async (backgroundEnvironment) => {
-        await deliverBestEffortTwitchGuidance({
-          environment: backgroundEnvironment,
-          communityConfig,
-          message: invalidTwitchRequestReply(parsedRequest),
-          replyToMessageId: event.messageId,
-        });
+  if (prepared.kind === "guidance") {
+    context.waitUntilTask("twitch.invalid_request_guidance", async (backgroundEnvironment) => {
+      await deliverBestEffortTwitchGuidance({
+        environment: backgroundEnvironment,
+        communityConfig,
+        message: prepared.message,
+        replyToMessageId: event.messageId,
       });
-      return new Response(null, { status: 204 });
-    }
+    });
+    return new Response(null, { status: 204 });
   }
+  const command = prepared.command;
   const observedAt = new Date(verification.headers.messageTimestamp);
   const repository = new D1MvpRepository(environment.DB);
   const commandClaim = await repository.claimTwitchCommand({
