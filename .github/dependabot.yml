@@ -8,6 +8,13 @@ updates:
     groups:
       development-dependencies:
         dependency-type: development
+    # The current Cloudflare test pool requires Vitest 4.1.x.
+    # Remove these limits when the test integration supports Vitest 5.
+    ignore:
+      - dependency-name: vitest
+        versions: [">=5"]
+      - dependency-name: "@vitest/coverage-istanbul"
+        versions: [">=5"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
