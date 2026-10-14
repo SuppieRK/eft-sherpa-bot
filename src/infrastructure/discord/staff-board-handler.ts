@@ -37,6 +37,7 @@ import {
   type RaidMessageAction,
   renderPullRequesterSelector,
   renderRaidMessage,
+  type StaffBoardAction,
 } from "./staff-board";
 
 type StaffInteraction = Pick<
@@ -633,6 +634,64 @@ class StaffBoardHandler {
     return this.postponeRequester(interaction, raid);
   }
 
+  private async handleBoardOrdering(
+    interaction: DiscordMessageComponentInteraction,
+    boardAction: Extract<StaffBoardAction, { action: "page" | "move" | "unmove" }>,
+  ): Promise<Response> {
+    const { communityConfig, changedAt } = this.dependencies;
+    if (interaction.discordUserId !== communityConfig.discord.streamerUserId) {
+      return ephemeral("Only the streamer can change pages or raid order.");
+    }
+    if (interaction.messageId === undefined)
+      return ephemeral("This board is out of date. Use Refresh.");
+    if (boardAction.action === "page") {
+      const changed = await this.repository.navigateBoard({
+        target: boardAction.target,
+        expectedVersion: boardAction.version,
+        expectedMessageId: interaction.messageId,
+        changedAt,
+      });
+      if (changed) this.refreshBoardLater();
+      return ephemeral(
+        changed
+          ? "Updating the raid board page."
+          : "This page control is out of date. Use Refresh.",
+      );
+    }
+    const groupId = Number(selectedValue(interaction));
+    if (!Number.isSafeInteger(groupId) || groupId < 1)
+      return ephemeral("Choose a current planned raid.");
+    const placement = await executeDiscordMutation(
+      {
+        ...this.dependencies,
+        repository: this.repository,
+        deliveryId: interaction.interactionId,
+        eventType: `board:${boardAction.action}`,
+      },
+      async () => {
+        const changed = await this.repository.changeRaidPlacement({
+          groupId,
+          remove: boardAction.action === "unmove",
+          expectedVersion: boardAction.version,
+          expectedMessageId: interaction.messageId ?? "",
+          actionKey: interaction.interactionId,
+          changedAt,
+        });
+        if (changed) this.refreshBoardLater();
+        const confirmation =
+          boardAction.action === "unmove" ? "Raid unpinned." : "Raid pinned to the top.";
+        return ephemeral(
+          changed
+            ? confirmation
+            : "Raid order is unchanged. Refresh the board before trying again.",
+        );
+      },
+    );
+    return placement.outcome === "duplicate"
+      ? ephemeral("That action was already received.")
+      : placement.value;
+  }
+
   async handle(interaction: DiscordMessageComponentInteraction): Promise<Response> {
     const { communityConfig, changedAt } = this.dependencies;
     if (!hasAccess(interaction, communityConfig)) {
@@ -656,57 +715,7 @@ class StaffBoardHandler {
       boardAction?.action === "move" ||
       boardAction?.action === "unmove"
     ) {
-      if (interaction.discordUserId !== communityConfig.discord.streamerUserId) {
-        return ephemeral("Only the streamer can change pages or raid order.");
-      }
-      if (interaction.messageId === undefined)
-        return ephemeral("This board is out of date. Use Refresh.");
-      if (boardAction.action === "page") {
-        const changed = await this.repository.navigateBoard({
-          target: boardAction.target,
-          expectedVersion: boardAction.version,
-          expectedMessageId: interaction.messageId,
-          changedAt,
-        });
-        if (changed) this.refreshBoardLater();
-        return ephemeral(
-          changed
-            ? "Updating the raid board page."
-            : "This page control is out of date. Use Refresh.",
-        );
-      }
-      const groupId = Number(selectedValue(interaction));
-      if (!Number.isSafeInteger(groupId) || groupId < 1)
-        return ephemeral("Choose a current planned raid.");
-      const placement = await executeDiscordMutation(
-        {
-          ...this.dependencies,
-          repository: this.repository,
-          deliveryId: interaction.interactionId,
-          eventType: `board:${boardAction.action}`,
-        },
-        async () => {
-          const changed = await this.repository.changeRaidPlacement({
-            groupId,
-            remove: boardAction.action === "unmove",
-            expectedVersion: boardAction.version,
-            expectedMessageId: interaction.messageId ?? "",
-            actionKey: interaction.interactionId,
-            changedAt,
-          });
-          if (changed) this.refreshBoardLater();
-          return ephemeral(
-            changed
-              ? boardAction.action === "unmove"
-                ? "Raid unpinned."
-                : "Raid pinned to the top."
-              : "Raid order is unchanged. Refresh the board before trying again.",
-          );
-        },
-      );
-      return placement.outcome === "duplicate"
-        ? ephemeral("That action was already received.")
-        : placement.value;
+      return this.handleBoardOrdering(interaction, boardAction);
     }
     const mutation = await executeDiscordMutation(
       {

@@ -1860,7 +1860,7 @@ export class D1MvpRepository
   private async requirePostponableRequester(input: PostponeRequesterInput): Promise<{
     sourceBecomesEmpty: boolean;
     source: StaffBoardRaid;
-    window?: RequesterFollowUpWindow;
+    window: RequesterFollowUpWindow | null;
   }> {
     const source = await this.getRaid(input.groupId);
     const isReviewedPlanned =
@@ -1878,7 +1878,8 @@ export class D1MvpRepository
     if (!source.members.some((member) => member.requestId === input.requestId)) {
       throw new RepositoryInvariantError("That requester is no longer in this raid.");
     }
-    if (isReviewedPlanned) return { sourceBecomesEmpty: source.members.length === 1, source };
+    if (isReviewedPlanned)
+      return { sourceBecomesEmpty: source.members.length === 1, source, window: null };
     const window = await this.requesterFollowUpWindow(input.groupId);
     if (window === null) {
       throw new RepositoryInvariantError("That raid is no longer available.");
@@ -2021,11 +2022,9 @@ export class D1MvpRepository
     input: PostponeRequesterInput,
   ): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
     const { sourceBecomesEmpty, source, window } = await this.requirePostponableRequester(input);
-    if (source.state === "planned") {
+    if (window === null) {
       return this.moveReviewedRequester(input, source, sourceBecomesEmpty);
     }
-    if (window === undefined)
-      throw new RepositoryInvariantError("That raid is no longer available.");
     const reusableGroupId = window.reusableGroupId;
     const { followUpSortKey, orderingStatements } = await this.requesterFollowUpOrdering(
       sourceBecomesEmpty,
