@@ -144,7 +144,6 @@ Enable Discord Developer Mode before you copy a server, channel, role, or user I
 |---|---|---|---|---|
 | `COMMUNITY_ID` | `Variable` | `butcoffee` | Use this exact fixed value | Lowercase text |
 | `RECIPIENT_LIMIT` | `Variable` | `4` | Use this exact fixed value | Positive integer; the raid leader uses a separate seat |
-| `ATTEMPT_LIMIT` | `Variable` | `3` | Use this exact fixed value | Positive integer; this is the default attempt limit |
 
 The legacy word `SPIKE` remains in one secret name. It does not enable a spike command.
 

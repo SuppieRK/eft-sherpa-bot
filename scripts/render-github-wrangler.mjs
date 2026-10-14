@@ -54,7 +54,6 @@ const configuration = {
     DISCORD_VOLUNTEER_ROLE_ID: community.discord.volunteerRoleId,
     DISCORD_STREAMER_USER_ID: community.discord.streamerUserId,
     RECIPIENT_LIMIT: String(community.policies.recipientLimit),
-    ATTEMPT_LIMIT: String(community.policies.attemptLimit),
     DISCORD_API_BASE_URL: "https://discord.com/api/v10",
     TWITCH_API_BASE_URL: "https://api.twitch.tv/helix",
     TWITCH_AUTH_BASE_URL: "https://id.twitch.tv/oauth2",

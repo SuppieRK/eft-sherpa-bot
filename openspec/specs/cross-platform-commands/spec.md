@@ -35,32 +35,21 @@ Discord SHALL expose `/request` with a required game-mode choice and `/queue` to
 - **WHEN** a Twitch viewer sends `!stats` or `!users`
 - **THEN** the bot treats it as ordinary chat and sends no command reply
 
+
 ### Requirement: Queue reports personal mode position
-When the caller has an active request, Queue SHALL report its game mode, map, priority-first request order within that mode, projected raids ahead, and other active mode-and-map pairs. The ordinal SHALL be the caller request's position across active requests in the selected mode and SHALL NOT describe a seat within one raid. Priority raids SHALL count ahead of ordinary raids.
+Queue SHALL select the caller's earliest active request by effective raid service order. It SHALL report that request's mode and map, its ordinal among current requesters in that mode ordered by raid and membership placement, and preceding raids in global effective order. Other active mode-and-map pairs SHALL remain available. Discord and Twitch SHALL use the same order and retain independent 100-request and 50-raid exactness limits. Reads SHALL remain capped and indexed. Queue SHALL omit aggregate totals, internal references, stable IDs, identity-link state, and request notes. The ordinal SHALL describe requester order within the selected mode rather than a seat in one raid.
 
-For raids-ahead ordering within each queue kind, Queue SHALL take the oldest outstanding raid from every non-empty mode, order those mode heads by stable raid order, and then append all remaining raids in stable FIFO order. Queue SHALL apply Priority before Ordinary and SHALL use the same ordering as the staff board. Queue SHALL omit aggregate request and raid totals, redundant `Queue:` and `You:` labels, internal references, request notes, stable IDs, and identity-link state.
+#### Scenario: A later request is pinned ahead
+- **WHEN** the streamer pins its planned raid to the top
+- **THEN** both queue commands select and report positions according to the new effective order
 
-Queue SHALL report an exact ordinal through 100 requests ahead and an exact raid count through 50 raids ahead. If more work precedes the caller, it SHALL report `More than 100 requests ahead` and/or `more than 50 raids ahead` for the capped dimension. The two limits SHALL apply independently and SHALL be identical on Discord and Twitch.
+#### Scenario: Caller has multiple active requests
+- **WHEN** a caller has several active mode-and-map pairs
+- **THEN** Queue selects the earliest in effective service order and names the other pairs without internal references or private notes
 
-#### Scenario: Caller has several mode-and-map requests
-- **WHEN** the caller checks queue with active requests for several mode-and-map pairs
-- **THEN** the earliest request is described with its mode and map and the other active mode-and-map pairs are named
-
-#### Scenario: Same map is requested in different modes
-- **WHEN** the caller has active requests for the same map in two game modes
-- **THEN** Queue reports them as distinct mode-and-map pairs
-
-#### Scenario: Ordinary caller waits behind priority work
-- **WHEN** an ordinary caller checks queue while priority raids are outstanding
-- **THEN** those priority raids are included in the caller's raids-ahead count using mode-presence ordering
-
-#### Scenario: Minority mode has outstanding work
-- **WHEN** one mode has one outstanding raid and another mode has enough earlier raids to fill a board section
-- **THEN** Queue calculates raids ahead from an order that includes the minority mode's oldest raid among the section's visible raids
-
-#### Scenario: Caller is deep in a large queue
-- **WHEN** more than 100 same-mode requests or more than 50 mode-ordered raids precede the caller
-- **THEN** Queue reports the applicable lower bound without scanning the complete preceding queue
+#### Scenario: Viewer is beyond an exactness limit
+- **WHEN** more than the capped preceding work exists
+- **THEN** Queue reports its existing lower bound without scanning the complete backlog
 
 ### Requirement: Discord association is one-way
 Discord SHALL expose `/link-twitch` with a required Twitch-name string, optional Escape from Tarkov name, and optional native Discord-user selection. Without the user selection it SHALL associate the authenticated caller only when the mapping has no Discord member or already has that caller. Replacing a different existing Discord member SHALL require the configured streamer or volunteer-sherpa role, even when the command has no user selection. Setting the user selection SHALL require the same staff authority and SHALL NOT be restricted to the staff channel. Discord request submission SHALL enforce the same attachment policy. Rejected attachment SHALL leave identity fields and requests unchanged and ask the caller to contact staff.

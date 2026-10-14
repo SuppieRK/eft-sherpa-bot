@@ -12,7 +12,7 @@ EFT Sherpa Bot plans Escape from Tarkov help raids for the butcoffee community. 
 - Staff review the complete goals and notes before they call the raid.
 - The staff member who selects **Call and start raid** becomes the raid leader.
 - The bot limits each raid to the map party size and keeps one place for the sherpa.
-- The bot records raid attempts and moves postponed raids to the priority queue.
+- The streamer can move planned raids to the top. Postponed raids move to the end of one shared list.
 - The bot stores queue data in Cloudflare D1.
 - `/stats` shows a caller-only all-time summary. `/users` shows caller-only identity pages.
 

@@ -21,7 +21,6 @@ const environment = {
   DISCORD_VOLUNTEER_ROLE_ID: "200000000000005",
   DISCORD_STREAMER_USER_ID: "200000000000006",
   RECIPIENT_LIMIT: "3",
-  ATTEMPT_LIMIT: "3",
 };
 const callback = "https://worker.example/webhooks/twitch/eventsub";
 

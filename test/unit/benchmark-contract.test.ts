@@ -15,13 +15,13 @@ import {
   QUEUE_PERCENTILES,
   USER_OPERATION_IDS,
 } from "../../benchmark/contract";
+import committedBaseline from "../../benchmark/d1-cost-baseline.json";
 import {
   aggregateMeasurements,
   assertStableCost,
   type OperationMeasurement,
 } from "../../benchmark/statistics";
 import surface from "../../config/command-surface.json";
-import committedBaseline from "../../benchmark/d1-cost-baseline.json";
 
 const measurement = (wallMs: number): OperationMeasurement => ({
   wallMs,

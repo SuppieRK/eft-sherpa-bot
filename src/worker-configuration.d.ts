@@ -16,7 +16,6 @@ interface __BaseEnv_Env {
   DISCORD_VOLUNTEER_ROLE_ID: "200000000000005";
   DISCORD_STREAMER_USER_ID: "200000000000006";
   RECIPIENT_LIMIT: "4";
-  ATTEMPT_LIMIT: "3";
   DISCORD_API_BASE_URL: "https://discord.com/api/v10";
   TWITCH_API_BASE_URL: "https://api.twitch.tv/helix";
   TWITCH_AUTH_BASE_URL: "https://id.twitch.tv/oauth2";
@@ -49,7 +48,6 @@ declare namespace NodeJS {
         | "DISCORD_VOLUNTEER_ROLE_ID"
         | "DISCORD_STREAMER_USER_ID"
         | "RECIPIENT_LIMIT"
-        | "ATTEMPT_LIMIT"
         | "DISCORD_API_BASE_URL"
         | "TWITCH_API_BASE_URL"
         | "TWITCH_AUTH_BASE_URL"
@@ -13851,6 +13849,7 @@ declare module "cloudflare:email" {
     prototype: EmailMessage;
     new (from: string, to: string, raw: ReadableStream | string): EmailMessage;
   };
+
   export { _EmailMessage as EmailMessage };
 }
 /**
@@ -15020,6 +15019,7 @@ interface SecretsStoreSecret {
 }
 declare module "cloudflare:sockets" {
   function _connect(address: string | SocketAddress, options?: SocketOptions): Socket;
+
   export { _connect as connect };
 }
 /**

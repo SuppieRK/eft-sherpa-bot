@@ -66,7 +66,6 @@ async function prepare() {
       DISCORD_VOLUNTEER_ROLE_ID: "200000000000005",
       DISCORD_STREAMER_USER_ID: "200000000000006",
       RECIPIENT_LIMIT: "4",
-      ATTEMPT_LIMIT: "3",
       SPIKE_DIAGNOSTICS_TOKEN: encodeHex(crypto.getRandomValues(new Uint8Array(32))),
       DISCORD_API_BASE_URL: `http://127.0.0.1:${MOCK_API_PORT}/discord`,
       DISCORD_BOT_TOKEN: "profile-discord-token",

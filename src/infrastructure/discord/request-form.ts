@@ -1,11 +1,11 @@
+import { formatModeMap, type GameMode, parseGameMode } from "../../domain/game-mode";
 import {
   REQUEST_NOTES_MAX_LENGTH,
   REQUEST_OBJECTIVE_MAX_LENGTH,
-  supportedMapChoices,
   type RequestFormValidation,
+  supportedMapChoices,
   validateRequestForm,
 } from "../../domain/help-request";
-import { formatModeMap, type GameMode, parseGameMode } from "../../domain/game-mode";
 
 export const DISCORD_REQUEST_COMMAND = "request";
 export const DISCORD_REQUEST_MODAL_ID = "request:create:v1";

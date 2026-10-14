@@ -50,7 +50,7 @@ Use only maintainer-owned test accounts and the disposable test D1 database.
 10. Run `/board` in the Discord staff channel.
 11. Confirm that each non-empty mode has a visible raid.
 12. Select **Review a raid** for one streamer-led raid.
-13. Confirm that the raid stays planned at attempt zero, no leader is assigned, and no requester receives a call.
+13. Confirm that the raid stays planned, no leader is assigned, and no requester receives a call.
 14. Run `/stats` as the streamer and as a volunteer sherpa. Confirm that each response is visible only to its caller.
 15. Run `/users` as the streamer and as a volunteer sherpa. Test the first, middle, and last pages.
 16. Add one missing Discord member and one missing Escape from Tarkov name. Use `/link-twitch` for a correction.

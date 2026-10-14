@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 
 type MigrationEnvironment = typeof env & {

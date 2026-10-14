@@ -25,11 +25,18 @@ it.each([10, 1_000, 10_000])(
         }),
       );
     }
-    const source = (await repo.getBoardSnapshot()).ordinaryRaids[0];
+    const source = (await repo.getBoardSnapshot()).raids[0];
     const request = requests[0];
     if (!source || !request) throw new Error("Missing fixture");
     await repo.reviewRaid({ groupId: source.id, changedAt: at });
     await repo.setRaidStaffMessage(source.id, "history-source", at);
+    await repo.startRaid({
+      groupId: source.id,
+      leaderDiscordUserId: "leader",
+      leaderType: "streamer",
+      requestTwitchCall: false,
+      changedAt: at,
+    });
     await env.DB.prepare(`WITH RECURSIVE n(x) AS
     (SELECT 2 UNION ALL SELECT x + 1 FROM n WHERE x <= ?)
     INSERT INTO raid_groups(id, game_mode, sort_key, map_id, requester_capacity, created_at, updated_at)

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -176,7 +176,7 @@ function markdown(report) {
   }
   lines.push(
     "",
-    "Focused adversarial scenarios add 600 expired receipts, concurrent board and delivery bursts, expired Discord claims, all 78 legacy-repair demand buckets, 10,000 live follow-up relationships, and up to 100,000 removed membership rows outside the measured window. User-facing and authenticated operator paths use only local Miniflare/workerd D1.",
+    "Focused adversarial scenarios add 600 expired receipts, concurrent board and delivery bursts, expired Discord claims, all 39 mode/map legacy-repair demand buckets, 10,000 live follow-up relationships, and up to 100,000 removed membership rows outside the measured window. User-facing and authenticated operator paths use only local Miniflare/workerd D1.",
     "",
     "## Cost Invariants",
     "",
@@ -233,7 +233,9 @@ for (const scale of SCALES) {
     .slice(markerIndex + RESULT_MARKER.length)
     .split(/\r?\n/, 1)[0];
   if (markerLine === undefined || markerLine.length === 0) fail("the result payload was empty");
-  scaleReports.push(JSON.parse(markerLine));
+  const scaleReport = JSON.parse(markerLine);
+  assertMaximumBudget(scaleReport);
+  scaleReports.push(scaleReport);
 }
 const combined = {
   ...scaleReports[0],
@@ -386,6 +388,7 @@ for (const operationId of new Set(combined.results.map((result) => result.id))) 
     }
   }
 }
+assertMaximumBudget(combined);
 const biomePath = path.join(ROOT, "node_modules", "@biomejs", "biome", "bin", "biome");
 if (updateBaseline) {
   writeFileSync(BASELINE_PATH, `${JSON.stringify(createD1CostBaseline(combined), null, 2)}\n`);
@@ -412,7 +415,6 @@ const report = {
     cpu: os.cpus()[0]?.model ?? "unknown",
   },
 };
-assertMaximumBudget(report);
 const jsonReportPath = path.join(ROOT, "reports", "d1-user-facing-benchmark.json");
 writeFileSync(jsonReportPath, `${JSON.stringify(report, null, 2)}\n`);
 writeFileSync(path.join(ROOT, "reports", "d1-user-facing-benchmark.md"), markdown(report));

@@ -26,7 +26,6 @@ describe("fixed MVP community configuration", () => {
       DISCORD_VOLUNTEER_ROLE_ID: testCommunityConfig.discord.volunteerRoleId,
       DISCORD_STREAMER_USER_ID: testCommunityConfig.discord.streamerUserId,
       RECIPIENT_LIMIT: String(testCommunityConfig.policies.recipientLimit),
-      ATTEMPT_LIMIT: String(testCommunityConfig.policies.attemptLimit),
     });
 
     expect(loaded).toEqual(testCommunityConfig);
@@ -37,7 +36,6 @@ describe("fixed MVP community configuration", () => {
     const loaded = communityConfigFromEnvironment({
       COMMUNITY_ID: "butcoffee",
       RECIPIENT_LIMIT: "three",
-      ATTEMPT_LIMIT: "0",
     });
 
     expect(validateCommunityConfig(loaded)).toEqual(
@@ -45,7 +43,6 @@ describe("fixed MVP community configuration", () => {
         "twitch.broadcasterUserId must be a configured numeric platform ID",
         "discord.publicKey must be a configured 64-character hexadecimal key",
         "policies.recipientLimit must be a positive integer",
-        "policies.attemptLimit must be a positive integer",
       ]),
     );
   });
@@ -57,14 +54,13 @@ describe("fixed MVP community configuration", () => {
         ...testCommunityConfig.twitch,
         botUserId: testCommunityConfig.twitch.broadcasterUserId,
       },
-      policies: { ...testCommunityConfig.policies, recipientLimit: 0, attemptLimit: 0 },
+      policies: { ...testCommunityConfig.policies, recipientLimit: 0 },
     };
 
     expect(validateCommunityConfig(invalid)).toEqual(
       expect.arrayContaining([
         "the Twitch broadcaster and bot IDs must be different",
         "policies.recipientLimit must be a positive integer",
-        "policies.attemptLimit must be a positive integer",
       ]),
     );
   });

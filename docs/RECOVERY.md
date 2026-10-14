@@ -8,6 +8,8 @@ Do not roll back to a version without game-mode support after the bot accepts a 
 
 Do not roll back to a version that does not support migration `0006`. That version can lose a request after a Twitch login change. Deploy a verified forward fix. Keep migration `0006` in D1.
 
+WARNING: After migration `0012`, do not restore a Worker that uses split queues or raid attempt controls. It can read the retained columns but cannot preserve manual placement or shared pages. Deploy a verified forward fix. Keep migration `0012` and the live data.
+
 1. Sign in to Cloudflare.
 2. Open **Workers & Pages**.
 3. Open the `eft-sherpa-bot` Worker.

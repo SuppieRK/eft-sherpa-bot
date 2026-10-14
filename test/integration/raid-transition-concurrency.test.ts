@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
+import { completedRaid, postponedRaid } from "../fixtures/raid-transitions";
 
 const at = new Date("2096-08-15T21:00:00Z");
 
@@ -24,7 +25,7 @@ async function create(repo: D1MvpRepository, index: number) {
 async function setup() {
   const repo = new D1MvpRepository(env.DB);
   const requestId = await create(repo, 1);
-  const source = (await repo.getBoardSnapshot()).ordinaryRaids[0];
+  const source = (await repo.getBoardSnapshot()).raids[0];
   if (!source) throw new Error("Missing fixture raid");
   await repo.reviewRaid({ groupId: source.id, changedAt: at });
   await repo.setRaidStaffMessage(source.id, "review-message", at);
@@ -54,6 +55,13 @@ describe("concurrent staff transitions", () => {
   // This runs 25 complete workflows; CI coverage overhead is not a latency requirement.
   it("keeps follow-ups ordered after more than twenty pull and postpone cycles", async () => {
     const { repo, source } = await setup();
+    await repo.startRaid({
+      groupId: source.id,
+      leaderDiscordUserId: "leader",
+      leaderType: "streamer",
+      requestTwitchCall: false,
+      changedAt: at,
+    });
     await repo.createRequest({
       sourcePlatform: "twitch",
       sourceDeliveryId: "woods",
@@ -66,9 +74,7 @@ describe("concurrent staff transitions", () => {
       recipientLimit: 4,
       observedAt: at,
     });
-    const following = (await repo.getBoardSnapshot()).ordinaryRaids.find(
-      (raid) => raid.mapId === "woods",
-    );
+    const following = (await repo.getBoardSnapshot()).raids.find((raid) => raid.mapId === "woods");
     if (!following) throw new Error("Missing following raid");
     await repo.createRequest({
       sourcePlatform: "twitch",
@@ -82,9 +88,7 @@ describe("concurrent staff transitions", () => {
       recipientLimit: 4,
       observedAt: at,
     });
-    const tail = (await repo.getBoardSnapshot()).ordinaryRaids.find(
-      (raid) => raid.mapId === "factory",
-    );
+    const tail = (await repo.getBoardSnapshot()).raids.find((raid) => raid.mapId === "factory");
     if (!tail) throw new Error("Missing tail raid");
     let previousKey = source.sortKey;
     for (let cycle = 1; cycle <= 25; cycle++) {
@@ -133,7 +137,7 @@ describe("concurrent staff transitions", () => {
     });
     const stale = new D1MvpRepository(
       beforeFirstBatch(() =>
-        repo.postponeRaid({
+        postponedRaid(repo, {
           groupId: source.id,
           actionKey: "postpone",
           changedAt: at,
@@ -141,26 +145,22 @@ describe("concurrent staff transitions", () => {
       ),
     );
     await expect(
-      stale.recordRaidResult({
+      completedRaid(stale, {
         groupId: source.id,
-        outcome: "helped",
-        attemptLimit: 3,
         actionKey: "helped",
         changedAt: at,
       }),
     ).rejects.toThrow();
     const current = await repo.getRaid(source.id);
     expect(current?.state).toBe("planned");
-    expect(current?.queueKind).toBe("priority");
+    expect(current).not.toHaveProperty("queueKind");
     expect(current?.members.map((member) => member.requestId)).toEqual([requestId]);
   });
 
   it("rejects a stale sole-requester postponement after another requester is pulled in", async () => {
     const { repo, source, requestId } = await setup();
     const pulled = await create(repo, 2);
-    const donor = (await repo.getBoardSnapshot()).ordinaryRaids.find(
-      (raid) => raid.id !== source.id,
-    );
+    const donor = (await repo.getBoardSnapshot()).raids.find((raid) => raid.id !== source.id);
     if (!donor) throw new Error("Missing donor raid");
     const stale = new D1MvpRepository(
       beforeFirstBatch(() =>
@@ -188,6 +188,13 @@ describe("concurrent staff transitions", () => {
 
   it("rejects stale removal without canceling a requester moved to another raid", async () => {
     const { repo, source, requestId } = await setup();
+    await repo.startRaid({
+      groupId: source.id,
+      leaderDiscordUserId: "leader",
+      leaderType: "streamer",
+      requestTwitchCall: false,
+      changedAt: at,
+    });
     const stale = new D1MvpRepository(
       beforeFirstBatch(() =>
         repo.postponeRequester({
@@ -207,9 +214,9 @@ describe("concurrent staff transitions", () => {
       }),
     ).rejects.toThrow("Review the raid again");
     const board = await repo.getBoardSnapshot();
-    expect(
-      board.ordinaryRaids.flatMap((raid) => raid.members.map((member) => member.requestId)),
-    ).toEqual([requestId]);
+    expect(board.raids.flatMap((raid) => raid.members.map((member) => member.requestId))).toEqual([
+      requestId,
+    ]);
     const duplicate = await repo.createRequest({
       sourcePlatform: "twitch",
       sourceDeliveryId: "retry",

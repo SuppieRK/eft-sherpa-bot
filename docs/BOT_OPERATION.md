@@ -18,13 +18,17 @@ The Discord `/request` command requires a game mode. Discord does not open the f
 
 The form asks for a Twitch name, an Escape from Tarkov name, a map, a goal, and optional notes. The goal has a limit of 150 characters. The notes have a limit of 250 characters.
 
-The bot groups requests only when the mode and map are the same. One viewer can have one active request for each mode and map. Queue position is for the selected mode. The raids-ahead value uses the same fair order as the staff board.
+The bot groups requests only when the mode and map are the same. One viewer can have one active request for each mode and map. Queue position is for the selected mode. The raids-ahead value uses the same service order as the staff board.
 
 ## Staff controls
 
-Use `/board` in the staff channel. The board shows up to three priority raids and seven ordinary raids. Each non-empty mode gets at least one visible raid in each section. The bot then fills the other places in FIFO order.
+Use `/board` in the staff channel. The board shows ten raids per page in one list. Active raids appear first. Pinned planned raids appear next, with the latest pin first. Other planned raids follow in FIFO order.
 
-Select **Review a raid**. The bot freezes the proposed group and opens one raid message. The raid message shows each requester, goal, and note. The bot does not assign a leader, start an attempt, or call a requester during review.
+Only the streamer can select **Previous**, **Next**, **Pin to top**, or **Unpin**. All staff see the same page. Every data update and **Refresh** return the board to page one. Page navigation keeps the selected page until the next update.
+
+Select **Pin to top** to bring a planned raid before other planned raids. Select **Unpin** to return it to its normal place. The Pin to top list shows only unpinned planned raids. The Unpin list shows only pinned planned raids. Each list is absent when there is no matching raid on the page. These controls do not move requesters or stop automatic filling. **Review a raid** stops automatic filling. Both viewer queue commands use the new service order.
+
+Select **Review a raid**. The bot freezes the proposed group and opens one raid message. The raid message shows each requester, goal, and note. The bot does not assign a leader, start a raid, or call a requester during review.
 
 The planned raid message has these controls:
 
@@ -40,9 +44,9 @@ Use the **Pull requester up** list to fill an open requester place in a reviewed
 
 If both raids have open review messages, select **Cancel review** on the source. Then select **Refresh** on the board and open the destination details. A remaining source group keeps its reserved leader. A frozen source without a reserved leader stays protected.
 
-The list shows the Twitch names and goals from one source raid. Select **Previous source** or **Next source** to see other source raids. Priority sources appear first. The list is disabled and shows **No compatible requester available** when no suitable request exists.
+The list shows the Twitch names and goals from one source raid. Select **Previous source** or **Next source** to see other source raids. Sources appear in service order. The list is disabled and shows **No compatible requester available** when no suitable request exists.
 
-The pull does not call a requester, assign a leader, or start an attempt. An active raid keeps its current attempt count. Both Priority and Ordinary raids can pull from either queue. Only the selected request changes to the destination queue.
+The pull does not call a requester, assign a leader, or start a raid. An active raid keeps its leader, start time, and call state. Only the selected requester joins the destination.
 
 Select **Cancel review**, next to **Call and start raid**, to close the planned review message. This control does not cancel the raid or a help request. The raid stays frozen on the board. Select the raid from **Review a raid** when you want to open new details.
 
@@ -52,7 +56,7 @@ If someone deletes the details for an active raid, select **Refresh**. The bot r
 
 After the pull, the bot can move all requesters who remain in the source raid to the next compatible raid. The bot makes this move only when all remaining requesters fit. Otherwise, the source raid stays in its current place.
 
-Select **Call and start raid** when the group is correct. The staff member who selects this control becomes the leader. The bot starts attempt one and calls only the current requesters. The bot sends a Discord call with the mode and map. The bot also sends a Twitch call with the mode and map when the streamer is the leader.
+Select **Call and start raid** when the group is correct. The staff member who selects this control becomes the leader. The bot starts the raid and calls only the current requesters. The bot sends a Discord call with the mode and map. The bot also sends a Twitch call with the mode and map when the streamer is the leader.
 
 The active raid message has these controls:
 
@@ -61,9 +65,9 @@ The active raid message has these controls:
 - **Postpone requester**;
 - **Remove requester**.
 
-The default attempt limit is three. Before the last attempt, staff can record **Helped** or **Record unsuccessful attempt**. On the last attempt, staff can record **Helped** or **Postpone raid**.
+The leader or streamer can record **Helped** or **Postpone raid** at any time while the raid is active. An unsuccessful in-game run needs no bot action.
 
-**Postpone raid** moves the same raid to the end of the priority queue. **Postpone requester** moves one requester to a dedicated raid after the current raid. **Move requester to next raid** does the same operation before the raid starts. **Remove requester** cancels the help request.
+**Postpone raid** moves the same raid to the end of the raid list. The raid keeps its remaining requesters and reserved leader. It returns to planned state with no manual placement or pending calls. Select **Call and start raid** to start it again. **Postpone requester** moves one requester to a dedicated raid after the current raid. **Move requester to next raid** moves one requester to the next existing unreviewed raid with the same mode and map and an open requester place. This control is absent when no eligible later raid exists. The destination can be on another board page. The move does not create a raid. **Remove requester** cancels the help request.
 
 Staff can use the board at any time. The Twitch schedule does not hide the board or stop requests.
 
