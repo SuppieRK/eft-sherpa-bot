@@ -27,7 +27,8 @@ for (const [index, file] of files.entries()) {
     throw new Error(`Migration sequence is not contiguous at ${file}`);
   }
   const actual = createHash("sha256")
-    .update(readFileSync(path.join(migrationDirectory, file)))
+    // Use canonical line endings so a Windows checkout retains the published identity.
+    .update(readFileSync(path.join(migrationDirectory, file), "utf8").replaceAll("\r\n", "\n"))
     .digest("hex");
   const recordedChecksum = recordedMigrations[file];
   if (recordedChecksum !== undefined && recordedChecksum !== actual) {

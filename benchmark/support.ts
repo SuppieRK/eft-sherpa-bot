@@ -1,10 +1,10 @@
-import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import type { createWorker } from "../src";
 import type { CommunityConfig } from "../src/config/community";
 import { TARKOV_MAPS } from "../src/domain/maps/catalog";
-import { createTwitchEventSubSignature } from "../src/infrastructure/twitch/eventsub";
 import type { CloudflareEnvironment } from "../src/infrastructure/cloudflare/environment";
+import { createTwitchEventSubSignature } from "../src/infrastructure/twitch/eventsub";
 
 const SORT_STEP = 1_000_000;
 const BASE_SORT_OFFSET = 100;
@@ -17,15 +17,13 @@ export interface SeedState {
   scale: number;
   groupCount: number;
   membershipCount: number;
-  priorityMaxSortKey: number;
-  ordinaryMaxSortKey: number;
+  maxSortKey: number;
   databaseBytes: number;
 }
 
 interface GroupSeed {
   gameMode: number;
   id: number;
-  isPriority: number;
   sortKey: number;
   mapId: string;
   capacity: number;
@@ -37,7 +35,6 @@ interface RequestSeed {
   id: number;
   groupId: number;
   position: number;
-  isPriority: number;
   mapId: string;
 }
 
@@ -76,10 +73,9 @@ async function insertSeedChunk(
   const results = await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO raid_groups
-       (id, is_priority, game_mode, sort_key, map_id, requester_capacity, automatic_fill,
+       (id, game_mode, sort_key, map_id, requester_capacity, automatic_fill,
         created_at, updated_at)
-       SELECT json_extract(value, '$.id'), json_extract(value, '$.isPriority'),
-              json_extract(value, '$.gameMode'), json_extract(value, '$.sortKey'),
+       SELECT json_extract(value, '$.id'), json_extract(value, '$.gameMode'), json_extract(value, '$.sortKey'),
               json_extract(value, '$.mapId'),
               json_extract(value, '$.capacity'), json_extract(value, '$.automaticFill'), ?, ?
        FROM json_each(?)`,
@@ -96,7 +92,7 @@ async function insertSeedChunk(
     env.DB.prepare(
       `INSERT INTO help_requests
        (id, source_platform, source_delivery_id, discord_user_id, twitch_user_id,
-        twitch_login, in_game_name, game_mode, map_id, objective, is_priority, state,
+        twitch_login, in_game_name, game_mode, map_id, objective, state,
         created_at, updated_at)
        SELECT json_extract(value, '$.id'), 1,
               printf('seed-request-%d', json_extract(value, '$.id')),
@@ -107,7 +103,7 @@ async function insertSeedChunk(
               json_extract(value, '$.gameMode'),
               json_extract(value, '$.mapId'),
               printf('Seeded goal %d', json_extract(value, '$.id')),
-              json_extract(value, '$.isPriority'), 1, ?, ?
+              1, ?, ?
        FROM json_each(?)`,
     ).bind(timestamp, timestamp, requestJson),
     env.DB.prepare(
@@ -130,33 +126,24 @@ async function insertSeedChunk(
 export async function seedDatabase(scale: number): Promise<SeedState> {
   await clearDatabase();
   const timestamp = Date.now();
-  const priorityRequestCount = Math.floor(scale / 5);
   let requestId = 1;
   let groupId = 0;
-  let priorityOrdinal = 0;
-  let ordinaryOrdinal = 0;
   let mapIndex = 0;
   let requestChunk: RequestSeed[] = [];
   let groupChunk: GroupSeed[] = [];
   let databaseBytes = 0;
   while (requestId <= scale) {
-    const isPriority = requestId <= priorityRequestCount ? 1 : 0;
-    const segmentEnd = isPriority === 1 ? priorityRequestCount : scale;
     const map = TARKOV_MAPS[mapIndex % TARKOV_MAPS.length];
     if (map === undefined) throw new Error("The Tarkov map catalog is empty.");
     const capacity = Math.min(3, map.sherpaPartyCapacity - 1);
-    const memberCount = Math.min(capacity, segmentEnd - requestId + 1);
+    const memberCount = Math.min(capacity, scale - requestId + 1);
     groupId += 1;
     const gameMode = [2, 2, 2, 2, 2, 2, 2, 1, 1, 0][(groupId - 1) % 10] as number;
     mapIndex += 1;
-    if (isPriority === 1) priorityOrdinal += 1;
-    else ordinaryOrdinal += 1;
     groupChunk.push({
       id: groupId,
       gameMode,
-      isPriority,
-      sortKey:
-        ((isPriority === 1 ? priorityOrdinal : ordinaryOrdinal) + BASE_SORT_OFFSET) * SORT_STEP,
+      sortKey: (groupId + BASE_SORT_OFFSET) * SORT_STEP,
       mapId: map.id,
       capacity,
       automaticFill: memberCount === capacity ? 1 : 0,
@@ -167,7 +154,6 @@ export async function seedDatabase(scale: number): Promise<SeedState> {
         gameMode,
         groupId,
         position,
-        isPriority,
         mapId: map.id,
       });
       requestId += 1;
@@ -190,8 +176,7 @@ export async function seedDatabase(scale: number): Promise<SeedState> {
     scale,
     groupCount: groupId,
     membershipCount: scale,
-    priorityMaxSortKey: (priorityOrdinal + BASE_SORT_OFFSET) * SORT_STEP,
-    ordinaryMaxSortKey: (ordinaryOrdinal + BASE_SORT_OFFSET) * SORT_STEP,
+    maxSortKey: (groupId + BASE_SORT_OFFSET) * SORT_STEP,
     databaseBytes,
   };
 }
@@ -211,7 +196,7 @@ export async function resetOperationFixture(seed: SeedState): Promise<void> {
     env.DB.prepare("DELETE FROM event_receipts WHERE delivery_id LIKE 'bench-op-%'"),
     env.DB.prepare(
       `UPDATE community_state
-       SET staff_board_message_id = 'benchmark-canonical-board', receipt_cleanup_after = ?, updated_at = ?
+       SET staff_board_message_id = 'benchmark-canonical-board', board_page_number = 1, board_page_direction = 0, board_page_lane = 0, board_page_key = 0, board_page_id = 0, receipt_cleanup_after = ?, updated_at = ?
        WHERE community_id = 'butcoffee'`,
     ).bind(Date.now() + 15 * 60 * 1_000, Date.now()),
     env.DB.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'help_requests'").bind(
@@ -362,7 +347,7 @@ export async function seedOperationRaid(input: {
   memberCount: number;
   state: "planned" | "active";
   streamerDiscordUserId: string;
-  isPriority?: boolean;
+  manualOrder?: number;
   visibleFirst?: boolean;
   gameMode?: 0 | 1 | 2;
   staffMessageId?: string;
@@ -376,12 +361,10 @@ export async function seedOperationRaid(input: {
     { length: input.memberCount },
     (_, index) => input.seed.scale + (fixtureOrdinal - 1) * 4 + index + 1,
   );
-  const isPriority = input.isPriority === true ? 1 : 0;
   const gameMode = input.gameMode ?? 2;
   const sortKey = input.visibleFirst
     ? fixtureOrdinal * SORT_STEP
-    : (isPriority === 1 ? input.seed.priorityMaxSortKey : input.seed.ordinaryMaxSortKey) +
-      fixtureOrdinal * SORT_STEP;
+    : input.seed.maxSortKey + fixtureOrdinal * SORT_STEP;
   const requestRows = requestIds.map((id, index) => ({ id, position: index + 1 }));
   for (const row of requestRows) {
     await seedOperationMapping({
@@ -393,20 +376,19 @@ export async function seedOperationRaid(input: {
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO raid_groups
-       (id, is_priority, game_mode, sort_key, map_id, requester_capacity,
-        leader_discord_user_id, leader_type, automatic_fill, attempt_count, state,
+       (id, manual_order, game_mode, sort_key, map_id, requester_capacity,
+        leader_discord_user_id, leader_type, automatic_fill, state,
         discord_call_status, twitch_call_status, staff_message_id, started_at,
         created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'customs', 3, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'customs', 3, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       groupId,
-      isPriority,
+      input.manualOrder ?? 0,
       gameMode,
       sortKey,
       input.state === "active" ? input.streamerDiscordUserId : null,
       input.state === "active" ? 0 : null,
       input.automaticFill === true ? 1 : 0,
-      input.state === "active" ? 1 : 0,
       input.state === "active" ? 1 : 0,
       input.state === "active" ? 1 : 3,
       input.state === "active" ? 1 : 3,
@@ -420,7 +402,7 @@ export async function seedOperationRaid(input: {
     env.DB.prepare(
       `INSERT INTO help_requests
        (id, source_platform, source_delivery_id, discord_user_id, twitch_user_id,
-        twitch_login, in_game_name, game_mode, map_id, objective, is_priority, state,
+        twitch_login, in_game_name, game_mode, map_id, objective, state,
         created_at, updated_at)
        SELECT json_extract(value, '$.id'), 0,
               printf('bench-op-seed-${input.suffix}-%d', json_extract(value, '$.position')),
@@ -429,8 +411,8 @@ export async function seedOperationRaid(input: {
               printf('op_${input.suffix}_%d', json_extract(value, '$.position')),
               printf('Benchmark PMC %d', json_extract(value, '$.position')),
               ?, 'customs', printf('Benchmark goal %d', json_extract(value, '$.position')),
-              ?, 1, ?, ? FROM json_each(?)`,
-    ).bind(gameMode, isPriority, timestamp, timestamp, jsonRows(requestRows)),
+              1, ?, ? FROM json_each(?)`,
+    ).bind(gameMode, timestamp, timestamp, jsonRows(requestRows)),
     env.DB.prepare(
       `INSERT INTO raid_group_members
        (group_id, request_id, position, created_at, updated_at)

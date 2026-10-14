@@ -18,6 +18,5 @@ export const testCommunityConfig = {
   },
   policies: {
     recipientLimit: 4,
-    attemptLimit: 3,
   },
 } satisfies CommunityConfig;

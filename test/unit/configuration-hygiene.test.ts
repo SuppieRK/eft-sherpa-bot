@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import mvpTemplate from "../../config/wrangler.mvp.example.jsonc?raw";
-import localTemplate from "../../wrangler.jsonc?raw";
 import benchmarkTemplate from "../../benchmark/wrangler.local.jsonc?raw";
+import mvpTemplate from "../../config/wrangler.mvp.example.jsonc?raw";
 import benchmarkRunner from "../../scripts/run-d1-benchmark.mjs?raw";
 import twitchAuthorization from "../../scripts/twitch/authorize-bot.mjs?raw";
 import benchmarkVitest from "../../vitest.benchmark.config.ts?raw";
+import localTemplate from "../../wrangler.jsonc?raw";
 
 describe("single-community MVP configuration", () => {
   it("keeps local and live resources distinct", () => {

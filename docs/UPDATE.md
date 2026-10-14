@@ -33,3 +33,12 @@ Use this procedure when the operator status reports an invalid Twitch token.
 7. Confirm that **Wait for Worker readiness** is green.
 
 This workflow does not change bot code or the D1 schema.
+
+
+## Unified raid order
+
+Migration `0012` keeps live requests, raid IDs, membership, leaders, calls, and history. It merges open raids in their previous priority-first FIFO order and assigns unique normal positions. Active raids remain active and appear first. The migration does not call or restart a raid.
+
+The retained legacy columns preserve historical data. Current code does not use queue categories or raid attempt counts. A board refresh replaces the old controls. Refresh also returns the shared board to page one.
+
+WARNING: Do not restore split-queue Worker code after this update. Use a verified forward fix. Do not reset D1 or edit a published migration.

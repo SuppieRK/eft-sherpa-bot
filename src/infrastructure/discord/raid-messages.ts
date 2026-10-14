@@ -17,7 +17,6 @@ function boardMessage(
   config: CommunityConfig,
 ): DiscordBotMessage {
   return renderStaffBoard(snapshot, {
-    attemptLimit: config.policies.attemptLimit,
     guildId: config.discord.guildId,
     staffChannelId: config.discord.staffChannelId,
   });
@@ -45,12 +44,7 @@ export async function raidDetailMessage(input: {
       requireStaffMessage: false,
     });
   }
-  return renderRaidMessage(
-    input.raid,
-    input.communityConfig.policies.attemptLimit,
-    input.notificationUserId,
-    candidates?.source,
-  );
+  return renderRaidMessage(input.raid, input.notificationUserId, candidates?.source);
 }
 
 type BoardSnapshot = Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
@@ -380,7 +374,7 @@ export async function reconcileVisibleRaidMessages(input: {
   snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>;
 }): Promise<boolean> {
   const repository = new D1MvpRepository(input.environment.DB);
-  const visibleRaids = [...input.snapshot.priorityRaids, ...input.snapshot.ordinaryRaids].filter(
+  const visibleRaids = input.snapshot.raids.filter(
     (raid) => raid.state === "active" || raid.staffMessageId !== undefined,
   );
   const reviewedIds = visibleRaids

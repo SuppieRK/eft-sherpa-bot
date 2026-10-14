@@ -1,7 +1,7 @@
+import type { GameMode } from "./game-mode";
 import { resolveTarkovMap, TARKOV_MAPS } from "./maps/catalog";
 import type { RequestState } from "./sherpa-repository";
 import { normalizeTwitchLogin } from "./user-identity";
-import type { GameMode } from "./game-mode";
 
 type RequestFormField = "twitchLogin" | "inGameName" | "map" | "objective" | "notes";
 

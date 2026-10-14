@@ -111,27 +111,16 @@ The system SHALL persist authenticated Twitch identity once through valid Twitch
 - **WHEN** a compatible membership cannot be committed
 - **THEN** the identity, request, raid, and membership transaction rolls back and no active request without an open membership remains
 
-### Requirement: Stable fair order and postponement priority
-Every request SHALL receive an immutable arrival sequence and an ordinary or priority queue kind. New requests SHALL be ordinary. Whole-raid postponement SHALL change the remaining requests to priority without changing their arrival sequence or raid membership.
-
-#### Scenario: Whole raid is postponed
-- **WHEN** staff postpones an unresolved raid
-- **THEN** its remaining requests stay together in the same raid at the end of Priority with attempts reset
-
 ### Requirement: Compatible requests fill requester-postponement follow-ups
-A planned requester-postponement follow-up SHALL accept later waiting requests for the same game mode, map, and queue kind while requester capacity remains. Automatic filling SHALL preserve existing memberships and SHALL NOT promote an Ordinary request into Priority.
+A planned requester-postponement follow-up SHALL accept later waiting requests for the same game mode and map while requester capacity remains. Automatic filling SHALL preserve existing memberships and manual service placement.
 
 #### Scenario: Compatible request follows an individual postponement
-- **WHEN** an Ordinary follow-up has spare capacity and a later Ordinary request selects the same mode and map
+- **WHEN** a compatible follow-up has spare capacity and a later request selects the same mode and map
 - **THEN** the later request becomes a member of that follow-up instead of creating a separate raid
 
 #### Scenario: Game modes differ
-- **WHEN** a later request has the same map and queue kind but a different game mode from a follow-up
+- **WHEN** a later request has the same map but a different game mode from a follow-up
 - **THEN** it does not join that follow-up
-
-#### Scenario: Queue kinds differ
-- **WHEN** a later Ordinary request has the same mode and map as a Priority follow-up
-- **THEN** it does not join the Priority raid
 
 ### Requirement: Small request lifecycle
 Request state SHALL be `waiting`, `planned`, `completed`, or `canceled`. Helped requests become completed. Postponed requests remain active.
@@ -178,3 +167,15 @@ Valid Twitch request intake and queue identity observation SHALL apply the same 
 
 - **WHEN** either path receives an older identity observation
 - **THEN** it retains the newer stable login and observation time
+
+
+### Requirement: Queue-independent request grouping
+Every request SHALL retain its immutable arrival identity. New requests SHALL join the earliest eligible unreviewed planned raid in normal grouping order with the same game mode and map and spare capacity, or create one at the unified normal tail. Manual placement SHALL NOT freeze or move memberships. Reviewed groups SHALL remain frozen. Postponed requests SHALL remain active, preserving identity and arrival sequence.
+
+#### Scenario: New request joins a pinned group
+- **WHEN** a pinned unreviewed compatible raid has capacity
+- **THEN** intake can fill it without changing its manual service placement
+
+#### Scenario: Reviewed pinned group has capacity
+- **WHEN** a compatible request arrives after Review
+- **THEN** the existing frozen group receives no automatic member

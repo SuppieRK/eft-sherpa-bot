@@ -16,7 +16,6 @@ export interface CommunityConfig {
   };
   readonly policies: {
     readonly recipientLimit: number;
-    readonly attemptLimit: number;
   };
 }
 
@@ -33,7 +32,6 @@ export interface CommunityEnvironment {
   DISCORD_VOLUNTEER_ROLE_ID?: string;
   DISCORD_STREAMER_USER_ID?: string;
   RECIPIENT_LIMIT?: string;
-  ATTEMPT_LIMIT?: string;
 }
 
 function environmentText(value: string | undefined): string {
@@ -64,7 +62,6 @@ export function communityConfigFromEnvironment(environment: CommunityEnvironment
     },
     policies: {
       recipientLimit: environmentInteger(environment.RECIPIENT_LIMIT),
-      attemptLimit: environmentInteger(environment.ATTEMPT_LIMIT),
     },
   };
 }
@@ -116,7 +113,6 @@ export function validateCommunityConfig(config: CommunityConfig): string[] {
   }
 
   validatePositiveInteger(errors, "policies.recipientLimit", config.policies.recipientLimit);
-  validatePositiveInteger(errors, "policies.attemptLimit", config.policies.attemptLimit);
   return errors;
 }
 

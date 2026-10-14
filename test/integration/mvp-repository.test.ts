@@ -5,6 +5,7 @@ import { TARKOV_MAPS } from "../../src/domain/maps/catalog";
 import type { StaffBoardRaid } from "../../src/domain/staff-board";
 import { D1Metrics, instrumentD1Database } from "../../src/infrastructure/cloudflare/d1-metrics";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
+import { completedRaid, postponedRaid } from "../fixtures/raid-transitions";
 
 const now = new Date("2096-08-15T21:00:00.000Z");
 
@@ -46,7 +47,8 @@ async function seedWaitingRequests(
   input: {
     offset?: number;
     gameMode?: (index: number) => number;
-    isPriority?: (index: number) => number;
+    // Legacy values are inert after migration; grouping and ordering ignore them.
+    legacyFlag?: (index: number) => number;
   } = {},
 ): Promise<void> {
   const offset = input.offset ?? 0;
@@ -57,7 +59,7 @@ async function seedWaitingRequests(
       return {
         index,
         gameMode: input.gameMode?.(index) ?? 2,
-        isPriority: input.isPriority?.(index) ?? 0,
+        legacyFlag: input.legacyFlag?.(index) ?? 0,
       };
     });
     // Test fixtures are inserted in bounded chunks so the recovery path, not setup, is measured.
@@ -80,7 +82,7 @@ async function seedWaitingRequests(
               printf('Bulk PMC %d', json_extract(value, '$.index')),
               json_extract(value, '$.gameMode'), 'customs',
               printf('Bulk goal %d', json_extract(value, '$.index')),
-              json_extract(value, '$.isPriority'), 0, ?, ?
+              json_extract(value, '$.legacyFlag'), 0, ?, ?
          FROM json_each(?)`,
       ).bind(now.getTime(), now.getTime(), JSON.stringify(rows)),
     ]);
@@ -127,10 +129,10 @@ async function postpone(
   suffix: string,
 ): Promise<void> {
   await start(repo, raid);
-  await repo.postponeRaid({ groupId: raid.id, actionKey: suffix, changedAt: now });
+  await postponedRaid(repo, { groupId: raid.id, actionKey: suffix, changedAt: now });
 }
 
-describe("schedule-independent dual queues", () => {
+describe("schedule-independent raid ordering", () => {
   it("commits every new request as planned with one open membership", async () => {
     const repo = repository();
     const result = await repo.createRequest({
@@ -244,7 +246,7 @@ describe("schedule-independent dual queues", () => {
     const removedRequestId = await createRequest(repo, 1, "customs", "pve", 4);
     await createRequest(repo, 2, "customs", "pve", 4);
     await createRequest(repo, 3, "customs", "pve", 4);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE raid_group_members SET state = 2, updated_at = ?
@@ -304,21 +306,18 @@ describe("schedule-independent dual queues", () => {
     ).resolves.toEqual({ dirtyVersion: 1 });
   });
 
-  it("assigns requests without schedule data and bounds ordinary display at seven", async () => {
+  it("assigns requests without schedule data and displays the complete first page", async () => {
     const repo = repository();
     for (let index = 1; index <= 25; index += 1) await createRequest(repo, index);
 
     const board = await repo.getBoardSnapshot();
-    expect(board).toMatchObject({
-      ordinaryRaidCount: 9,
-      priorityRaidCount: 0,
-    });
-    expect(board.ordinaryRaids).toHaveLength(7);
-    expect(board.ordinaryRaids.map((raid) => raid.id)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(board).toMatchObject({ raidCount: 9 });
+    expect(board.raids).toHaveLength(9);
+    expect(board.raids.map((raid) => raid.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     await expect(
-      Promise.all(board.ordinaryRaids.map((raid) => currentMemberCount(raid.id))),
-    ).resolves.toEqual(board.ordinaryRaids.map((raid) => raid.members.length));
-    expect(board.priorityRaids).toEqual([]);
+      Promise.all(board.raids.map((raid) => currentMemberCount(raid.id))),
+    ).resolves.toEqual(board.raids.map((raid) => raid.members.length));
+    expect(board.nextPage).toBeUndefined();
   });
 
   it("groups only requests with the same game mode and map", async () => {
@@ -343,7 +342,7 @@ describe("schedule-independent dual queues", () => {
     ]);
   });
 
-  it("reserves a visible raid for every non-empty mode under skew", async () => {
+  it("keeps global FIFO order across all three modes", async () => {
     const repo = repository();
     for (let index = 1; index <= 21; index += 1) {
       await createRequest(repo, index, "customs", "pve");
@@ -352,17 +351,16 @@ describe("schedule-independent dual queues", () => {
     await createRequest(repo, 23, "customs", "pvp-seasonal");
 
     const board = await repo.getBoardSnapshot();
-    expect(board.ordinaryRaidCount).toBe(9);
-    expect(board.ordinaryRaids).toHaveLength(7);
-    expect(board.ordinaryRaids.slice(0, 3).map((raid) => raid.gameMode)).toEqual([
-      "pve",
+    expect(board.raidCount).toBe(9);
+    expect(board.raids).toHaveLength(9);
+    expect(board.raids.map((raid) => raid.gameMode)).toEqual([
+      ...Array.from({ length: 7 }, () => "pve"),
       "pvp",
       "pvp-seasonal",
     ]);
-    expect(board.ordinaryRaids.filter((raid) => raid.gameMode === "pve")).toHaveLength(5);
   });
 
-  it("reserves a minority-mode raid and keeps dominant-mode FIFO order", async () => {
+  it("keeps later modes behind older raids in the unified list", async () => {
     const repo = repository();
     for (let index = 1; index <= 21; index += 1) {
       await createRequest(repo, index, "customs", "pve");
@@ -370,42 +368,35 @@ describe("schedule-independent dual queues", () => {
     await createRequest(repo, 22, "customs", "pvp");
 
     const board = await repo.getBoardSnapshot();
-    expect(board.ordinaryRaids.map((raid) => raid.gameMode)).toEqual([
-      "pve",
+    expect(board.raids.map((raid) => raid.gameMode)).toEqual([
+      ...Array.from({ length: 7 }, () => "pve"),
       "pvp",
-      "pve",
-      "pve",
-      "pve",
-      "pve",
-      "pve",
     ]);
-    expect(
-      board.ordinaryRaids.filter((raid) => raid.gameMode === "pve").map((raid) => raid.id),
-    ).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(board.raids.map((raid) => raid.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
-  it("applies mode-presence ordering independently to Priority raids", async () => {
+  it("postpones whole groups behind earlier outstanding raids in every mode", async () => {
     const repo = repository();
     for (let index = 1; index <= 21; index += 1) {
       await createRequest(repo, index, "customs", "pve");
     }
     await createRequest(repo, 22, "customs", "pvp");
     await createRequest(repo, 23, "customs", "pvp-seasonal");
-    const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const normal = (await repo.getBoardSnapshot()).raids;
     for (const [index, mode] of (["pve", "pvp", "pvp-seasonal"] as const).entries()) {
-      const raid = ordinary.find((candidate) => candidate.gameMode === mode);
+      const raid = normal.find((candidate) => candidate.gameMode === mode);
       expect(raid).toBeDefined();
       await postpone(repo, raid as StaffBoardRaid, `priority-mode-${index}`);
     }
 
     const board = await repo.getBoardSnapshot();
-    expect(board.priorityRaidCount).toBe(3);
-    expect(board.priorityRaids.map((raid) => raid.gameMode)).toEqual([
+    expect(board.raidCount).toBe(9);
+    expect(board.raids.map((raid) => raid.id)).toEqual([2, 3, 4, 5, 6, 7, 1, 8, 9]);
+    expect(board.raids.slice(-3).map((raid) => raid.gameMode)).toEqual([
       "pve",
       "pvp",
       "pvp-seasonal",
     ]);
-    expect(board.ordinaryRaids[0]?.gameMode).toBe("pve");
   });
 
   it("allows the same viewer to request one map in different modes", async () => {
@@ -436,7 +427,7 @@ describe("schedule-independent dual queues", () => {
     async (existingState) => {
       const repo = repository();
       await createRequest(repo, 1);
-      const existing = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+      const existing = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
       if (existingState === "active") {
         await start(repo, existing);
       } else {
@@ -494,20 +485,17 @@ describe("schedule-independent dual queues", () => {
     }
   });
 
-  it("shows independent three-priority and seven-ordinary windows with complete raid totals", async () => {
+  it("shows ten unified raids per page with complete raid totals", async () => {
     const repo = repository();
     for (let index = 1; index <= 12; index += 1) await createRequest(repo, index);
-    const sources = (await repo.getBoardSnapshot()).ordinaryRaids.slice(0, 4);
+    const sources = (await repo.getBoardSnapshot()).raids.slice(0, 4);
     for (const [index, raid] of sources.entries()) await postpone(repo, raid, `source-${index}`);
     for (let index = 13; index <= 36; index += 1) await createRequest(repo, index);
 
     const board = await repo.getBoardSnapshot();
-    expect(board).toMatchObject({
-      priorityRaidCount: 4,
-      ordinaryRaidCount: 8,
-    });
-    expect(board.priorityRaids).toHaveLength(3);
-    expect(board.ordinaryRaids).toHaveLength(7);
+    expect(board).toMatchObject({ raidCount: 12, pageNumber: 1 });
+    expect(board.raids).toHaveLength(10);
+    expect(board.nextPage).toBeDefined();
   });
 
   it("returns the authenticated caller's mode-scoped position", async () => {
@@ -524,7 +512,7 @@ describe("schedule-independent dual queues", () => {
     });
   });
 
-  it("does not count another mode in the request ordinal but includes its fair raid head", async () => {
+  it("counts global raids ahead while keeping request positions mode-scoped", async () => {
     const repo = repository();
     for (let index = 1; index <= 6; index += 1) {
       await createRequest(repo, index, "customs", "pve");
@@ -538,19 +526,15 @@ describe("schedule-independent dual queues", () => {
         gameMode: "pvp",
         mapName: "Customs",
         queuePosition: { kind: "exact", ordinal: 1 },
-        raidsAhead: { kind: "exact", count: 1 },
+        raidsAhead: { kind: "exact", count: 2 },
       },
     });
   });
 
-  it("counts priority raids ahead of an ordinary caller", async () => {
+  it("counts existing raids ahead of a later caller", async () => {
     const repo = repository();
     for (let index = 1; index <= 3; index += 1) await createRequest(repo, index);
-    await postpone(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-      "priority",
-    );
+    await postpone(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid, "priority");
     await createRequest(repo, 4);
 
     await expect(
@@ -566,7 +550,7 @@ describe("schedule-independent dual queues", () => {
   it("requests a Twitch call for a streamer-led raid without schedule state", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await repo.reviewRaid({ groupId: raid.id, changedAt: now });
     await repo.compareAndSetRaidStaffMessage({
       groupId: raid.id,
@@ -592,13 +576,12 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const first = await createRequest(repo, 1);
     const second = await createRequest(repo, 2);
-    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
 
     const reviewed = await review(repo, planned, "frozen-review");
     expect(reviewed).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
       staffMessageId: "frozen-review",
@@ -611,14 +594,14 @@ describe("schedule-independent dual queues", () => {
       first,
       second,
     ]);
-    const laterRaid = board.ordinaryRaids.find((raid) => raid.id !== reviewed.id);
+    const laterRaid = board.raids.find((raid) => raid.id !== reviewed.id);
     expect(laterRaid?.members.map((member) => member.requestId)).toEqual([later]);
   });
 
   it("dismisses only the matching planned review and cannot clear active details", async () => {
     const repo = repository();
     const requestId = await createRequest(repo, 1);
-    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     const reviewed = await review(repo, planned, "dismiss-review");
 
     await expect(
@@ -638,7 +621,6 @@ describe("schedule-independent dual queues", () => {
     expect(await repo.getRaid(reviewed.id)).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
       members: [expect.objectContaining({ requestId })],
     });
     expect((await repo.getRaid(reviewed.id))?.staffMessageId).toBeUndefined();
@@ -672,7 +654,7 @@ describe("schedule-independent dual queues", () => {
   it("serializes review dismissal against raid start", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     const reviewed = await review(repo, planned, "dismiss-or-start");
 
     const [dismissed, started] = await Promise.allSettled([
@@ -703,7 +685,7 @@ describe("schedule-independent dual queues", () => {
   it("allows exactly one concurrent caller to activate a reviewed raid", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await review(repo, planned, "concurrent-start-review");
 
     const starts = await Promise.allSettled(
@@ -722,7 +704,6 @@ describe("schedule-independent dual queues", () => {
     const active = await repo.getRaid(planned.id);
     expect(active).toMatchObject({
       state: "active",
-      attemptCount: 1,
       discordCallStatus: "pending",
       twitchCallStatus: "not_requested",
       staffMessageId: "concurrent-start-review",
@@ -733,11 +714,8 @@ describe("schedule-independent dual queues", () => {
   it("keeps reserved follow-up activation restricted to its leader or the streamer", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
-    const postponed = await repo.postponeRaid({
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
+    const postponed = await postponedRaid(repo, {
       groupId: source.id,
       actionKey: "reserve-follow-up",
       changedAt: now,
@@ -774,8 +752,9 @@ describe("schedule-independent dual queues", () => {
     const retained = await createRequest(repo, 1);
     const moved = await createRequest(repo, 2);
     const removed = await createRequest(repo, 3);
-    const planned = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await review(repo, planned, "editable-review");
+    const destinationMember = await createRequest(repo, 4);
 
     const movement = await repo.postponeRequester({
       groupId: planned.id,
@@ -786,12 +765,14 @@ describe("schedule-independent dual queues", () => {
     expect(movement.source).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
       staffMessageId: "editable-review",
     });
-    expect(movement.dedicated.members.map((member) => member.requestId)).toEqual([moved]);
+    expect(movement.dedicated.members.map((member) => member.requestId)).toEqual([
+      destinationMember,
+      moved,
+    ]);
 
     const afterRemoval = await repo.removeRequester({
       groupId: planned.id,
@@ -816,32 +797,20 @@ describe("schedule-independent dual queues", () => {
     expect(closed.staffMessageId).toBeUndefined();
   });
 
-  it("starts at any time and advances attempts before completing helped requests", async () => {
+  it("starts at any time and completes current helped requests", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0];
+    const raid = (await repo.getBoardSnapshot()).raids[0];
     expect(raid).toBeDefined();
     const started = await start(repo, raid as StaffBoardRaid);
     expect(started).toMatchObject({
       state: "active",
-      queueKind: "ordinary",
-      attemptCount: 1,
       leaderDiscordUserId: "leader",
       discordCallStatus: "pending",
       twitchCallStatus: "not_requested",
     });
-    const second = await repo.recordRaidResult({
+    const helped = await completedRaid(repo, {
       groupId: started.id,
-      outcome: "unsuccessful",
-      attemptLimit: 3,
-      actionKey: "attempt-two",
-      changedAt: now,
-    });
-    expect(second.attemptCount).toBe(2);
-    const helped = await repo.recordRaidResult({
-      groupId: started.id,
-      outcome: "helped",
-      attemptLimit: 3,
       actionKey: "helped",
       changedAt: now,
     });
@@ -853,20 +822,15 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const firstRequest = await createRequest(repo, 1);
     const postponedRequest = await createRequest(repo, 2);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     const moved = await repo.postponeRequester({
       groupId: source.id,
       requestId: postponedRequest,
       actionKey: "move-before-helped",
       changedAt: now,
     });
-    await repo.recordRaidResult({
+    await completedRaid(repo, {
       groupId: source.id,
-      outcome: "helped",
-      attemptLimit: 3,
       actionKey: "help-source-only",
       changedAt: now,
     });
@@ -885,42 +849,18 @@ describe("schedule-independent dual queues", () => {
     await expect(currentMemberCount(moved.dedicated.id)).resolves.toBe(1);
   });
 
-  it("uses Postpone raid as the only unresolved result after the final attempt", async () => {
+  it("postpones an active group without an attempt prerequisite", async () => {
     const repo = repository();
     for (let index = 1; index <= 3; index += 1) await createRequest(repo, index);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
-    for (const attempt of [2, 3]) {
-      await repo.recordRaidResult({
-        groupId: source.id,
-        outcome: "unsuccessful",
-        attemptLimit: 3,
-        actionKey: `final-attempt-${attempt}`,
-        changedAt: now,
-      });
-    }
-    await expect(
-      repo.recordRaidResult({
-        groupId: source.id,
-        outcome: "unsuccessful",
-        attemptLimit: 3,
-        actionKey: "extra-unsuccessful",
-        changedAt: now,
-      }),
-    ).rejects.toThrow("Choose Helped or Postpone raid");
-
-    const postponed = await repo.postponeRaid({
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
+    const postponed = await postponedRaid(repo, {
       groupId: source.id,
       actionKey: "final-postpone",
       changedAt: now,
     });
     expect(postponed).toMatchObject({
       id: source.id,
-      queueKind: "priority",
       state: "planned",
-      attemptCount: 0,
       leaderDiscordUserId: "leader",
     });
     expect(postponed.members.map((member) => member.requestId)).toEqual(
@@ -936,7 +876,7 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const firstRequest = await createRequest(repo, 1);
     const secondRequest = await createRequest(repo, 2);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await start(repo, raid);
     const result = await repo.postponeRequester({
       groupId: raid.id,
@@ -946,12 +886,10 @@ describe("schedule-independent dual queues", () => {
     });
     expect(result.source.members.map((member) => member.requestId)).toEqual([firstRequest]);
     expect(result.dedicated).toMatchObject({
-      queueKind: "ordinary",
       automaticFill: true,
-      attemptCount: 0,
       leaderDiscordUserId: "leader",
     });
-    expect((await repo.getBoardSnapshot()).ordinaryRaids.map((group) => group.id)).toEqual([
+    expect((await repo.getBoardSnapshot()).raids.map((group) => group.id)).toEqual([
       raid.id,
       result.dedicated.id,
     ]);
@@ -962,10 +900,7 @@ describe("schedule-independent dual queues", () => {
   it("fills the only requester's follow-up with a later same-map request", async () => {
     const repo = repository();
     const postponedRequest = await createRequest(repo, 1, "interchange");
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     const postponed = await repo.postponeRequester({
       groupId: source.id,
       requestId: postponedRequest,
@@ -976,12 +911,12 @@ describe("schedule-independent dual queues", () => {
     const laterRequest = await createRequest(repo, 2, "interchange");
 
     const board = await repo.getBoardSnapshot();
-    expect(board.ordinaryRaidCount).toBe(1);
-    expect(board.ordinaryRaids[0]).toMatchObject({
+    expect(board.raidCount).toBe(1);
+    expect(board.raids[0]).toMatchObject({
       id: postponed.dedicated.id,
       automaticFill: true,
     });
-    expect(board.ordinaryRaids[0]?.members.map((member) => member.requestId)).toEqual([
+    expect(board.raids[0]?.members.map((member) => member.requestId)).toEqual([
       postponedRequest,
       laterRequest,
     ]);
@@ -1032,10 +967,7 @@ describe("schedule-independent dual queues", () => {
   it("fills requester follow-ups only with the same game mode", async () => {
     const repo = repository();
     const postponedRequest = await createRequest(repo, 1, "interchange", "pve");
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     const postponed = await repo.postponeRequester({
       groupId: source.id,
       requestId: postponedRequest,
@@ -1052,9 +984,7 @@ describe("schedule-independent dual queues", () => {
       postponedRequest,
       pveRequest,
     ]);
-    const pvpRaid = (await repo.getBoardSnapshot()).ordinaryRaids.find(
-      (raid) => raid.gameMode === "pvp",
-    );
+    const pvpRaid = (await repo.getBoardSnapshot()).raids.find((raid) => raid.gameMode === "pvp");
     expect(pvpRaid?.members.map((member) => member.requestId)).toEqual([pvpRequest]);
   });
 
@@ -1063,10 +993,7 @@ describe("schedule-independent dual queues", () => {
     const retainedRequest = await createRequest(repo, 1);
     const firstPostponedRequest = await createRequest(repo, 2);
     const secondPostponedRequest = await createRequest(repo, 3);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
 
     const first = await repo.postponeRequester({
       groupId: source.id,
@@ -1087,7 +1014,7 @@ describe("schedule-independent dual queues", () => {
       firstPostponedRequest,
       secondPostponedRequest,
     ]);
-    expect((await repo.getBoardSnapshot()).ordinaryRaidCount).toBe(2);
+    expect((await repo.getBoardSnapshot()).raidCount).toBe(2);
   });
 
   it("appends a postponed requester after the highest active follow-up position", async () => {
@@ -1096,10 +1023,7 @@ describe("schedule-independent dual queues", () => {
     const removedRequest = await createRequest(repo, 2, "customs", "pve", 4);
     const existingRequest = await createRequest(repo, 3, "customs", "pve", 4);
     const appendedRequest = await createRequest(repo, 4, "customs", "pve", 4);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     const first = await repo.postponeRequester({
       groupId: source.id,
       requestId: removedRequest,
@@ -1150,10 +1074,7 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const retainedRequest = await createRequest(repo, 1, "customs", "pve", 4);
     const postponedRequest = await createRequest(repo, 2, "customs", "pve", 4);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     await seedWaitingRequests(10_000, { offset: 100_000 });
     await env.DB.prepare(
       `UPDATE help_requests SET state = 3
@@ -1200,10 +1121,7 @@ describe("schedule-independent dual queues", () => {
     const retainedRequest = await createRequest(repo, 1);
     const firstPostponedRequest = await createRequest(repo, 2);
     const secondPostponedRequest = await createRequest(repo, 3);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     const first = await repo.postponeRequester({
       groupId: source.id,
       requestId: firstPostponedRequest,
@@ -1224,7 +1142,7 @@ describe("schedule-independent dual queues", () => {
     expect(second.dedicated.id).not.toBe(first.dedicated.id);
     expect(second.source.members.map((member) => member.requestId)).toEqual([retainedRequest]);
     const board = await repo.getBoardSnapshot();
-    expect(board.ordinaryRaids.map((raid) => raid.id)).toEqual([
+    expect(board.raids.map((raid) => raid.id)).toEqual([
       source.id,
       first.dedicated.id,
       second.dedicated.id,
@@ -1242,10 +1160,7 @@ describe("schedule-independent dual queues", () => {
     async ({ mapId, requesterCapacity }) => {
       const repo = repository();
       const postponedRequest = await createRequest(repo, 1, mapId);
-      const source = await start(
-        repo,
-        (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-      );
+      const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
       const postponed = await repo.postponeRequester({
         groupId: source.id,
         requestId: postponedRequest,
@@ -1258,48 +1173,46 @@ describe("schedule-independent dual queues", () => {
       }
 
       const board = await repo.getBoardSnapshot();
-      expect(board.ordinaryRaidCount).toBe(2);
-      expect(board.ordinaryRaids[0]).toMatchObject({
+      expect(board.raidCount).toBe(2);
+      expect(board.raids[0]).toMatchObject({
         id: postponed.dedicated.id,
         requesterCapacity,
       });
-      expect(board.ordinaryRaids[0]?.members).toHaveLength(requesterCapacity);
-      expect(board.ordinaryRaids[1]?.members).toHaveLength(1);
+      expect(board.raids[0]?.members).toHaveLength(requesterCapacity);
+      expect(board.raids[1]?.members).toHaveLength(1);
     },
   );
 
-  it("does not fill a Priority requester follow-up with an Ordinary request", async () => {
+  it("fills a postponed requester follow-up with a compatible new request", async () => {
     const repo = repository();
-    const priorityRequest = await createRequest(repo, 1, "interchange");
-    const ordinarySource = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
-    await postpone(repo, ordinarySource, "make-priority-source");
-    const prioritySource = await start(
+    const postponedRequest = await createRequest(repo, 1, "interchange");
+    const normalSource = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
+    await postpone(repo, normalSource, "make-priority-source");
+    const postponedSource = await start(
       repo,
-      (await repo.getBoardSnapshot()).priorityRaids[0] as StaffBoardRaid,
+      (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid,
     );
     const postponed = await repo.postponeRequester({
-      groupId: prioritySource.id,
-      requestId: priorityRequest,
+      groupId: postponedSource.id,
+      requestId: postponedRequest,
       actionKey: "postpone-priority-requester",
       changedAt: now,
     });
 
-    const ordinaryRequest = await createRequest(repo, 2, "interchange");
+    const newRequest = await createRequest(repo, 2, "interchange");
 
     const board = await repo.getBoardSnapshot();
-    expect(board.priorityRaids[0]?.members.map((member) => member.requestId)).toEqual([
-      priorityRequest,
+    expect(board.raids[0]?.members.map((member) => member.requestId)).toEqual([
+      postponedRequest,
+      newRequest,
     ]);
-    expect(board.priorityRaids[0]?.id).toBe(postponed.dedicated.id);
-    expect(board.ordinaryRaids[0]?.members.map((member) => member.requestId)).toEqual([
-      ordinaryRequest,
-    ]);
+    expect(board.raids[0]?.id).toBe(postponed.dedicated.id);
   });
 
   it("rolls back every requester-postponement mutation when follow-up creation fails", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    const raids = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const raids = (await repo.getBoardSnapshot()).raids;
     const source = await start(repo, raids[0] as StaffBoardRaid);
     await env.DB.prepare(`UPDATE raid_groups SET last_action_key = ? WHERE id = ?`)
       .bind("postpone-failure:postponed", raids[1]?.id)
@@ -1324,10 +1237,7 @@ describe("schedule-independent dual queues", () => {
     const retainedRequest = await createRequest(repo, 1);
     const firstPostponedRequest = await createRequest(repo, 2);
     const secondPostponedRequest = await createRequest(repo, 3);
-    const source = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const source = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     const first = await repo.postponeRequester({
       groupId: source.id,
       requestId: firstPostponedRequest,
@@ -1367,7 +1277,7 @@ describe("schedule-independent dual queues", () => {
   it("closes the empty source when its last requester is postponed", async () => {
     const repo = repository();
     const requestId = await createRequest(repo, 1);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await start(repo, raid);
     await repo.setRaidStaffMessage(raid.id, "old-message", now);
 
@@ -1384,12 +1294,11 @@ describe("schedule-independent dual queues", () => {
     });
     expect(result.source.staffMessageId).toBeUndefined();
     expect(result.dedicated).toMatchObject({
-      queueKind: "ordinary",
       state: "planned",
       automaticFill: true,
       leaderDiscordUserId: "leader",
     });
-    expect((await repo.getBoardSnapshot()).ordinaryRaids.map((group) => group.id)).toEqual([
+    expect((await repo.getBoardSnapshot()).raids.map((group) => group.id)).toEqual([
       result.dedicated.id,
     ]);
     await expect(currentMemberCount(raid.id)).resolves.toBe(0);
@@ -1400,7 +1309,7 @@ describe("schedule-independent dual queues", () => {
     const repo = repository();
     const firstRequest = await createRequest(repo, 1);
     const secondRequest = await createRequest(repo, 2);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await start(repo, raid);
     await repo.setRaidStaffMessage(raid.id, "remove-message", now);
 
@@ -1423,7 +1332,7 @@ describe("schedule-independent dual queues", () => {
     expect(closed).toMatchObject({ state: "canceled", outcome: "not_run" });
     expect(closed.staffMessageId).toBeUndefined();
     await expect(currentMemberCount(raid.id)).resolves.toBe(0);
-    expect((await repo.getBoardSnapshot()).ordinaryRaids).toEqual([]);
+    expect((await repo.getBoardSnapshot()).raids).toEqual([]);
     const requests = await env.DB.prepare(
       `SELECT id, CASE state WHEN 3 THEN 'canceled' ELSE 'other' END AS state
        FROM help_requests ORDER BY id`,
@@ -1434,12 +1343,12 @@ describe("schedule-independent dual queues", () => {
     ]);
   });
 
-  it("moves the same whole raid to the end of priority with attempts reset", async () => {
+  it("moves the same whole raid to the unified tail and resets calls", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids;
-    await postpone(repo, ordinary[0] as StaffBoardRaid, "existing-priority");
-    const source = ordinary[1] as StaffBoardRaid;
+    const normal = (await repo.getBoardSnapshot()).raids;
+    await postpone(repo, normal[0] as StaffBoardRaid, "existing-priority");
+    const source = normal[1] as StaffBoardRaid;
     const started = await start(repo, source);
     await repo.updateCallStatus({
       groupId: started.id,
@@ -1450,16 +1359,14 @@ describe("schedule-independent dual queues", () => {
     });
     await repo.setRaidStaffMessage(started.id, "postpone-message", now);
 
-    const postponed = await repo.postponeRaid({
+    const postponed = await postponedRaid(repo, {
       groupId: started.id,
       actionKey: "postpone-whole-raid",
       changedAt: now,
     });
     expect(postponed).toMatchObject({
       id: started.id,
-      queueKind: "priority",
       state: "planned",
-      attemptCount: 0,
       automaticFill: false,
       leaderDiscordUserId: "leader",
       discordCallStatus: "not_requested",
@@ -1470,28 +1377,23 @@ describe("schedule-independent dual queues", () => {
       started.members.map((member) => member.requestId),
     );
     const requests = await env.DB.prepare(
-      `SELECT CASE is_priority WHEN 1 THEN 'priority' ELSE 'ordinary' END AS queueKind,
-              CASE state WHEN 1 THEN 'planned' ELSE 'other' END AS state
+      `SELECT               CASE state WHEN 1 THEN 'planned' ELSE 'other' END AS state
        FROM help_requests
        WHERE id IN (${started.members.map(() => "?").join(",")}) ORDER BY id`,
     )
       .bind(...started.members.map((member) => member.requestId))
-      .all<{ queueKind: string; state: string }>();
-    expect(requests.results).toEqual(
-      started.members.map(() => ({ queueKind: "priority", state: "planned" })),
-    );
+      .all<{ state: string }>();
+    expect(requests.results).toEqual(started.members.map(() => ({ state: "planned" })));
 
     await start(repo, postponed);
-    const postponedAgain = await repo.postponeRaid({
+    const postponedAgain = await postponedRaid(repo, {
       groupId: postponed.id,
       actionKey: "postpone-priority-again",
       changedAt: now,
     });
     expect(postponedAgain).toMatchObject({
       id: postponed.id,
-      queueKind: "priority",
       state: "planned",
-      attemptCount: 0,
       leaderDiscordUserId: "leader",
     });
   });
@@ -1499,10 +1401,7 @@ describe("schedule-independent dual queues", () => {
   it("fences call status to one active raid start and keeps update time monotonic", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const firstRun = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
+    const firstRun = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
     const firstStartedAt = firstRun.startedAt as number;
 
     await expect(
@@ -1532,7 +1431,7 @@ describe("schedule-independent dual queues", () => {
         .first(),
     ).resolves.toEqual({ updatedAt: now.getTime(), discordCallStatus: 1 });
 
-    await repo.postponeRaid({
+    await postponedRaid(repo, {
       groupId: firstRun.id,
       actionKey: "fenced-call-postpone",
       changedAt: new Date(now.getTime() + 2_000),
@@ -1582,7 +1481,7 @@ describe("schedule-independent dual queues", () => {
   it("keeps removed membership history out of open board hydration", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await seedWaitingRequests(10_000, { offset: 1 });
     await env.DB.prepare(`UPDATE help_requests SET state = 3 WHERE id > 1`).run();
     const history = Array.from({ length: 10_000 }, (_, index) => ({
@@ -1602,7 +1501,7 @@ describe("schedule-independent dual queues", () => {
 
     const snapshot = await measured.getBoardSnapshot();
 
-    expect(snapshot.ordinaryRaids[0]?.members).toHaveLength(1);
+    expect(snapshot.raids[0]?.members).toHaveLength(1);
     expect(metrics.snapshot().rowsRead).toBeLessThan(100);
     const raidMetrics = new D1Metrics();
     await new D1MvpRepository(instrumentD1Database(env.DB, raidMetrics)).getRaid(raid.id);
@@ -1628,14 +1527,9 @@ describe("schedule-independent dual queues", () => {
   it("retains completed participants in historical single-raid reads", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const raid = await start(
-      repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
-    );
-    const completed = await repo.recordRaidResult({
+    const raid = await start(repo, (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid);
+    const completed = await completedRaid(repo, {
       groupId: raid.id,
-      outcome: "helped",
-      attemptLimit: 3,
       actionKey: "completed-history",
       changedAt: now,
     });
@@ -1651,17 +1545,15 @@ describe("schedule-independent dual queues", () => {
   it("does not mutate outstanding raids during an empty legacy repair", async () => {
     const repo = repository();
     await createRequest(repo, 1);
-    const before = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const before = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await repo.repairLegacyUnassignedRequests({
       changedAt: new Date("2196-08-16T04:00:00.000Z"),
       recipientLimit: 3,
     });
-    const after = (await repo.getBoardSnapshot()).ordinaryRaids[0];
+    const after = (await repo.getBoardSnapshot()).raids[0];
     expect(after).toMatchObject({
       id: before.id,
-      queueKind: before.queueKind,
       state: before.state,
-      attemptCount: before.attemptCount,
     });
   });
 
@@ -1683,7 +1575,7 @@ describe("schedule-independent dual queues", () => {
     await expect(
       measured.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
     ).resolves.toEqual({ repaired: 60, hasMore: false });
-    expect(metrics.snapshot().statements).toBe(7);
+    expect(metrics.snapshot().statements).toBe(8);
     const stored = await env.DB.prepare(
       `SELECT count(*) AS requestCount,
               (SELECT count(*) FROM raid_groups WHERE state = 0) AS raidCount,
@@ -1694,9 +1586,9 @@ describe("schedule-independent dual queues", () => {
   }, 15_000);
 
   it("repairs all 78 valid queue, mode, and map buckets below the D1 Free query limit", async () => {
-    const buckets = [0, 1].flatMap((isPriority) =>
+    const buckets = [0, 1].flatMap((legacyFlag) =>
       [0, 1, 2].flatMap((gameMode) =>
-        TARKOV_MAPS.map((map) => ({ isPriority, gameMode, mapId: map.id })),
+        TARKOV_MAPS.map((map) => ({ legacyFlag, gameMode, mapId: map.id })),
       ),
     );
     expect(buckets).toHaveLength(78);
@@ -1705,7 +1597,7 @@ describe("schedule-independent dual queues", () => {
       buckets[0] as (typeof buckets)[number],
       buckets[1] as (typeof buckets)[number],
     ].map((bucket, index) => ({
-      isPriority: bucket.isPriority,
+      legacyFlag: bucket.legacyFlag,
       gameMode: bucket.gameMode,
       mapId: bucket.mapId,
       index: index + 1,
@@ -1729,7 +1621,7 @@ describe("schedule-independent dual queues", () => {
                 printf('Bucket PMC %d', json_extract(value, '$.index')),
                 json_extract(value, '$.gameMode'), json_extract(value, '$.mapId'),
                 printf('Bucket goal %d', json_extract(value, '$.index')),
-                json_extract(value, '$.isPriority'), 0, ?, ?
+                json_extract(value, '$.legacyFlag'), 0, ?, ?
          FROM json_each(?)`,
       ).bind(now.getTime(), now.getTime(), JSON.stringify(rows)),
     ]);
@@ -1752,7 +1644,7 @@ describe("schedule-independent dual queues", () => {
     const removedRequest = await createRequest(repo, 1, "customs", "pve", 3);
     await createRequest(repo, 2, "customs", "pve", 3);
     await createRequest(repo, 3, "customs", "pve", 3);
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE raid_group_members SET state = 2, updated_at = ?
@@ -1818,6 +1710,43 @@ describe("schedule-independent dual queues", () => {
     ).resolves.toEqual({ waiting: 9_920, planned: 80 });
   }, 20_000);
 
+  it("rolls back recovery if automatic filling cannot be enabled after membership creation", async () => {
+    await ensureCommunityState();
+    await seedWaitingRequests(80);
+    await env.DB.prepare(`CREATE TRIGGER reject_recovery_activation
+      BEFORE UPDATE OF automatic_fill ON raid_groups
+      WHEN OLD.automatic_fill=0 AND NEW.automatic_fill=1
+      BEGIN SELECT RAISE(ABORT,'injected recovery activation failure'); END`).run();
+    const repo = repository();
+    try {
+      await expect(
+        repo.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+      ).rejects.toThrow("injected recovery activation failure");
+      expect(await env.DB.prepare("SELECT count(*) AS count FROM raid_groups").first()).toEqual({
+        count: 0,
+      });
+      expect(
+        await env.DB.prepare("SELECT count(*) AS count FROM raid_group_members").first(),
+      ).toEqual({ count: 0 });
+      expect(
+        await env.DB.prepare("SELECT count(*) AS count FROM help_requests WHERE state=0").first(),
+      ).toEqual({ count: 80 });
+      expect(
+        await env.DB.prepare("SELECT board_dirty_version AS version FROM community_state").first(),
+      ).toEqual({ version: 0 });
+    } finally {
+      await env.DB.prepare("DROP TRIGGER reject_recovery_activation").run();
+    }
+    expect(
+      await repo.repairLegacyUnassignedRequests({ recipientLimit: 3, changedAt: now }),
+    ).toEqual({ repaired: 80, hasMore: false });
+    expect(
+      await env.DB.prepare(
+        "SELECT count(*) AS count FROM raid_groups WHERE automatic_fill=0",
+      ).first(),
+    ).toEqual({ count: 0 });
+  });
+
   it("ignores a large unrelated partial-raid population during bounded repair", async () => {
     await ensureCommunityState();
     await seedWaitingRequests(80);
@@ -1868,14 +1797,14 @@ describe("schedule-independent dual queues", () => {
     expect(metrics.snapshot().rowsRead).toBeLessThan(2_500);
   }, 20_000);
 
-  it("reserves every non-empty queue-kind and mode pair outside the FIFO batch", async () => {
+  it("repairs the oldest eighty requests before later mode buckets", async () => {
     await seedWaitingRequests(600, {
       gameMode: (index) => {
         if (index === 301 || index === 599) return 1;
         if (index === 302 || index === 600) return 0;
         return 2;
       },
-      isPriority: (index) => (index <= 302 ? 1 : 0),
+      legacyFlag: (index) => (index <= 302 ? 1 : 0),
     });
 
     await expect(
@@ -1886,11 +1815,11 @@ describe("schedule-independent dual queues", () => {
     ).all<{ id: number; state: number }>();
     expect(reserved.results).toEqual([
       { id: 1, state: 1 },
-      { id: 301, state: 1 },
-      { id: 302, state: 1 },
-      { id: 303, state: 1 },
-      { id: 599, state: 1 },
-      { id: 600, state: 1 },
+      { id: 301, state: 0 },
+      { id: 302, state: 0 },
+      { id: 303, state: 0 },
+      { id: 599, state: 0 },
+      { id: 600, state: 0 },
     ]);
   });
 
@@ -2622,15 +2551,15 @@ describe("schedule-independent dual queues", () => {
 });
 
 describe("requester pull-up", () => {
-  it.each(["ordinary", "priority"] as const)(
+  it.each(["initial", "restarted"] as const)(
     "pulls from a selected later source into an active %s raid without changing its run",
-    async (queueKind) => {
+    async (runCase) => {
       const repo = repository();
       for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
-      const [first, skipped, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+      const [first, skipped, source] = (await repo.getBoardSnapshot()).raids;
       let destination = await start(repo, first as StaffBoardRaid);
-      if (queueKind === "priority") {
-        destination = await repo.postponeRaid({
+      if (runCase === "restarted") {
+        destination = await postponedRaid(repo, {
           groupId: destination.id,
           actionKey: "priority-active-pull",
           changedAt: now,
@@ -2652,9 +2581,7 @@ describe("requester pull-up", () => {
       });
       expect(result.destination).toMatchObject({
         state: "active",
-        queueKind,
         leaderDiscordUserId: destination.leaderDiscordUserId,
-        attemptCount: destination.attemptCount,
         startedAt: destination.startedAt,
         discordCallStatus: destination.discordCallStatus,
         twitchCallStatus: destination.twitchCallStatus,
@@ -2669,7 +2596,7 @@ describe("requester pull-up", () => {
   it("pulls one requester and pushes the complete source remainder into one successor", async () => {
     const repo = repository();
     for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
-    const [first, source, successor] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source, successor] = (await repo.getBoardSnapshot()).raids;
     const destination = await review(repo, first as StaffBoardRaid, "pull-destination");
     await repo.removeRequester({
       groupId: destination.id,
@@ -2715,7 +2642,7 @@ describe("requester pull-up", () => {
   it("keeps pull and push bounded with 10,000 removed source memberships", async () => {
     const repo = repository();
     for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
-    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source] = (await repo.getBoardSnapshot()).raids;
     const destination = await review(repo, first as StaffBoardRaid, "history-pull-destination");
     await repo.removeRequester({
       groupId: destination.id,
@@ -2758,7 +2685,7 @@ describe("requester pull-up", () => {
   it("retains the complete source party when the immediate successor cannot fit it", async () => {
     const repo = repository();
     for (let index = 1; index <= 8; index += 1) await createRequest(repo, index);
-    const [first, source, successor] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source, successor] = (await repo.getBoardSnapshot()).raids;
     const destination = await review(repo, first as StaffBoardRaid, "retained-destination");
     await repo.removeRequester({
       groupId: destination.id,
@@ -2787,18 +2714,18 @@ describe("requester pull-up", () => {
     ).toEqual(successorMembers);
   });
 
-  it("promotes only the selected Ordinary requester into a reviewed Priority raid", async () => {
+  it("pulls only the selected requester into a reviewed postponed raid", async () => {
     const repo = repository();
     await createRequest(repo, 1);
     await createRequest(repo, 2);
-    const ordinary = (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid;
-    const active = await start(repo, ordinary);
-    const priority = await repo.postponeRaid({
+    const normal = (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid;
+    const active = await start(repo, normal);
+    const postponed = await postponedRaid(repo, {
       groupId: active.id,
       actionKey: "make-priority-destination",
       changedAt: now,
     });
-    const destination = await review(repo, priority, "priority-pull-destination");
+    const destination = await review(repo, postponed, "priority-pull-destination");
     for (let index = 3; index <= 6; index += 1) await createRequest(repo, index);
     const candidates = await repo.getPullRequesterCandidates(destination.id);
     const selected = candidates?.source.members[0]?.requestId as number;
@@ -2808,30 +2735,30 @@ describe("requester pull-up", () => {
       destinationGroupId: destination.id,
       sourceGroupId: candidates?.source.id as number,
       requestId: selected,
-      actionKey: "pull-ordinary-into-priority",
+      actionKey: "pull-normal-into-priority",
       changedAt: now,
     });
 
-    expect(result.destination.queueKind).toBe("priority");
+    expect(result.destination).not.toHaveProperty("queueKind");
     expect(result.sourceDisposition).toBe("pushed");
-    const priorities = await env.DB.prepare(
-      `SELECT id, is_priority AS isPriority FROM help_requests
+    const legacyFlags = await env.DB.prepare(
+      `SELECT id, is_priority AS legacyFlag FROM help_requests
        WHERE id IN (${[selected, ...unselected].map(() => "?").join(",")}) ORDER BY id`,
     )
       .bind(selected, ...unselected)
-      .all<{ id: number; isPriority: number }>();
-    expect(priorities.results.find((request) => request.id === selected)?.isPriority).toBe(1);
+      .all<{ id: number; legacyFlag: number }>();
+    expect(legacyFlags.results.find((request) => request.id === selected)?.legacyFlag).toBe(0);
     expect(
-      priorities.results
+      legacyFlags.results
         .filter((request) => unselected.includes(request.id))
-        .map((request) => request.isPriority),
+        .map((request) => request.legacyFlag),
     ).toEqual(unselected.map(() => 0));
   });
 
   it("never pulls a requester from a concurrent volunteer-led active raid", async () => {
     const repo = repository();
     for (let index = 1; index <= 7; index += 1) await createRequest(repo, index);
-    const [first, volunteerRaid, later] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, volunteerRaid, later] = (await repo.getBoardSnapshot()).raids;
     const active = await start(repo, volunteerRaid as StaffBoardRaid);
     const activeRequestIds = active.members.map((member) => member.requestId);
     const reviewed = await review(repo, first as StaffBoardRaid, "streamer-reviewed-destination");
@@ -2863,7 +2790,7 @@ describe("requester pull-up", () => {
   it("rejects a stale source selection without moving any requester", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    const [first] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first] = (await repo.getBoardSnapshot()).raids;
     const reviewed = await review(repo, first as StaffBoardRaid, "stale-pull-destination");
     await repo.removeRequester({
       groupId: reviewed.id,
@@ -2900,7 +2827,7 @@ describe("requester pull-up", () => {
       for (let index = 1; index <= requesterCapacity + 1; index += 1) {
         await createRequest(repo, index, map.id, "pve", 99);
       }
-      const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+      const [first, source] = (await repo.getBoardSnapshot()).raids;
       const reviewed = await review(repo, first as StaffBoardRaid, "icebreaker-pull");
       if (state === "active") await start(repo, reviewed);
       await repo.removeRequester({
@@ -2935,7 +2862,7 @@ describe("requester pull-up", () => {
       await createRequest(repo, 1, "shoreline", "pvp", 4);
       const destination = await review(
         repo,
-        (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+        (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid,
       );
       await env.DB.prepare(
         `UPDATE raid_groups SET leader_discord_user_id = 'leader', leader_type = 1 WHERE id = ?`,
@@ -2945,7 +2872,7 @@ describe("requester pull-up", () => {
       if (active) await start(repo, destination);
       for (let index = 2; index <= sourceCount + 1; index += 1)
         await createRequest(repo, index, "shoreline", "pvp", 4);
-      const source = (await repo.getBoardSnapshot()).ordinaryRaids[1] as StaffBoardRaid;
+      const source = (await repo.getBoardSnapshot()).raids[1] as StaffBoardRaid;
       await env.DB.prepare(
         `UPDATE raid_groups SET leader_discord_user_id = 'source-leader', leader_type = 1, automatic_fill = ? WHERE id = ?`,
       )
@@ -2983,7 +2910,7 @@ describe("requester pull-up", () => {
         sourceKind === "other-map" ? "woods" : "customs",
         sourceKind === "other-mode" ? "pvp" : "pve",
       );
-      const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+      const [first, source] = (await repo.getBoardSnapshot()).raids;
       const destination = await start(repo, first as StaffBoardRaid);
       await repo.removeRequester({
         groupId: destination.id,
@@ -3025,7 +2952,7 @@ describe("requester pull-up", () => {
       await createRequest(repo, index, "woods", "pve");
     }
     const compatibleRequest = await createRequest(repo, 10, "customs", "pve");
-    const destinationSeed = (await repo.getBoardSnapshot()).ordinaryRaids.find(
+    const destinationSeed = (await repo.getBoardSnapshot()).raids.find(
       (raid) => raid.gameMode === "pve" && raid.mapId === "customs",
     ) as StaffBoardRaid;
     const destination = await review(repo, destinationSeed, "compatibility-pull-destination");
@@ -3043,23 +2970,23 @@ describe("requester pull-up", () => {
     ]);
   });
 
-  it("uses a later Priority source before an Ordinary source", async () => {
+  it("orders available pull sources by unified service placement", async () => {
     const repo = repository();
     for (let index = 1; index <= 9; index += 1) await createRequest(repo, index);
-    const [first, second, ordinarySource] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, second, normalSource] = (await repo.getBoardSnapshot()).raids;
     await postpone(repo, first as StaffBoardRaid, "first-priority-pull-raid");
     await postpone(repo, second as StaffBoardRaid, "second-priority-pull-raid");
-    const priorityRaids = (await repo.getBoardSnapshot()).priorityRaids;
+    const orderedRaids = (await repo.getBoardSnapshot()).raids;
     await env.DB.prepare(
       `UPDATE raid_groups SET automatic_fill = 1,
               leader_discord_user_id = NULL, leader_type = NULL
        WHERE id = ?`,
     )
-      .bind(priorityRaids[1]?.id)
+      .bind(orderedRaids[1]?.id)
       .run();
     const destination = await review(
       repo,
-      priorityRaids[0] as StaffBoardRaid,
+      orderedRaids[0] as StaffBoardRaid,
       "priority-source-destination",
     );
     await repo.removeRequester({
@@ -3070,47 +2997,47 @@ describe("requester pull-up", () => {
     });
 
     const candidates = await repo.getPullRequesterCandidates(destination.id);
-    expect(candidates?.source.id).toBe(priorityRaids[1]?.id);
-    expect(candidates?.source.id).not.toBe(ordinarySource?.id);
-    expect(candidates?.source.queueKind).toBe("priority");
+    expect(candidates?.source.id).toBe(orderedRaids[1]?.id);
+    expect(candidates?.source.id).not.toBe(normalSource?.id);
+    expect(candidates?.source).not.toHaveProperty("queueKind");
   });
 
-  it("offers an unreserved Priority source to an Ordinary destination and changes only the selected request queue", async () => {
+  it("offers an unreserved postponed source in unified service order", async () => {
     const repo = repository();
     for (let index = 1; index <= 9; index += 1) await createRequest(repo, index);
-    const [prioritySeed, ordinaryDestinationSeed, ordinarySource] = (await repo.getBoardSnapshot())
-      .ordinaryRaids;
-    await postpone(repo, prioritySeed as StaffBoardRaid, "priority-before-ordinary-pull");
-    const priority = (await repo.getBoardSnapshot()).priorityRaids[0] as StaffBoardRaid;
+    const [postponedSeed, normalDestinationSeed, normalSource] = (await repo.getBoardSnapshot())
+      .raids;
+    await postpone(repo, postponedSeed as StaffBoardRaid, "priority-before-normal-pull");
+    const postponed = (await repo.getRaid(postponedSeed?.id as number)) as StaffBoardRaid;
     await env.DB.prepare(
       `UPDATE raid_groups SET automatic_fill = 1, leader_discord_user_id = NULL, leader_type = NULL WHERE id = ?`,
     )
-      .bind(priority.id)
+      .bind(postponed.id)
       .run();
     const destination = await review(
       repo,
-      ordinaryDestinationSeed as StaffBoardRaid,
-      "ordinary-pull-destination",
+      normalDestinationSeed as StaffBoardRaid,
+      "normal-pull-destination",
     );
     await repo.removeRequester({
       groupId: destination.id,
       requestId: destination.members[0]?.requestId as number,
-      actionKey: "ordinary-pull-open-seat",
+      actionKey: "normal-pull-open-seat",
       changedAt: now,
     });
 
     const candidates = await repo.getPullRequesterCandidates(destination.id);
-    expect(candidates?.source.id).toBe(priority.id);
-    expect(candidates?.source.nextSourceId).toBe(ordinarySource?.id);
-    const selected = priority.members[0]?.requestId as number;
+    expect(candidates?.source.id).toBe(normalSource?.id);
+    expect(candidates?.source.nextSourceId).toBe(postponed.id);
+    const selected = postponed.members[0]?.requestId as number;
     const pulled = await repo.pullRequester({
       destinationGroupId: destination.id,
-      sourceGroupId: priority.id,
+      sourceGroupId: postponed.id,
       requestId: selected,
-      actionKey: "priority-to-ordinary-pull",
+      actionKey: "priority-to-normal-pull",
       changedAt: now,
     });
-    expect(pulled.destination.queueKind).toBe("ordinary");
+    expect(pulled.destination).not.toHaveProperty("queueKind");
     await expect(
       env.DB.prepare(`SELECT is_priority AS priority FROM help_requests WHERE id = ?`)
         .bind(selected)
@@ -3120,15 +3047,15 @@ describe("requester pull-up", () => {
       env.DB.prepare(
         `SELECT DISTINCT is_priority AS priority FROM help_requests WHERE id IN (?, ?)`,
       )
-        .bind(priority.members[1]?.requestId, priority.members[2]?.requestId)
+        .bind(postponed.members[1]?.requestId, postponed.members[2]?.requestId)
         .all(),
-    ).resolves.toMatchObject({ results: [{ priority: 1 }] });
+    ).resolves.toMatchObject({ results: [{ priority: 0 }] });
   });
 
   it("browses every compatible source in both directions, including sources before the destination", async () => {
     const repo = repository();
     for (let index = 1; index <= 10; index += 1) await createRequest(repo, index);
-    const [earlier, first, second, last] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [earlier, first, second, last] = (await repo.getBoardSnapshot()).raids;
     const destination = await review(repo, second as StaffBoardRaid, "browse-destination");
     await repo.removeRequester({
       groupId: destination.id,
@@ -3163,19 +3090,19 @@ describe("requester pull-up", () => {
   });
 
   it.each([
-    { isPriority: 0, reserved: false },
-    { isPriority: 1, reserved: false },
-    { isPriority: 0, reserved: true },
-    { isPriority: 1, reserved: true },
-  ])("uses bounded source navigation deep in queue %j", async ({ isPriority, reserved }) => {
+    { legacyFlag: 0, reserved: false },
+    { legacyFlag: 1, reserved: false },
+    { legacyFlag: 0, reserved: true },
+    { legacyFlag: 1, reserved: true },
+  ])("uses bounded source navigation deep in queue %j", async ({ legacyFlag, reserved }) => {
     const repo = repository();
     await createRequest(repo, 1);
     const destination = await review(
       repo,
-      (await repo.getBoardSnapshot()).ordinaryRaids[0] as StaffBoardRaid,
+      (await repo.getBoardSnapshot()).raids[0] as StaffBoardRaid,
       "deep-source-review",
     );
-    await seedWaitingRequests(1_000, { offset: 1_000, isPriority: () => isPriority });
+    await seedWaitingRequests(1_000, { offset: 1_000, legacyFlag: () => legacyFlag });
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO raid_groups
         (id, is_priority, sort_key, map_id, game_mode, requester_capacity, created_at, updated_at)
@@ -3203,7 +3130,7 @@ describe("requester pull-up", () => {
   it("stops push-down at a reviewed compatible boundary", async () => {
     const repo = repository();
     for (let index = 1; index <= 10; index += 1) await createRequest(repo, index);
-    const [first, source, boundary, farther] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source, boundary, farther] = (await repo.getBoardSnapshot()).raids;
     const frozenBoundary = await review(repo, boundary as StaffBoardRaid, "frozen-push-boundary");
     const destination = await review(repo, first as StaffBoardRaid, "bounded-push-destination");
     await repo.removeRequester({
@@ -3238,7 +3165,7 @@ describe("requester pull-up", () => {
   it("protects an open review but allows a reserved source after its review closes", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source] = (await repo.getBoardSnapshot()).raids;
     await review(repo, source as StaffBoardRaid, "reviewed-source-boundary");
     const destination = await review(repo, first as StaffBoardRaid, "reviewed-source-destination");
     await repo.removeRequester({
@@ -3264,7 +3191,7 @@ describe("requester pull-up", () => {
   it("rolls back the complete pull when a push membership write fails", async () => {
     const repo = repository();
     for (let index = 1; index <= 8; index += 1) await createRequest(repo, index);
-    const [first, source, target] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source, target] = (await repo.getBoardSnapshot()).raids;
     const destination = await review(repo, first as StaffBoardRaid, "rollback-pull-destination");
     await repo.removeRequester({
       groupId: destination.id,
@@ -3320,7 +3247,7 @@ describe("requester pull-up", () => {
   it("allows only one concurrent pull of the same requester", async () => {
     const repo = repository();
     for (let index = 1; index <= 4; index += 1) await createRequest(repo, index);
-    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source] = (await repo.getBoardSnapshot()).raids;
     const reviewed = await review(repo, first as StaffBoardRaid, "concurrent-pull-destination");
     await repo.removeRequester({
       groupId: reviewed.id,

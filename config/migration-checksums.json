@@ -11,6 +11,8 @@
     "0008_monotonic_twitch_identity.sql": "84dfdc79c7853281b9750752a056a0249181feb5455f08da41523cd37c62ef65",
     "0009_bound_follow_up_cleanup.sql": "f8f22b21f7f7b88933f16139d95f0cd1596f0cdfaff9615fa3c0878aa5508d98",
     "0010_allow_reserved_pull_sources.sql": "3aab33f49751938636d54e2d2676622ee6a4d1f78d6363760c63c69cec4c56b9",
-    "0011_prune_closed_follow_ups.sql": "eeb7f680974013fddbc25530e4b3890b79ffc3a06b5de87c786acd7acb74d00f"
+    "0011_prune_closed_follow_ups.sql": "eeb7f680974013fddbc25530e4b3890b79ffc3a06b5de87c786acd7acb74d00f",
+    "0012_unify_raid_ordering.sql": "f2e5ba15f759df86b18bc2ea5f98d700b46af22aa3db90d4737447eca3d3d818",
+    "0013_index_reviewed_requester_moves.sql": "33434cb861c75bb36e3ab8d1d744d2b0b0a35b57c362d459094a94bc445602bb"
   }
 }

@@ -21,152 +21,169 @@ const requester: StaffBoardRaid["members"][number] = {
 const raid: StaffBoardRaid = {
   gameMode: "pve",
   id: 7,
-  queueKind: "ordinary",
   mapId: "the-lab",
   state: "planned",
   requesterCapacity: 3,
   sortKey: 1_000_000,
+  manualOrder: 0,
+  serviceLane: 1,
+  serviceKey: 1_000_000,
+  nextMoveRaidId: 8,
   automaticFill: true,
-  attemptCount: 0,
   discordCallStatus: "not_requested",
   twitchCallStatus: "not_requested",
   members: [requester],
 };
 
 const snapshot: StaffBoardSnapshot = {
-  priorityRaidCount: 0,
-  ordinaryRaidCount: 11,
-  priorityRaids: [],
-  ordinaryRaids: [raid],
+  boardVersion: 3,
+  raidCount: 11,
+  pageNumber: 1,
+  raids: [raid],
 };
+const boardInput = { guildId: "guild", staffChannelId: "staff" };
 
-describe("split staff board", () => {
-  it("renders compact raid state with only Refresh and Review a raid", () => {
-    const message = renderStaffBoard(snapshot, {
-      attemptLimit: 3,
-      guildId: "guild",
-      staffChannelId: "staff",
-    });
-    const serialized = JSON.stringify(message);
-    expect(serialized).not.toContain("help requests");
-    expect(serialized).not.toContain("raids outstanding");
-    expect(serialized).toContain("Priority raids");
-    expect(serialized).toContain("Ordinary raids");
-    expect(serialized).toContain("Showing 0 of 0 raids (up to 3)");
-    expect(serialized).toContain("Showing 1 of 11 raids (up to 7)");
-    expect(serialized).toContain("board:v6:refresh");
-    expect(serialized).toContain("board:v6:review");
-    expect(serialized).toContain("Review a raid");
-    expect(serialized).toContain("PvE · The Lab");
-    expect(serialized).toContain("Requesters: @viewer");
-    expect(serialized).not.toContain("PvE · The Lab (2/5)");
-    expect(
-      JSON.stringify(
-        renderStaffBoard(
-          { ...snapshot, ordinaryRaids: [{ ...raid, staffMessageId: "obsolete-message" }] },
-          { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },
-        ),
-      ),
-    ).toContain("obsolete-message");
-    expect(serialized).not.toContain("schedule");
-    expect(serialized).not.toMatch(/Pause|End night|Reassign|Previous|Next page|Goal:|Notes:/);
+describe("unified staff board", () => {
+  it("shows one compact list with streamer ordering and page controls", () => {
+    const message = renderStaffBoard(snapshot, boardInput);
+    const text = JSON.stringify(message);
+    expect(text).toContain("Page 1");
+    expect(text).toContain("Showing 1 of 11 raids (up to 10)");
+    expect(text).toContain("Pin to top");
+    expect(text).not.toContain(" · Pinned");
+    expect(text).toContain("Streamer only");
+    expect(text).not.toMatch(/Priority|Ordinary|Attempt|Goal:|Notes:/);
+    expect(text).toContain("Requesters: @viewer");
     expect(message.allowed_mentions).toEqual({ parse: [] });
+    expect(message.embeds).toHaveLength(1);
+    expect(message.components[0]?.components).toMatchObject([
+      { label: "Previous", disabled: true },
+      { label: "Next", disabled: true },
+      { label: "Refresh" },
+    ]);
+    const pinned = renderStaffBoard(
+      { ...snapshot, raids: [{ ...raid, manualOrder: 2 }] },
+      boardInput,
+    );
+    expect(pinned.embeds?.[0]?.fields[0]?.name).toBe("1. PvE · The Lab · Pinned");
+    expect(JSON.stringify(pinned)).toContain("Unpin");
+    expect(JSON.stringify(pinned)).not.toMatch(/Moved|Move to top|Remove from top/);
+    expect(JSON.stringify(pinned)).not.toContain("Pin to top");
+    expect(pinned.components).toHaveLength(3);
   });
 
-  it("lists every grouped requester without a leader-inclusive occupancy fraction", () => {
-    const grouped = {
-      ...raid,
-      members: Array.from({ length: 4 }, (_, index) => ({
-        ...requester,
-        id: index + 1,
-        requestId: index + 1,
-        twitchLogin: `viewer_${index + 1}`,
-        position: index + 1,
-      })),
-    };
-    const message = renderStaffBoard(
-      { ...snapshot, ordinaryRaids: [grouped] },
-      { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },
-    );
-    const serialized = JSON.stringify(message);
-    expect(message.embeds?.[1]?.fields[0]?.value).toContain(
-      "Requesters: @viewer\\_1 · @viewer\\_2 · @viewer\\_3 · @viewer\\_4",
-    );
-    expect(serialized).not.toContain("(5/5)");
-    expect(message.allowed_mentions).toEqual({ parse: [] });
-  });
-
-  it("keeps a maximum ten-raid board within the Discord embed limit", () => {
-    const raids = Array.from({ length: 10 }, (_, raidIndex) => ({
-      ...raid,
-      id: raidIndex + 1,
-      members: Array.from({ length: 4 }, (_, memberIndex) => ({
-        ...requester,
-        id: raidIndex * 4 + memberIndex + 1,
-        requestId: raidIndex * 4 + memberIndex + 1,
-        twitchLogin: `viewer${raidIndex}${memberIndex}${"x".repeat(16)}`,
-        position: memberIndex + 1,
-      })),
-    }));
-    const message = renderStaffBoard(
-      {
-        priorityRaidCount: 3,
-        ordinaryRaidCount: 7,
-        priorityRaids: raids
-          .slice(0, 3)
-          .map((item) => Object.assign({}, item, { queueKind: "priority" as const })),
-        ordinaryRaids: raids.slice(3),
-      },
-      { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },
-    );
-    const embedCharacters = (message.embeds ?? []).reduce(
-      (total, embed) =>
-        total +
-        embed.title.length +
-        embed.description.length +
-        embed.fields.reduce(
-          (fieldTotal, field) => fieldTotal + field.name.length + field.value.length,
-          0,
-        ),
-      0,
-    );
-    expect(embedCharacters).toBeLessThanOrEqual(6_000);
-    for (const item of raids) {
-      for (const member of item.members)
-        expect(JSON.stringify(message)).toContain(member.twitchLogin);
-    }
-  });
-
-  it("derives review-selector ordinals before active raids are removed", () => {
+  it("offers only unpinned planned raids for pinning and pinned planned raids for unpinning", () => {
     const message = renderStaffBoard(
       {
         ...snapshot,
-        ordinaryRaids: [{ ...raid, id: 6, state: "active", leaderDiscordUserId: "leader" }, raid],
+        raids: [
+          { ...raid, id: 1, state: "active", manualOrder: 0 },
+          { ...raid, id: 2, manualOrder: 4 },
+          { ...raid, id: 3, manualOrder: 0 },
+        ],
       },
-      { attemptLimit: 3, guildId: "guild", staffChannelId: "staff" },
+      boardInput,
     );
-    expect(JSON.stringify(message)).toContain("Ordinary 2 · PvE · The Lab");
-    expect(JSON.stringify(message)).not.toContain("Ordinary 1 · PvE · The Lab");
+    const selectors = message.components.flatMap((row) => row.components);
+    expect(
+      selectors.find(
+        (component) => component.type === 3 && component.placeholder === "Review a raid",
+      ),
+    ).toMatchObject({
+      options: [{ value: "2" }, { value: "3" }],
+    });
+    expect(
+      selectors.find(
+        (component) =>
+          component.type === 3 && component.placeholder === "Pin to top · Streamer only",
+      ),
+    ).toMatchObject({
+      options: [{ value: "3" }],
+    });
+    expect(
+      selectors.find(
+        (component) => component.type === 3 && component.placeholder === "Unpin · Streamer only",
+      ),
+    ).toMatchObject({
+      options: [{ value: "2" }],
+    });
+  });
+
+  it("keeps every full maximum-name raid within Discord field and aggregate limits", () => {
+    const raids: StaffBoardRaid[] = Array.from({ length: 10 }, (_, i) => ({
+      ...raid,
+      id: i + 1,
+      gameMode: "pvp-seasonal",
+      mapId: "streets-of-tarkov",
+      requesterCapacity: 4,
+      manualOrder: i + 1,
+      leaderDiscordUserId: "9".repeat(25),
+      staffMessageId: "8".repeat(25),
+      members: Array.from({ length: 4 }, (_, j) => ({
+        ...requester,
+        id: i * 4 + j + 1,
+        requestId: i * 4 + j + 1,
+        twitchLogin: j === 0 ? "_".repeat(25) : "_".repeat(24) + String(j),
+        position: j + 1,
+      })),
+    }));
+    const message = renderStaffBoard(
+      { ...snapshot, raids, raidCount: 100000, pageNumber: 10000 },
+      { guildId: "7".repeat(25), staffChannelId: "6".repeat(25) },
+    );
+    const size = (message.embeds ?? []).reduce(
+      (sum, e) =>
+        sum +
+        e.title.length +
+        e.description.length +
+        e.fields.reduce((n, f) => n + f.name.length + f.value.length, 0),
+      0,
+    );
+    expect(size).toBeLessThanOrEqual(6000);
+    expect(message.embeds?.[0]?.fields).toHaveLength(10);
+    for (const field of message.embeds?.[0]?.fields ?? []) {
+      expect(field.name.length).toBeLessThanOrEqual(256);
+      expect(field.value.length).toBeLessThanOrEqual(1024);
+      expect(field.value).toContain(`@${"\\_".repeat(25)}`);
+    }
+    expect(message.components.length).toBeLessThanOrEqual(5);
+  });
+
+  it("encodes only bounded navigation and parses current order controls", () => {
+    const target = {
+      direction: "next" as const,
+      boundary: { lane: 1 as const, key: -3, id: 7 },
+      pageNumber: 2,
+    };
+    const message = renderStaffBoard({ ...snapshot, nextPage: target }, boardInput);
+    const next = message.components[0]?.components[1];
+    if (next?.type !== 2 || next.custom_id === undefined) throw new Error("Missing next button");
+    expect(parseStaffBoardAction(next.custom_id)).toEqual({ action: "page", version: 3, target });
+    expect(next.custom_id.length).toBeLessThanOrEqual(100);
+    expect(parseStaffBoardAction("board:v7:move:3")).toEqual({ action: "move", version: 3 });
+    expect(parseStaffBoardAction("board:v7:page:3:next:1:-3:7:0")).toBeUndefined();
+    expect(parseStaffBoardAction("board:v7:page:9007199254740992:next:1:1:7:2")).toBeUndefined();
   });
 
   it("renders planned review details without calls or active-only controls", () => {
     const reviewed = { ...raid, automaticFill: false, staffMessageId: "review-message" };
     const pullSource = { ...raid, id: 8, sortKey: 2_000_000 };
-    const message = renderRaidMessage(reviewed, 3, "reviewer", pullSource);
+    const message = renderRaidMessage(reviewed, "reviewer", pullSource);
     const serialized = JSON.stringify(message);
-    expect(serialized).toContain("Status: Planned review · Attempt 0/3");
+    expect(serialized).toContain("Status: Planned review");
     expect(serialized).toContain("Leader: Not assigned");
     expect(serialized).toContain("Calls: No requesters have been called.");
     expect(serialized).toContain("Goal: Task");
     expect(serialized).toContain("Notes: Bring markers");
     expect(serialized).toContain("Call and start raid");
     expect(serialized).toContain("Pull requester up");
-    expect(serialized).toContain("raid:v3:pull:7:8");
-    expect(serialized).not.toContain("raid:v3:pull_candidates:7");
+    expect(serialized).toContain("raid:v4:pull:7:8");
+    expect(serialized).not.toContain("raid:v4:pull_candidates:7");
     expect(serialized).toContain("Move requester to next raid");
+    expect(serialized).toContain("raid:v4:move:7:8");
     expect(serialized).toContain("Remove requester");
     expect(serialized).toContain('"label":"Cancel review"');
-    expect(serialized).toContain("raid:v3:cancel:7");
+    expect(serialized).toContain("raid:v4:cancel:7");
     expect(message.components[0]?.components).toMatchObject([
       { label: "Call and start raid", style: 1 },
       { label: "Cancel review", style: 2 },
@@ -178,14 +195,26 @@ describe("split staff board", () => {
     expect(message.allowed_mentions.users).toEqual(["reviewer"]);
   });
 
+  it("hides planned movement without a destination and preserves active postponement", () => {
+    const withoutDestination = { ...raid };
+    delete withoutDestination.nextMoveRaidId;
+    const reviewed = renderRaidMessage({
+      ...withoutDestination,
+      automaticFill: false,
+    });
+    expect(JSON.stringify(reviewed)).not.toContain("Move requester to next raid");
+    expect(JSON.stringify(reviewed)).toContain("Remove requester");
+    const active = renderRaidMessage({ ...withoutDestination, state: "active" });
+    expect(JSON.stringify(active)).toContain("Postpone requester");
+  });
+
   it("shows Pull requester up in reviewed or active raids with capacity", () => {
     const pullSource = { ...raid, id: 8, sortKey: 2_000_000 };
-    expect(JSON.stringify(renderRaidMessage(raid, 3))).not.toContain("Pull requester up");
+    expect(JSON.stringify(renderRaidMessage(raid))).not.toContain("Pull requester up");
     expect(
       JSON.stringify(
         renderRaidMessage(
           { ...raid, automaticFill: false, staffMessageId: "review-message" },
-          3,
           undefined,
           pullSource,
         ),
@@ -193,11 +222,11 @@ describe("split staff board", () => {
     ).toContain("Pull requester up");
     expect(
       JSON.stringify(
-        renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" }, 3),
+        renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" }),
       ),
     ).toContain("Pull requester up");
     expect(
-      renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" }, 3)
+      renderRaidMessage({ ...raid, automaticFill: false, staffMessageId: "review-message" })
         .components[1]?.components[0],
     ).toMatchObject({
       placeholder: "Pull requester up",
@@ -218,7 +247,6 @@ describe("split staff board", () => {
               position: index + 1,
             })),
           },
-          3,
           undefined,
           pullSource,
         ),
@@ -234,7 +262,6 @@ describe("split staff board", () => {
             staffMessageId: "active-message",
             leaderDiscordUserId: "leader",
           },
-          3,
           undefined,
           pullSource,
         ),
@@ -245,17 +272,17 @@ describe("split staff board", () => {
   it.each(["planned", "active"] as const)(
     "keeps %s source navigation within five Discord rows",
     (state) => {
-      const message = renderRaidMessage({ ...raid, state, automaticFill: false }, 3, undefined, {
+      const message = renderRaidMessage({ ...raid, state, automaticFill: false }, undefined, {
         ...raid,
         id: 8,
         previousSourceId: 6,
         nextSourceId: 9,
       });
       expect(message.components).toHaveLength(5);
-      expect(JSON.stringify(message)).toContain("raid:v3:pull_page:7:6");
-      expect(JSON.stringify(message)).toContain("raid:v3:pull_page:7:9");
+      expect(JSON.stringify(message)).toContain("raid:v4:pull_page:7:6");
+      expect(JSON.stringify(message)).toContain("raid:v4:pull_page:7:9");
       expect(JSON.stringify(message)).toContain("Pull requester up");
-      expect(parseRaidMessageAction("raid:v3:pull_page:7:9")).toEqual({
+      expect(parseRaidMessageAction("raid:v4:pull_page:7:9")).toEqual({
         action: "pull_page",
         raidId: 7,
         sourceRaidId: 9,
@@ -263,20 +290,19 @@ describe("split staff board", () => {
     },
   );
 
-  it("renders full raid disclosure and the attempt-dependent controls", () => {
+  it("renders full raid disclosure without attempt recording", () => {
     const active = {
       ...raid,
       state: "active" as const,
       leaderDiscordUserId: "leader",
       leaderType: "volunteer" as const,
-      attemptCount: 2,
       discordCallStatus: "sent" as const,
     };
-    const message = renderRaidMessage(active, 3, "leader");
+    const message = renderRaidMessage(active, "leader");
     expect(JSON.stringify(message)).toContain("PvE · The Lab raid");
     expect(JSON.stringify(message)).toContain("Goal: Task");
     expect(JSON.stringify(message)).toContain("Notes: Bring markers");
-    expect(JSON.stringify(message)).toContain("Record unsuccessful attempt");
+    expect(JSON.stringify(message)).not.toContain("Record unsuccessful attempt");
     expect(JSON.stringify(message)).toContain("Postpone requester");
     expect(JSON.stringify(message)).toContain("Remove requester");
     expect(JSON.stringify(message)).toContain("Postpone raid");
@@ -284,7 +310,7 @@ describe("split staff board", () => {
     expect(JSON.stringify(message)).not.toContain("Pull requester up");
     expect(JSON.stringify(message)).not.toContain('"label":"Cancel review"');
     expect(message.allowed_mentions.users).toEqual(["leader"]);
-    const updated = renderRaidMessage({ ...active, attemptCount: 3 }, 3);
+    const updated = renderRaidMessage({ ...active });
     expect(JSON.stringify(updated)).not.toContain("Try again");
     expect(JSON.stringify(updated)).not.toContain("Record unsuccessful attempt");
     expect(JSON.stringify(updated)).toContain("Postpone raid");
@@ -308,7 +334,7 @@ describe("split staff board", () => {
         position: index + 1,
       })),
     };
-    const message = renderRaidMessage(maximum, 3);
+    const message = renderRaidMessage(maximum);
     const embedCharacters = (message.embeds ?? []).reduce(
       (total, embed) =>
         total +
@@ -342,9 +368,9 @@ describe("split staff board", () => {
         },
       ],
     };
-    const message = renderRaidMessage(destination, 3, undefined, source);
+    const message = renderRaidMessage(destination, undefined, source);
     expect(message.components[1]?.components[0]).toMatchObject({
-      custom_id: "raid:v3:pull:7:8",
+      custom_id: "raid:v4:pull:7:8",
       options: [
         { label: "@viewer", description: "Task", value: "2" },
         {
@@ -358,22 +384,29 @@ describe("split staff board", () => {
 
   it("accepts only current board and raid component IDs", () => {
     expect(parseStaffBoardAction("board:v6:refresh")).toEqual({ action: "refresh" });
-    expect(parseStaffBoardAction("board:v6:review")).toEqual({ action: "review" });
+    expect(parseStaffBoardAction("board:v7:review")).toEqual({ action: "review" });
     expect(parseStaffBoardAction("board:v5:refresh")).toEqual({ action: "refresh" });
     expect(parseStaffBoardAction("board:v5:start")).toEqual({ action: "retired_start" });
     expect(parseStaffBoardAction("board:v4:refresh")).toBeUndefined();
     expect(parseStaffBoardAction("staff:v3:end:4")).toBeUndefined();
     expect(parseRaidMessageAction("raid:v2:call:7")).toEqual({ action: "call", raidId: 7 });
-    expect(parseRaidMessageAction("raid:v3:pull_candidates:7")).toEqual({
+    expect(parseRaidMessageAction("raid:v4:move:7:8")).toEqual({
+      action: "move",
+      raidId: 7,
+      destinationRaidId: 8,
+    });
+    expect(parseRaidMessageAction("raid:v4:move:7:0")).toBeUndefined();
+    expect(parseRaidMessageAction("raid:v4:move:7:9007199254740992")).toBeUndefined();
+    expect(parseRaidMessageAction("raid:v4:pull_candidates:7")).toEqual({
       action: "pull_candidates",
       raidId: 7,
     });
-    expect(parseRaidMessageAction("raid:v3:pull:7:8")).toEqual({
+    expect(parseRaidMessageAction("raid:v4:pull:7:8")).toEqual({
       action: "pull",
       raidId: 7,
       sourceRaidId: 8,
     });
-    expect(parseRaidMessageAction("raid:v3:cancel:7")).toEqual({
+    expect(parseRaidMessageAction("raid:v4:cancel:7")).toEqual({
       action: "cancel",
       raidId: 7,
     });

@@ -7,6 +7,7 @@ import type { StaffBoardRaid } from "../../src/domain/staff-board";
 import { D1MvpRepository } from "../../src/infrastructure/cloudflare/d1-mvp-repository";
 import type { CloudflareEnvironment } from "../../src/infrastructure/cloudflare/environment";
 import { synchronizeCanonicalBoard } from "../../src/infrastructure/discord/raid-messages";
+import { createTwitchEventSubSignature } from "../../src/infrastructure/twitch/eventsub";
 import { testCommunityConfig } from "../fixtures/community";
 
 const callbackUrl = "https://example.com/webhooks/discord/interactions";
@@ -154,7 +155,6 @@ function requestModal(
 async function seedActiveRaid(input: {
   interactionId: string;
   staffMessageId?: string;
-  attemptTwo?: boolean;
 }): Promise<{ repo: D1MvpRepository; raid: StaffBoardRaid }> {
   await worker.fetch(
     await signedRequest(requestModal(input.interactionId)),
@@ -162,7 +162,7 @@ async function seedActiveRaid(input: {
     createExecutionContext(),
   );
   const repo = new D1MvpRepository(env.DB);
-  const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+  const planned = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
   await repo.reviewRaid({ groupId: planned.id, changedAt });
   const reviewMessageId = input.staffMessageId ?? `seed-review-${planned.id}`;
   await repo.compareAndSetRaidStaffMessage({
@@ -177,15 +177,6 @@ async function seedActiveRaid(input: {
     requestTwitchCall: false,
     changedAt,
   });
-  if (input.attemptTwo === true) {
-    raid = await repo.recordRaidResult({
-      groupId: raid.id,
-      outcome: "unsuccessful",
-      attemptLimit: config.policies.attemptLimit,
-      actionKey: `${input.interactionId}-attempt-two`,
-      changedAt,
-    });
-  }
   if (input.staffMessageId === undefined) {
     await repo.compareAndSetRaidStaffMessage({
       groupId: raid.id,
@@ -474,7 +465,7 @@ describe("Discord progressive raid workflow", () => {
     });
   });
 
-  it("reviews one raid before a volunteer calls, starts, and advances its attempt", async () => {
+  it("reviews before starting and safely rejects a retired attempt control", async () => {
     await worker.fetch(
       await signedRequest(requestModal("create-request")),
       testEnvironment,
@@ -500,7 +491,7 @@ describe("Discord progressive raid workflow", () => {
       content: expect.stringContaining("/message-1"),
     });
     const repo = new D1MvpRepository(env.DB);
-    const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id;
+    const raidId = (await repo.getBoardSnapshot(changedAt)).raids[0]?.id;
     expect(raidId).toBeDefined();
     const reviewContext = createExecutionContext();
     const review = await worker.fetch(
@@ -509,7 +500,7 @@ describe("Discord progressive raid workflow", () => {
           ...staff,
           id: "review",
           type: 3,
-          data: { custom_id: "board:v6:review", values: [String(raidId)] },
+          data: { custom_id: "board:v7:review", values: [String(raidId)] },
         }),
       ),
       testEnvironment,
@@ -526,7 +517,6 @@ describe("Discord progressive raid workflow", () => {
     expect(await repo.getRaid(raidId ?? 0)).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
       staffMessageId: "message-2",
@@ -569,7 +559,6 @@ describe("Discord progressive raid workflow", () => {
     let raid = await repo.getRaid(raidId ?? 0);
     expect(raid).toMatchObject({
       state: "active",
-      attemptCount: 1,
       leaderDiscordUserId: "volunteer",
       discordCallStatus: "sent",
       twitchCallStatus: "not_requested",
@@ -588,15 +577,14 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     expect(await result.json()).toMatchObject({
-      type: 7,
+      type: 4,
       data: {
-        content: "<@volunteer> this raid is ready.",
-        allowed_mentions: { parse: [] },
-        embeds: [expect.objectContaining({ description: expect.stringContaining("Attempt 2/3") })],
+        flags: 64,
+        content: expect.stringContaining("out of date"),
       },
     });
     raid = await repo.getRaid(raidId ?? 0);
-    expect(raid?.attemptCount).toBe(2);
+    expect(raid).not.toHaveProperty("attemptCount");
     expect(
       outbound.filter((request) => request.url.includes(config.discord.requestChannelId)),
     ).toHaveLength(1);
@@ -609,7 +597,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id ?? 0;
+    const raidId = (await repo.getBoardSnapshot(changedAt)).raids[0]?.id ?? 0;
     const reviewRequest = async (id: string, userId: string) => {
       const executionContext = createExecutionContext();
       const response = await worker.fetch(
@@ -622,7 +610,7 @@ describe("Discord progressive raid workflow", () => {
             },
             id,
             type: 3,
-            data: { custom_id: "board:v6:review", values: [String(raidId)] },
+            data: { custom_id: "board:v7:review", values: [String(raidId)] },
           }),
         ),
         testEnvironment,
@@ -678,7 +666,7 @@ describe("Discord progressive raid workflow", () => {
       recipientLimit: config.policies.recipientLimit,
       observedAt: changedAt,
     });
-    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     const staff = {
       channel_id: config.discord.staffChannelId,
       member: {
@@ -693,15 +681,30 @@ describe("Discord progressive raid workflow", () => {
           ...staff,
           id: "review-before-move",
           type: 3,
-          data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+          data: { custom_id: "board:v7:review", values: [String(planned.id)] },
         }),
       ),
       testEnvironment,
       moveReviewContext,
     );
     await waitOnExecutionContext(moveReviewContext);
+    await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "review-move-destination",
+      twitchUserId: "review-move-third",
+      twitchLogin: "third_viewer",
+      gameMode: "pve",
+      inGameName: "Third PMC",
+      mapId: "customs",
+      objective: "Third goal",
+      recipientLimit: config.policies.recipientLimit,
+      observedAt: changedAt,
+    });
     outbound = [];
     const movedRequestId = planned.members[1]?.requestId;
+    const destinationId = (await repo.getRaid(planned.id))?.nextMoveRaidId;
+    if (destinationId === undefined) throw new Error("Missing move destination");
+    const moveContext = createExecutionContext();
     const moved = await worker.fetch(
       await signedRequest(
         context({
@@ -709,14 +712,15 @@ describe("Discord progressive raid workflow", () => {
           id: "move-before-call",
           type: 3,
           data: {
-            custom_id: `raid:v2:postpone:${planned.id}`,
+            custom_id: `raid:v4:move:${planned.id}:${destinationId}`,
             values: [String(movedRequestId)],
           },
         }),
       ),
       testEnvironment,
-      createExecutionContext(),
+      moveContext,
     );
+    await waitOnExecutionContext(moveContext);
     const movedBody = await moved.json();
     expect(movedBody).toMatchObject({
       type: 7,
@@ -731,7 +735,6 @@ describe("Discord progressive raid workflow", () => {
     expect(source).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
     });
@@ -739,6 +742,233 @@ describe("Discord progressive raid workflow", () => {
     expect(outbound.some((request) => request.url.includes(config.discord.requestChannelId))).toBe(
       false,
     );
+    const duplicateContext = createExecutionContext();
+    const duplicate = await worker.fetch(
+      await signedRequest(
+        context({
+          ...staff,
+          id: "move-before-call",
+          type: 3,
+          data: {
+            custom_id: `raid:v4:move:${planned.id}:${destinationId}`,
+            values: [String(movedRequestId)],
+          },
+        }),
+      ),
+      testEnvironment,
+      duplicateContext,
+    );
+    await waitOnExecutionContext(duplicateContext);
+    expect(await duplicate.json()).toMatchObject({
+      type: 4,
+      data: { flags: 64, content: expect.stringContaining("already received") },
+    });
+    expect((await repo.getRaid(planned.id))?.members).toHaveLength(1);
+  });
+
+  it.each([11, 1])(
+    "hides Lab movement without an existing destination with %i raids",
+    async (raidCount) => {
+      const repo = new D1MvpRepository(env.DB);
+      const pairs = (
+        [
+          ["pve", "customs"],
+          ["pve", "shoreline"],
+          ["pvp", "shoreline"],
+          ["pvp-seasonal", "customs"],
+          ["pvp", "lighthouse"],
+          ["pve", "reserve"],
+          ["pve", "the-lab"],
+          ["pvp", "factory"],
+          ["pvp-seasonal", "factory"],
+          ["pve", "woods"],
+          ["pvp", "woods"],
+        ] as const
+      ).filter(([, mapId]) => raidCount !== 1 || mapId === "the-lab");
+      for (const [index, [gameMode, mapId]] of pairs.entries()) {
+        await repo.createRequest({
+          sourcePlatform: "discord",
+          sourceDeliveryId: `lab-diagnosis-${index}`,
+          discordUserId: "requester",
+          twitchLogin: "diagnosis_viewer",
+          gameMode,
+          mapId,
+          inGameName: "Test PMC",
+          objective: "Test goal",
+          recipientLimit: 4,
+          observedAt: changedAt,
+        });
+      }
+      await repo.setCanonicalBoardMessage({
+        messageId: "canonical-board",
+        renderedVersion: 0,
+        changedAt,
+      });
+      const board = await repo.getBoardSnapshot();
+      expect(board.raidCount).toBe(raidCount);
+      const lab = board.raids.find((raid) => raid.gameMode === "pve" && raid.mapId === "the-lab");
+      if (lab === undefined) throw new Error("Missing test Lab raid");
+      const labBefore = await env.DB.prepare(
+        "SELECT id FROM raid_groups WHERE game_mode=2 AND map_id='the-lab' AND state IN (0,1)",
+      ).all();
+      expect(labBefore.results).toEqual([{ id: lab.id }]);
+      const staff = {
+        channel_id: config.discord.staffChannelId,
+        member: { user: { id: "volunteer" }, roles: [config.discord.volunteerRoleId] },
+      };
+      const reviewContext = createExecutionContext();
+      await worker.fetch(
+        await signedRequest(
+          context({
+            ...staff,
+            id: "lab-diagnosis-review",
+            type: 3,
+            data: { custom_id: "board:v7:review", values: [String(lab.id)] },
+          }),
+        ),
+        testEnvironment,
+        reviewContext,
+      );
+      await waitOnExecutionContext(reviewContext);
+      const details = outbound.find(
+        (request) =>
+          request.method === "POST" && JSON.stringify(request.body).includes("PvE · The Lab raid"),
+      );
+      expect(JSON.stringify(details?.body)).not.toContain("Move requester to next raid");
+      expect(JSON.stringify(details?.body)).toContain("Remove requester");
+      const queueBefore = await repo.getQueueFacts({ platform: "discord", userId: "requester" });
+      const sourceBefore = await repo.getRaid(lab.id);
+      const boardBefore = await repo.getBoardSnapshot();
+      const moveContext = createExecutionContext();
+      const response = await worker.fetch(
+        await signedRequest(
+          context({
+            ...staff,
+            id: "lab-diagnosis-move",
+            type: 3,
+            data: {
+              custom_id: `raid:v4:move:${lab.id}:${lab.id + 10000}`,
+              values: [String(lab.members[0]?.requestId)],
+            },
+          }),
+        ),
+        testEnvironment,
+        moveContext,
+      );
+      await waitOnExecutionContext(moveContext);
+      expect(await response.json()).toMatchObject({
+        type: 4,
+        data: { flags: 64, content: "No later compatible raid has room. Refresh the board." },
+      });
+      expect(await repo.getRaid(lab.id)).toEqual(sourceBefore);
+      expect((await repo.getBoardSnapshot()).boardVersion).toBe(boardBefore.boardVersion);
+      expect((await repo.getBoardSnapshot()).raidCount).toBe(raidCount);
+      expect(await repo.getQueueFacts({ platform: "discord", userId: "requester" })).toEqual(
+        queueBefore,
+      );
+    },
+  );
+
+  it("rejects a reviewed move if another leader starts the raid after the staff read", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    await repo.createRequest({
+      sourcePlatform: "discord",
+      sourceDeliveryId: "move-state-source",
+      discordUserId: "requester",
+      twitchLogin: "state_source",
+      gameMode: "pve",
+      mapId: "the-lab",
+      inGameName: "Test PMC",
+      objective: "Test goal",
+      recipientLimit: 4,
+      observedAt: changedAt,
+    });
+    const source = (await repo.getBoardSnapshot()).raids[0];
+    if (source === undefined) throw new Error("Missing source");
+    await repo.reviewRaid({ groupId: source.id, changedAt });
+    await repo.setRaidStaffMessage(source.id, "state-review", changedAt);
+    await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "move-state-target",
+      twitchUserId: "state-target",
+      twitchLogin: "state_target",
+      gameMode: "pve",
+      mapId: "the-lab",
+      inGameName: "Other PMC",
+      objective: "Other goal",
+      recipientLimit: 4,
+      observedAt: changedAt,
+    });
+    const destinationId = (await repo.getRaid(source.id))?.nextMoveRaidId;
+    if (destinationId === undefined) throw new Error("Missing destination");
+    const sourceId = source.id;
+    let pending = true;
+    function afterRead(statement: D1PreparedStatement): D1PreparedStatement {
+      return new Proxy(statement, {
+        get(target, key) {
+          if (key === "bind") return (...values: unknown[]) => afterRead(target.bind(...values));
+          if (key === "all")
+            return async () => {
+              const result = await target.all();
+              if (pending) {
+                pending = false;
+                await repo.startRaid({
+                  groupId: sourceId,
+                  leaderDiscordUserId: "other-leader",
+                  leaderType: "volunteer",
+                  requestTwitchCall: false,
+                  changedAt,
+                });
+              }
+              return result;
+            };
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }
+    const database = new Proxy(env.DB, {
+      get(db, key) {
+        if (key === "prepare")
+          return (sql: string) =>
+            sql.includes("d1:raid.hydrate") ? afterRead(db.prepare(sql)) : db.prepare(sql);
+        const value = Reflect.get(db, key);
+        return typeof value === "function" ? value.bind(db) : value;
+      },
+    });
+    const executionContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id: "move-versus-new-leader",
+          type: 3,
+          channel_id: config.discord.staffChannelId,
+          message: { id: "state-review" },
+          member: { user: { id: "volunteer" }, roles: [config.discord.volunteerRoleId] },
+          data: {
+            custom_id: `raid:v4:move:${source.id}:${destinationId}`,
+            values: [String(source.members[0]?.requestId)],
+          },
+        }),
+      ),
+      { ...testEnvironment, DB: database },
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+    expect(await response.json()).toMatchObject({
+      type: 4,
+      data: { flags: 64, content: expect.stringContaining("out of date") },
+    });
+    expect((await repo.getRaid(source.id))?.members.map((member) => member.requestId)).toEqual(
+      source.members.map((member) => member.requestId),
+    );
+    expect(await repo.getRaid(source.id)).toMatchObject({
+      state: "active",
+      leaderDiscordUserId: "other-leader",
+    });
+    expect(await env.DB.prepare("SELECT count(*) AS count FROM raid_groups").first()).toEqual({
+      count: 2,
+    });
   });
 
   it("refresh replaces retired board controls with the current review controls", async () => {
@@ -765,8 +995,8 @@ describe("Discord progressive raid workflow", () => {
     );
     expect(canonicalWrites).toHaveLength(1);
     const body = JSON.stringify(canonicalWrites[0]?.body);
-    expect(body).toContain("board:v6:refresh");
-    expect(body).toContain("board:v6:review");
+    expect(body).toContain("board:v7:refresh");
+    expect(body).toContain("board:v7:review");
     expect(body).toContain("Review a raid");
     expect(body).not.toContain("board:v5:start");
     expect(body).not.toContain("Start a raid");
@@ -809,7 +1039,7 @@ describe("Discord progressive raid workflow", () => {
         createExecutionContext(),
       );
       const repo = new D1MvpRepository(env.DB);
-      const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+      const raid = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
       const twitchFetch = vi
         .spyOn(globalThis, "fetch")
         .mockResolvedValue(
@@ -825,7 +1055,7 @@ describe("Discord progressive raid workflow", () => {
             ...staff,
             id: `streamer-review-${mapId}`,
             type: 3,
-            data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+            data: { custom_id: "board:v7:review", values: [String(raid.id)] },
           }),
         ),
         testEnvironment,
@@ -897,7 +1127,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     const staff = {
       channel_id: config.discord.staffChannelId,
       member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
@@ -909,7 +1139,7 @@ describe("Discord progressive raid workflow", () => {
           ...staff,
           id: "partial-call-review",
           type: 3,
-          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+          data: { custom_id: "board:v7:review", values: [String(raid.id)] },
         }),
       ),
       testEnvironment,
@@ -962,7 +1192,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     const staff = {
       channel_id: config.discord.staffChannelId,
       member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
@@ -973,7 +1203,7 @@ describe("Discord progressive raid workflow", () => {
           ...staff,
           id: "concurrent-call-review",
           type: 3,
-          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+          data: { custom_id: "board:v7:review", values: [String(raid.id)] },
         }),
       ),
       testEnvironment,
@@ -1034,7 +1264,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     const staff = {
       channel_id: config.discord.staffChannelId,
       member: { user: { id: config.discord.streamerUserId, username: "Streamer" }, roles: [] },
@@ -1045,7 +1275,7 @@ describe("Discord progressive raid workflow", () => {
           ...staff,
           id: "call-status-write-review",
           type: 3,
-          data: { custom_id: "board:v6:review", values: [String(raid.id)] },
+          data: { custom_id: "board:v7:review", values: [String(raid.id)] },
         }),
       ),
       testEnvironment,
@@ -1117,7 +1347,7 @@ describe("Discord progressive raid workflow", () => {
       outcome: "helped",
     });
     expect(completed?.staffMessageId).toBeUndefined();
-    expect((await repo.getBoardSnapshot(changedAt)).ordinaryRaids).toEqual([]);
+    expect((await repo.getBoardSnapshot(changedAt)).raids).toEqual([]);
   });
 
   it("keeps Helped durable and warns when Discord cannot delete the old message", async () => {
@@ -1144,20 +1374,11 @@ describe("Discord progressive raid workflow", () => {
     expect(completed?.staffMessageId).toBeUndefined();
   });
 
-  it("uses Postpone raid after the final attempt without creating a replacement raid", async () => {
+  it("postpones an active raid directly without creating a replacement", async () => {
     const { repo, raid } = await seedActiveRaid({
       interactionId: "final-postpone-result",
       staffMessageId: "final-postpone-detail",
-      attemptTwo: true,
     });
-    await repo.recordRaidResult({
-      groupId: raid.id,
-      outcome: "unsuccessful",
-      attemptLimit: config.policies.attemptLimit,
-      actionKey: "final-postpone-attempt-three",
-      changedAt,
-    });
-
     const response = await submitRaidResult({
       interactionId: "record-final-postpone",
       raidId: raid.id,
@@ -1165,7 +1386,7 @@ describe("Discord progressive raid workflow", () => {
     });
 
     expect(await deferredCompletion(response, "record-final-postpone")).toMatchObject({
-      content: "Raid postponed to the end of the Priority queue.",
+      content: "Raid postponed to the end of the raid list.",
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -1176,9 +1397,7 @@ describe("Discord progressive raid workflow", () => {
     const postponed = await repo.getRaid(raid.id);
     expect(postponed).toMatchObject({
       id: raid.id,
-      queueKind: "priority",
       state: "planned",
-      attemptCount: 0,
     });
     expect(postponed?.staffMessageId).toBeUndefined();
     const groupCount = await env.DB.prepare(`SELECT count(*) AS count FROM raid_groups`).first<{
@@ -1187,11 +1406,10 @@ describe("Discord progressive raid workflow", () => {
     expect(groupCount?.count).toBe(1);
   });
 
-  it("recreates a deleted active raid message without changing attempt state or pinging users", async () => {
+  it("recreates deleted active raid details without restarting or pinging users", async () => {
     const { repo, raid } = await seedActiveRaid({
       interactionId: "repair-deleted",
       staffMessageId: "deleted-detail",
-      attemptTwo: true,
     });
     messagePatchStatuses.set("deleted-detail", 404);
 
@@ -1202,8 +1420,6 @@ describe("Discord progressive raid workflow", () => {
     expect(repaired).toMatchObject({
       id: raid.id,
       state: "active",
-      queueKind: "ordinary",
-      attemptCount: 2,
       leaderDiscordUserId: "volunteer",
       discordCallStatus: raid.discordCallStatus,
       twitchCallStatus: raid.twitchCallStatus,
@@ -1229,7 +1445,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await repo.reviewRaid({ groupId: planned.id, changedAt });
     await repo.compareAndSetRaidStaffMessage({
       groupId: planned.id,
@@ -1250,7 +1466,6 @@ describe("Discord progressive raid workflow", () => {
     expect(repaired).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
     });
@@ -1273,7 +1488,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await repo.reviewRaid({ groupId: planned.id, changedAt });
     await repo.compareAndSetRaidStaffMessage({
       groupId: planned.id,
@@ -1294,7 +1509,7 @@ describe("Discord progressive raid workflow", () => {
             user: { id: "volunteer", username: "Volunteer" },
             roles: [config.discord.volunteerRoleId],
           },
-          data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+          data: { custom_id: "board:v7:review", values: [String(planned.id)] },
         }),
       ),
       testEnvironment,
@@ -1308,7 +1523,6 @@ describe("Discord progressive raid workflow", () => {
     expect(await repo.getRaid(planned.id)).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
     });
     expect((await repo.getRaid(planned.id))?.staffMessageId).toBeUndefined();
     expect(outbound.some((request) => request.method === "POST")).toBe(false);
@@ -1324,7 +1538,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await repo.reviewRaid({ groupId: planned.id, changedAt });
     await repo.compareAndSetRaidStaffMessage({
       groupId: planned.id,
@@ -1345,7 +1559,7 @@ describe("Discord progressive raid workflow", () => {
               user: { id: "volunteer", username: "Volunteer" },
               roles: [config.discord.volunteerRoleId],
             },
-            data: { custom_id: "board:v6:review", values: [String(planned.id)] },
+            data: { custom_id: "board:v7:review", values: [String(planned.id)] },
           }),
         ),
         testEnvironment,
@@ -1386,7 +1600,7 @@ describe("Discord progressive raid workflow", () => {
         observedAt: new Date(changedAt.getTime() + index),
       });
     }
-    const raids = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids;
+    const raids = (await repo.getBoardSnapshot(changedAt)).raids;
     const customs = raids.find((raid) => raid.mapId === "customs") as StaffBoardRaid;
     const woods = raids.find((raid) => raid.mapId === "woods") as StaffBoardRaid;
     await repo.reviewRaid({ groupId: customs.id, changedAt });
@@ -1420,7 +1634,7 @@ describe("Discord progressive raid workflow", () => {
             roles: [config.discord.volunteerRoleId],
           },
           message: { id: "cancel-customs-detail" },
-          data: { custom_id: `raid:v3:cancel:${customs.id}`, values: [] },
+          data: { custom_id: `raid:v4:cancel:${customs.id}`, values: [] },
         }),
       ),
       testEnvironment,
@@ -1434,7 +1648,6 @@ describe("Discord progressive raid workflow", () => {
     expect(await repo.getRaid(customs.id)).toMatchObject({
       state: "planned",
       automaticFill: false,
-      attemptCount: 0,
       members: customs.members,
     });
     expect((await repo.getRaid(customs.id))?.staffMessageId).toBeUndefined();
@@ -1466,7 +1679,7 @@ describe("Discord progressive raid workflow", () => {
             roles: [config.discord.volunteerRoleId],
           },
           message: { id: "cancel-customs-detail" },
-          data: { custom_id: `raid:v3:cancel:${customs.id}`, values: [] },
+          data: { custom_id: `raid:v4:cancel:${customs.id}`, values: [] },
         }),
       ),
       testEnvironment,
@@ -1482,7 +1695,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await repo.reviewRaid({ groupId: planned.id, changedAt });
     await repo.compareAndSetRaidStaffMessage({
       groupId: planned.id,
@@ -1502,7 +1715,7 @@ describe("Discord progressive raid workflow", () => {
               roles: [config.discord.volunteerRoleId],
             },
             message: { id: messageId },
-            data: { custom_id: `raid:v3:cancel:${planned.id}`, values: [] },
+            data: { custom_id: `raid:v4:cancel:${planned.id}`, values: [] },
           }),
         ),
         testEnvironment,
@@ -1543,7 +1756,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const planned = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const planned = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await repo.reviewRaid({ groupId: planned.id, changedAt });
     await repo.compareAndSetRaidStaffMessage({
       groupId: planned.id,
@@ -1562,7 +1775,7 @@ describe("Discord progressive raid workflow", () => {
               roles: [config.discord.volunteerRoleId],
             },
             message: { id: messageId },
-            data: { custom_id: `raid:v3:cancel:${planned.id}`, values: [] },
+            data: { custom_id: `raid:v4:cancel:${planned.id}`, values: [] },
           }),
         ),
         testEnvironment,
@@ -1632,11 +1845,11 @@ describe("Discord progressive raid workflow", () => {
       await waitOnExecutionContext(executionContext);
       return response;
     };
-    const initialRaids = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids;
+    const initialRaids = (await repo.getBoardSnapshot(changedAt)).raids;
     expect(initialRaids).toHaveLength(3);
 
     for (const raid of initialRaids) {
-      const response = await component(`multi-review-${raid.mapId}`, "board:v6:review", [
+      const response = await component(`multi-review-${raid.mapId}`, "board:v7:review", [
         String(raid.id),
       ]);
       expect(response.status).toBe(200);
@@ -1651,7 +1864,6 @@ describe("Discord progressive raid workflow", () => {
       expect(raid).toMatchObject({
         state: "planned",
         automaticFill: false,
-        attemptCount: 0,
         discordCallStatus: "not_requested",
         twitchCallStatus: "not_requested",
       });
@@ -1687,7 +1899,7 @@ describe("Discord progressive raid workflow", () => {
     expect(refreshedBody).toContain(`/${recoveredShoreline.staffMessageId}`);
     expect(refreshedBody).not.toContain(`/${woods.staffMessageId}`);
 
-    await component("multi-rereview-woods", "board:v6:review", [String(woods.id)]);
+    await component("multi-rereview-woods", "board:v7:review", [String(woods.id)]);
     const reviewedWoodsAgain = (await repo.getRaid(woods.id)) as StaffBoardRaid;
     expect(reviewedWoodsAgain.staffMessageId).toMatch(/^message-/);
 
@@ -1696,10 +1908,9 @@ describe("Discord progressive raid workflow", () => {
     expect(await repo.getRaid(customs.id)).toMatchObject({
       state: "active",
       leaderDiscordUserId: "volunteer",
-      attemptCount: 1,
     });
-    expect(await repo.getRaid(woods.id)).toMatchObject({ state: "planned", attemptCount: 0 });
-    expect(await repo.getRaid(shoreline.id)).toMatchObject({ state: "planned", attemptCount: 0 });
+    expect(await repo.getRaid(woods.id)).toMatchObject({ state: "planned" });
+    expect(await repo.getRaid(shoreline.id)).toMatchObject({ state: "planned" });
 
     await component("multi-remove-shoreline", `raid:v2:remove:${shoreline.id}`, [
       String(shoreline.members[0]?.requestId),
@@ -1708,13 +1919,27 @@ describe("Discord progressive raid workflow", () => {
       state: "canceled",
       outcome: "not_run",
     });
-    expect(await repo.getRaid(customs.id)).toMatchObject({ state: "active", attemptCount: 1 });
+    expect(await repo.getRaid(customs.id)).toMatchObject({ state: "active" });
 
-    await component("multi-move-woods", `raid:v2:postpone:${woods.id}`, [
+    await repo.createRequest({
+      sourcePlatform: "twitch",
+      sourceDeliveryId: "multi-existing-woods",
+      twitchUserId: "multi-existing-woods",
+      twitchLogin: "woods_destination",
+      gameMode: "pve",
+      mapId: "woods",
+      inGameName: "Destination PMC",
+      objective: "Destination goal",
+      recipientLimit: config.policies.recipientLimit,
+      observedAt: changedAt,
+    });
+    const woodsDestinationId = (await repo.getRaid(woods.id))?.nextMoveRaidId;
+    if (woodsDestinationId === undefined) throw new Error("Missing Woods destination");
+    await component("multi-move-woods", `raid:v4:move:${woods.id}:${woodsDestinationId}`, [
       String(woods.members[0]?.requestId),
     ]);
     expect(await repo.getRaid(woods.id)).toMatchObject({ state: "canceled", outcome: "not_run" });
-    const woodsFollowUp = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids.find(
+    const woodsFollowUp = (await repo.getBoardSnapshot(changedAt)).raids.find(
       (raid) => raid.mapId === "woods",
     );
     expect(woodsFollowUp).toMatchObject({ state: "planned", automaticFill: true });
@@ -1813,7 +2038,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await activateRaid({
       repo,
       raid,
@@ -1852,7 +2077,7 @@ describe("Discord progressive raid workflow", () => {
       }),
     );
     expect(await repo.getRaid(raid.id)).toMatchObject({ state: "canceled", outcome: "not_run" });
-    expect((await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]).toMatchObject({
+    expect((await repo.getBoardSnapshot(changedAt)).raids[0]).toMatchObject({
       state: "planned",
       automaticFill: true,
     });
@@ -1865,7 +2090,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await activateRaid({
       repo,
       raid,
@@ -1911,17 +2136,17 @@ describe("Discord progressive raid workflow", () => {
       .bind(raid.members[0]?.requestId)
       .first<{ state: string }>();
     expect(request?.state).toBe("canceled");
-    expect((await repo.getBoardSnapshot(changedAt)).ordinaryRaids).toEqual([]);
+    expect((await repo.getBoardSnapshot(changedAt)).raids).toEqual([]);
   });
 
-  it("postpones a whole raid to the end of Priority and deletes its old message", async () => {
+  it("postpones a whole raid to the unified tail and deletes its old message", async () => {
     await worker.fetch(
       await signedRequest(requestModal("postpone-whole-request")),
       testEnvironment,
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0] as StaffBoardRaid;
+    const raid = (await repo.getBoardSnapshot(changedAt)).raids[0] as StaffBoardRaid;
     await activateRaid({
       repo,
       raid,
@@ -1951,7 +2176,7 @@ describe("Discord progressive raid workflow", () => {
     await waitOnExecutionContext(executionContext);
 
     expect(await deferredCompletion(response, "postpone-whole")).toMatchObject({
-      content: "Raid postponed to the end of the Priority queue.",
+      content: "Raid postponed to the end of the raid list.",
     });
     expect(outbound).toContainEqual(
       expect.objectContaining({
@@ -1960,9 +2185,7 @@ describe("Discord progressive raid workflow", () => {
       }),
     );
     expect(await repo.getRaid(raid.id)).toMatchObject({
-      queueKind: "priority",
       state: "planned",
-      attemptCount: 0,
       leaderDiscordUserId: "volunteer",
       automaticFill: false,
       discordCallStatus: "not_requested",
@@ -1977,7 +2200,7 @@ describe("Discord progressive raid workflow", () => {
       createExecutionContext(),
     );
     const repo = new D1MvpRepository(env.DB);
-    const raidId = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0]?.id ?? 0;
+    const raidId = (await repo.getBoardSnapshot(changedAt)).raids[0]?.id ?? 0;
     const raid = (await repo.getRaid(raidId)) as StaffBoardRaid;
     await activateRaid({
       repo,
@@ -2040,7 +2263,7 @@ describe("Discord requester pull-up workflow", () => {
     for (let index = 1; index <= (input.requestCount ?? 5); index += 1) {
       await createRepositoryRequest(repo, index);
     }
-    const [first, source] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, source] = (await repo.getBoardSnapshot()).raids;
     await repo.reviewRaid({ groupId: first?.id as number, changedAt });
     await repo.compareAndSetRaidStaffMessage({
       groupId: first?.id as number,
@@ -2080,14 +2303,14 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "reserved-pull-page",
-          customId: `raid:v3:pull_page:${destination.id}:${source.id}`,
+          customId: `raid:v4:pull_page:${destination.id}:${source.id}`,
         }),
       ),
       testEnvironment,
       pageContext,
     );
     expect(JSON.stringify(await page.json())).toContain(
-      `raid:v3:pull:${destination.id}:${source.id}`,
+      `raid:v4:pull:${destination.id}:${source.id}`,
     );
     await waitOnExecutionContext(pageContext);
     const pullContext = createExecutionContext();
@@ -2095,7 +2318,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "reserved-pull-submit",
-          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          customId: `raid:v4:pull:${destination.id}:${source.id}`,
           values: [String(source.members[0]?.requestId)],
         }),
       ),
@@ -2127,7 +2350,7 @@ describe("Discord requester pull-up workflow", () => {
         await signedRequest(
           pullInteraction({
             id: "active-browse-start",
-            customId: `raid:v3:call:${destination.id}`,
+            customId: `raid:v4:call:${destination.id}`,
             discordUserId,
             roleIds,
           }),
@@ -2148,7 +2371,7 @@ describe("Discord requester pull-up workflow", () => {
         await signedRequest(
           pullInteraction({
             id: "active-browse-page",
-            customId: `raid:v3:pull_page:${destination.id}:${nextId}`,
+            customId: `raid:v4:pull_page:${destination.id}:${nextId}`,
             discordUserId,
             roleIds,
           }),
@@ -2157,7 +2380,7 @@ describe("Discord requester pull-up workflow", () => {
         pageContext,
       );
       expect(JSON.stringify(await pageResponse.json())).toContain(
-        `raid:v3:pull:${destination.id}:${nextId}`,
+        `raid:v4:pull:${destination.id}:${nextId}`,
       );
       await waitOnExecutionContext(pageContext);
       const pullContext = createExecutionContext();
@@ -2165,7 +2388,7 @@ describe("Discord requester pull-up workflow", () => {
         await signedRequest(
           pullInteraction({
             id: "active-browse-pull",
-            customId: `raid:v3:pull:${destination.id}:${nextId}`,
+            customId: `raid:v4:pull:${destination.id}:${nextId}`,
             values: [String(next.members[0]?.requestId)],
             discordUserId,
             roleIds,
@@ -2180,7 +2403,6 @@ describe("Discord requester pull-up workflow", () => {
       await waitOnExecutionContext(pullContext);
       expect(await repo.getRaid(destination.id)).toMatchObject({
         state: "active",
-        attemptCount: active?.attemptCount,
         startedAt: active?.startedAt,
         leaderDiscordUserId: discordUserId,
         discordCallStatus: active?.discordCallStatus,
@@ -2221,7 +2443,7 @@ describe("Discord requester pull-up workflow", () => {
         await signedRequest(
           pullInteraction({
             id: "concurrent-start-pull",
-            customId: `raid:v3:pull:${destination.id}:${source.id}`,
+            customId: `raid:v4:pull:${destination.id}:${source.id}`,
             values: [String(source.members[0]?.requestId)],
             discordUserId: "other-volunteer",
             roleIds: [config.discord.volunteerRoleId],
@@ -2260,8 +2482,8 @@ describe("Discord requester pull-up workflow", () => {
             id: `unauthorized-${action}`,
             customId:
               action === "pull_candidates"
-                ? `raid:v3:${action}:${destination.id}`
-                : `raid:v3:${action}:${destination.id}:${source.id}`,
+                ? `raid:v4:${action}:${destination.id}`
+                : `raid:v4:${action}:${destination.id}:${source.id}`,
             values: [String(source.members[0]?.requestId)],
             discordUserId: "other-volunteer",
             roleIds: [config.discord.volunteerRoleId],
@@ -2289,7 +2511,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "refresh-pull-selector",
-          customId: "board:v6:review",
+          customId: "board:v7:review",
           values: [String(destination.id)],
           discordUserId: "volunteer",
           roleIds: [config.discord.volunteerRoleId],
@@ -2311,7 +2533,7 @@ describe("Discord requester pull-up workflow", () => {
     }>;
     const selector = rows
       .flatMap((row) => row.components)
-      .find((component) => component.custom_id === `raid:v3:pull:${destination.id}:${source.id}`);
+      .find((component) => component.custom_id === `raid:v4:pull:${destination.id}:${source.id}`);
     expect(selector).toMatchObject({
       placeholder: "Pull requester up",
       options: [
@@ -2329,7 +2551,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "pull-selected",
-          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          customId: `raid:v4:pull:${destination.id}:${source.id}`,
           values: [String(source.members[0]?.requestId)],
         }),
       ),
@@ -2365,7 +2587,6 @@ describe("Discord requester pull-up workflow", () => {
     ).toBe(false);
     expect(await repo.getRaid(destination.id)).toMatchObject({
       state: "planned",
-      attemptCount: 0,
       discordCallStatus: "not_requested",
       twitchCallStatus: "not_requested",
     });
@@ -2374,7 +2595,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "pull-selected",
-          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          customId: `raid:v4:pull:${destination.id}:${source.id}`,
           values: [String(source.members[0]?.requestId)],
         }),
       ),
@@ -2390,7 +2611,7 @@ describe("Discord requester pull-up workflow", () => {
   it("does not offer or move members of a concurrent volunteer-led active raid", async () => {
     const repo = new D1MvpRepository(env.DB);
     for (let index = 1; index <= 9; index += 1) await createRepositoryRequest(repo, index);
-    const [first, volunteerPlanned, later] = (await repo.getBoardSnapshot()).ordinaryRaids;
+    const [first, volunteerPlanned, later] = (await repo.getBoardSnapshot()).raids;
     const active = await activateRaid({
       repo,
       raid: volunteerPlanned as StaffBoardRaid,
@@ -2416,21 +2637,21 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "active-source-excluded",
-          customId: `raid:v3:pull_candidates:${destination.id}`,
+          customId: `raid:v4:pull_candidates:${destination.id}`,
         }),
       ),
       testEnvironment,
       createExecutionContext(),
     );
     const body = JSON.stringify(await response.json());
-    expect(body).toContain(`raid:v3:pull:${destination.id}:${later?.id}`);
+    expect(body).toContain(`raid:v4:pull:${destination.id}:${later?.id}`);
     for (const requestId of activeRequestIds) expect(body).not.toContain(`"value":"${requestId}"`);
 
     await worker.fetch(
       await signedRequest(
         pullInteraction({
           id: "pull-past-active-source",
-          customId: `raid:v3:pull:${destination.id}:${later?.id}`,
+          customId: `raid:v4:pull:${destination.id}:${later?.id}`,
           values: [String(later?.members[0]?.requestId)],
         }),
       ),
@@ -2456,7 +2677,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "retained-pull",
-          customId: `raid:v3:pull:${destination.id}:${source.id}`,
+          customId: `raid:v4:pull:${destination.id}:${source.id}`,
           values: [String(source.members[0]?.requestId)],
         }),
       ),
@@ -2486,7 +2707,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "render-no-pull-source",
-          customId: "board:v6:review",
+          customId: "board:v7:review",
           values: [String(destination.id)],
         }),
       ),
@@ -2511,7 +2732,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "no-pull-source",
-          customId: `raid:v3:pull_candidates:${destination.id}`,
+          customId: `raid:v4:pull_candidates:${destination.id}`,
         }),
       ),
       testEnvironment,
@@ -2547,7 +2768,7 @@ describe("Discord requester pull-up workflow", () => {
         await signedRequest(
           pullInteraction({
             id: "pull-deleted-detail",
-            customId: `raid:v3:pull:${destination.id}:${source.id}`,
+            customId: `raid:v4:pull:${destination.id}:${source.id}`,
             values: [String(source.members[0]?.requestId)],
           }),
         ),
@@ -2561,7 +2782,7 @@ describe("Discord requester pull-up workflow", () => {
       });
       const current = await repo.getRaid(destination.id);
       expect(current?.state).toBe(state);
-      expect(current?.attemptCount).toBe(state === "active" ? 1 : 0);
+      expect(current).not.toHaveProperty("attemptCount");
       if (state === "planned") expect(current?.staffMessageId).toBeUndefined();
       else expect(current?.staffMessageId).toMatch(/^message-/);
       expect(
@@ -2588,7 +2809,7 @@ describe("Discord requester pull-up workflow", () => {
       await signedRequest(
         pullInteraction({
           id: "denied-pull",
-          customId: `raid:v3:pull_candidates:${destination.id}`,
+          customId: `raid:v4:pull_candidates:${destination.id}`,
           discordUserId: "viewer",
         }),
       ),
@@ -2620,7 +2841,7 @@ describe("Discord output limits", () => {
         observedAt: changedAt,
       });
     }
-    const raid = (await repo.getBoardSnapshot()).ordinaryRaids[0];
+    const raid = (await repo.getBoardSnapshot()).raids[0];
     const execution = createExecutionContext();
     const response = await worker.fetch(
       await signedRequest(
@@ -2629,7 +2850,7 @@ describe("Discord output limits", () => {
           type: 3,
           channel_id: config.discord.staffChannelId,
           member: { user: { id: "volunteer" }, roles: [config.discord.volunteerRoleId] },
-          data: { custom_id: "board:v6:review", values: [String(raid?.id)] },
+          data: { custom_id: "board:v7:review", values: [String(raid?.id)] },
         }),
       ),
       testEnvironment,
@@ -2748,7 +2969,7 @@ describe("Discord self-service identity attachment", () => {
       twitchLogin: "twitchviewer",
       inGameName: "Original PMC",
     });
-    expect((await repo.getBoardSnapshot()).ordinaryRaids).toHaveLength(0);
+    expect((await repo.getBoardSnapshot()).raids).toHaveLength(0);
     expect(await repo.findUserMappingByDiscordId("requester")).toBeUndefined();
   });
 
@@ -2857,11 +3078,11 @@ describe("Discord mutation receipt lifecycle", () => {
       });
     }
     await createRepositoryRequest(repo, 989);
-    const raid = (await repo.getBoardSnapshot(changedAt)).ordinaryRaids[0];
+    const raid = (await repo.getBoardSnapshot(changedAt)).raids[0];
     return context({
       ...staff,
       type: 3,
-      data: { custom_id: "board:v6:review", values: [String(raid?.id)] },
+      data: { custom_id: "board:v7:review", values: [String(raid?.id)] },
     });
   }
 
@@ -2893,7 +3114,7 @@ describe("Discord mutation receipt lifecycle", () => {
     if (action === "eft") expect(mapping?.inGameName).toBe("Receipt PMC");
     if (action === "raid") {
       expect(
-        (await new D1MvpRepository(env.DB).getBoardSnapshot(changedAt)).ordinaryRaids[0],
+        (await new D1MvpRepository(env.DB).getBoardSnapshot(changedAt)).raids[0],
       ).toMatchObject({ automaticFill: false, staffMessageId: expect.any(String) });
     }
     const callsAfterMutation = outbound.length;
@@ -2999,7 +3220,7 @@ describe("Discord mutation receipt lifecycle", () => {
   it("completes a rejected staff action without applying it or repeating it", async () => {
     const body = {
       ...(await mutationInteraction("raid")),
-      data: { custom_id: "board:v6:review", values: ["999999"] },
+      data: { custom_id: "board:v7:review", values: ["999999"] },
     };
     const executionContext = createExecutionContext();
     const response = await worker.fetch(
@@ -3272,5 +3493,380 @@ describe("Discord staff insights workflow", () => {
       type: 4,
       data: { content: expect.stringContaining("in the staff channel"), flags: 64 },
     });
+  });
+});
+
+describe("Discord unified raid board", () => {
+  async function seedBoard(count = 23) {
+    const repo = new D1MvpRepository(env.DB);
+    for (let index = 1; index <= count; index++) {
+      await repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: `board-order-${index}`,
+        twitchUserId: `board-user-${index}`,
+        twitchLogin: `board_user_${index}`,
+        gameMode: "pve",
+        inGameName: `Player ${index}`,
+        mapId: "customs",
+        objective: `Goal ${index}`,
+        recipientLimit: 1,
+        observedAt: changedAt,
+      });
+    }
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-board",
+      renderedVersion: 0,
+      changedAt,
+    });
+    outbound = [];
+    return repo;
+  }
+
+  async function action(
+    id: string,
+    customId: string,
+    values: string[] = [],
+    userId = config.discord.streamerUserId,
+    messageId = "canonical-board",
+    channelId = config.discord.staffChannelId,
+  ) {
+    const executionContext = createExecutionContext();
+    const response = await worker.fetch(
+      await signedRequest(
+        context({
+          id,
+          type: 3,
+          channel_id: channelId,
+          message: { id: messageId },
+          member: { user: { id: userId }, roles: [config.discord.volunteerRoleId] },
+          data: { custom_id: customId, values },
+        }),
+      ),
+      testEnvironment,
+      executionContext,
+    );
+    await waitOnExecutionContext(executionContext);
+    return response;
+  }
+
+  function pageId(snapshot: Awaited<ReturnType<D1MvpRepository["getBoardSnapshot"]>>) {
+    const target = snapshot.nextPage;
+    if (target === undefined) throw new Error("Missing next page");
+    return `board:v7:page:${snapshot.boardVersion}:next:${target.boundary.lane}:${target.boundary.key}:${target.boundary.id}:${target.pageNumber}`;
+  }
+
+  it("allows only the streamer to navigate and reorder from the canonical staff board", async () => {
+    const repo = await seedBoard();
+    const initial = await repo.getBoardSnapshot();
+    for (const customId of [
+      pageId(initial),
+      `board:v7:move:${initial.boardVersion}`,
+      `board:v7:unmove:${initial.boardVersion}`,
+    ]) {
+      const denied = await action(`denied-${customId}`, customId, ["2"], "volunteer");
+      expect(await denied.json()).toMatchObject({
+        type: 4,
+        data: { flags: 64, content: "Only the streamer can change pages or raid order." },
+      });
+    }
+    expect(outbound).toEqual([]);
+    expect((await repo.getBoardSnapshot()).boardVersion).toBe(initial.boardVersion);
+    await action(
+      "wrong-board",
+      pageId(initial),
+      [],
+      config.discord.streamerUserId,
+      "obsolete-board",
+    );
+    await action(
+      "wrong-channel",
+      pageId(initial),
+      [],
+      config.discord.streamerUserId,
+      "canonical-board",
+      config.discord.requestChannelId,
+    );
+    expect((await repo.getBoardSnapshot()).pageNumber).toBe(1);
+    expect(outbound).toEqual([]);
+    const next = await action("next-page", pageId(initial));
+    expect(await next.json()).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect((await repo.getBoardSnapshot()).pageNumber).toBe(2);
+    const writes = outbound.filter(
+      (call) => call.method === "PATCH" && call.url.endsWith("/canonical-board"),
+    );
+    expect(writes).toHaveLength(1);
+    expect(JSON.stringify(writes[0]?.body)).toContain("Page 2");
+    expect(writes[0]?.body.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  it("deduplicates moves, rejects stale pages, and reverses placement with page-one resets", async () => {
+    const repo = await seedBoard();
+    const first = await repo.getBoardSnapshot();
+    await action("browse", pageId(first));
+    let snapshot = await repo.getBoardSnapshot();
+    const customId = `board:v7:move:${snapshot.boardVersion}`;
+    const pinResponse = await action("move-raid", customId, ["12"]);
+    expect(await pinResponse.json()).toMatchObject({
+      type: 4,
+      data: { flags: 64, content: "Raid pinned to the top." },
+    });
+    const boardWrite = outbound.findLast(
+      (call) => call.method === "PATCH" && call.url.endsWith("/canonical-board"),
+    );
+    expect(JSON.stringify(boardWrite?.body)).toContain(" · Pinned");
+    expect(JSON.stringify(boardWrite?.body)).toContain("Unpin · Streamer only");
+    expect(boardWrite?.body).toMatchObject({
+      components: expect.arrayContaining([
+        expect.objectContaining({
+          components: [
+            expect.objectContaining({
+              placeholder: "Pin to top · Streamer only",
+              options: expect.not.arrayContaining([expect.objectContaining({ value: "12" })]),
+            }),
+          ],
+        }),
+      ]),
+    });
+    snapshot = await repo.getBoardSnapshot();
+    expect(snapshot.pageNumber).toBe(1);
+    expect(snapshot.raids[0]?.id).toBe(12);
+    outbound = [];
+    expect(JSON.stringify(await (await action("move-raid", customId, ["12"])).json())).toContain(
+      "already received",
+    );
+    await action("stale-page", pageId(first));
+    expect((await repo.getBoardSnapshot()).boardVersion).toBe(snapshot.boardVersion);
+    expect(outbound).toEqual([]);
+    const unpinResponse = await action("reverse-move", `board:v7:unmove:${snapshot.boardVersion}`, [
+      "12",
+    ]);
+    expect(await unpinResponse.json()).toMatchObject({
+      type: 4,
+      data: { flags: 64, content: "Raid unpinned." },
+    });
+    expect((await repo.getRaid(12))?.manualOrder).toBe(0);
+    expect((await repo.getBoardSnapshot()).raids.map((raid) => raid.id)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
+  });
+
+  it("keeps Discord and Twitch queue replies aligned across modes after pinning and unpinning", async () => {
+    const repo = new D1MvpRepository(env.DB);
+    await repo.upsertUserMapping({
+      twitchLogin: "viewer",
+      twitchUserId: "queue-viewer",
+      discordUserId: "requester",
+      observedAt: changedAt,
+    });
+    const requests = [
+      ["other_pve", "other-pve", "pve", "woods"],
+      ["viewer", "queue-viewer", "pve", "customs"],
+      ["viewer", "queue-viewer", "pvp", "shoreline"],
+      ["other_pvp", "other-pvp", "pvp", "customs"],
+    ] as const;
+    for (const [index, [twitchLogin, twitchUserId, gameMode, mapId]] of requests.entries()) {
+      await repo.createRequest({
+        sourcePlatform: "twitch",
+        sourceDeliveryId: `mixed-queue-${index}`,
+        twitchLogin,
+        twitchUserId,
+        gameMode,
+        mapId,
+        inGameName: "Test PMC",
+        objective: "Queue ordering test",
+        recipientLimit: 1,
+        observedAt: changedAt,
+      });
+    }
+    await repo.setCanonicalBoardMessage({
+      messageId: "canonical-board",
+      renderedVersion: 0,
+      changedAt,
+    });
+    const twitchFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() =>
+        Promise.resolve(Response.json({ data: [{ message_id: "queue-reply", is_sent: true }] })),
+      );
+    let replyCount = 0;
+    for (const [step, placementAction, groupId, expected] of [
+      [
+        "initial",
+        undefined,
+        undefined,
+        "PvE · Customs: 2nd in the PvE queue, 1 raid ahead. Also queued: PvP · Shoreline.",
+      ],
+      [
+        "pin-caller",
+        "move",
+        "3",
+        "PvP · Shoreline: 1st in the PvP queue, no raids ahead. Also queued: PvE · Customs.",
+      ],
+      [
+        "pin-other",
+        "move",
+        "4",
+        "PvP · Shoreline: 2nd in the PvP queue, 1 raid ahead. Also queued: PvE · Customs.",
+      ],
+      [
+        "unpin-caller",
+        "unmove",
+        "3",
+        "PvE · Customs: 2nd in the PvE queue, 2 raids ahead. Also queued: PvP · Shoreline.",
+      ],
+      [
+        "unpin-other",
+        "unmove",
+        "4",
+        "PvE · Customs: 2nd in the PvE queue, 1 raid ahead. Also queued: PvP · Shoreline.",
+      ],
+    ] as const) {
+      if (placementAction !== undefined) {
+        const snapshot = await repo.getBoardSnapshot();
+        await action(step, `board:v7:${placementAction}:${snapshot.boardVersion}`, [groupId]);
+      }
+      const discordContext = createExecutionContext();
+      const discord = await worker.fetch(
+        await signedRequest(
+          context({ id: `discord-${step}`, type: 2, data: { type: 1, name: "queue" } }),
+        ),
+        testEnvironment,
+        discordContext,
+      );
+      await waitOnExecutionContext(discordContext);
+      expect(await discord.json()).toMatchObject({
+        type: 4,
+        data: { flags: 64, content: expected },
+      });
+      const deliveryId = `twitch-${step}`;
+      const observedAt = new Date().toISOString();
+      const body = JSON.stringify({
+        subscription: { type: "channel.chat.message" },
+        event: {
+          broadcaster_user_id: config.twitch.broadcasterUserId,
+          broadcaster_user_login: "test_broadcaster",
+          chatter_user_id: "queue-viewer",
+          chatter_user_login: "viewer",
+          message_id: `chat-${step}`,
+          message: { text: "!queue" },
+        },
+      });
+      const signature = await createTwitchEventSubSignature(
+        "test-eventsub-secret-is-long-enough",
+        deliveryId,
+        observedAt,
+        body,
+      );
+      const twitchContext = createExecutionContext();
+      const twitch = await worker.fetch(
+        new Request("https://example.com/webhooks/twitch/eventsub", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Twitch-Eventsub-Message-Id": deliveryId,
+            "Twitch-Eventsub-Message-Timestamp": observedAt,
+            "Twitch-Eventsub-Message-Signature": signature,
+            "Twitch-Eventsub-Message-Type": "notification",
+            "Twitch-Eventsub-Subscription-Type": "channel.chat.message",
+          },
+          body,
+        }),
+        testEnvironment,
+        twitchContext,
+      );
+      expect(twitch.status).toBe(204);
+      await waitOnExecutionContext(twitchContext);
+      replyCount++;
+      expect(twitchFetch).toHaveBeenCalledTimes(replyCount);
+      const sent = twitchFetch.mock.calls.at(-1)?.[1]?.body;
+      if (typeof sent !== "string") throw new Error("Missing Twitch queue reply");
+      expect(JSON.parse(sent)).toMatchObject({ message: expected });
+    }
+  });
+
+  it("permits only one guarded move when current controls overlap", async () => {
+    const repo = await seedBoard();
+    const version = (await repo.getBoardSnapshot()).boardVersion;
+    await Promise.all([
+      action("race-move-2", `board:v7:move:${version}`, ["2"]),
+      action("race-move-3", `board:v7:move:${version}`, ["3"]),
+    ]);
+    const moved = await env.DB.prepare("SELECT id FROM raid_groups WHERE manual_order > 0").all<{
+      id: number;
+    }>();
+    expect(moved.results).toHaveLength(1);
+    expect((await repo.getBoardSnapshot()).raids[0]?.id).toBe(moved.results[0]?.id);
+    expect(
+      await env.DB.prepare(
+        "SELECT count(*) AS count FROM raid_group_members WHERE state=0",
+      ).first(),
+    ).toEqual({ count: 23 });
+  });
+
+  it("keeps one active run when moving overlaps a volunteer start", async () => {
+    const repo = await seedBoard(3);
+    await repo.reviewRaid({ groupId: 2, changedAt });
+    await repo.setRaidStaffMessage(2, "details-two", changedAt);
+    const version = (await repo.getBoardSnapshot()).boardVersion;
+    await Promise.all([
+      action("move-versus-start", `board:v7:move:${version}`, ["2"]),
+      action("start-versus-move", "raid:v4:call:2", [], "volunteer", "details-two"),
+    ]);
+    expect(await repo.getRaid(2)).toMatchObject({
+      state: "active",
+      manualOrder: 0,
+      leaderDiscordUserId: "volunteer",
+      members: [{ requestId: 2 }],
+    });
+    expect((await repo.getBoardSnapshot()).pageNumber).toBe(1);
+    const calls = outbound.filter(
+      (call) =>
+        call.method === "POST" &&
+        call.url.includes(`/channels/${config.discord.requestChannelId}/messages`),
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("converges to page one when navigation overlaps request intake and refresh", async () => {
+    const repo = await seedBoard();
+    const customId = pageId(await repo.getBoardSnapshot());
+    const intakeContext = createExecutionContext();
+    await Promise.all([
+      action("page-versus-intake", customId),
+      worker.fetch(
+        await signedRequest(requestModal("request-versus-page")),
+        testEnvironment,
+        intakeContext,
+      ),
+    ]);
+    await waitOnExecutionContext(intakeContext);
+    expect((await repo.getBoardSnapshot()).pageNumber).toBe(1);
+    expect((await repo.getBoardSnapshot()).raidCount).toBe(24);
+    const current = await repo.getBoardSnapshot();
+    await action("next-before-refresh", pageId(current));
+    expect((await repo.getBoardSnapshot()).pageNumber).toBe(2);
+    await refreshBoard("reset-every-refresh");
+    expect((await repo.getBoardSnapshot()).pageNumber).toBe(1);
+    const lastWrite = outbound.findLast(
+      (call) => call.method === "PATCH" && call.url.endsWith("/canonical-board"),
+    );
+    expect(JSON.stringify(lastWrite?.body)).toContain("Page 1");
+  });
+
+  it("rolls back placement when the dirty-version write fails", async () => {
+    const repo = await seedBoard(3);
+    const snapshot = await repo.getBoardSnapshot();
+    await env.DB.prepare(`CREATE TRIGGER reject_order_dirty BEFORE UPDATE OF board_dirty_version ON community_state
+      BEGIN SELECT RAISE(ABORT, 'injected board failure'); END`).run();
+    try {
+      await expect(
+        action("failing-order", `board:v7:move:${snapshot.boardVersion}`, ["2"]),
+      ).rejects.toThrow();
+      expect((await repo.getRaid(2))?.manualOrder).toBe(0);
+      expect((await repo.getBoardSnapshot()).boardVersion).toBe(snapshot.boardVersion);
+      expect(outbound).toEqual([]);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER reject_order_dirty").run();
+    }
   });
 });

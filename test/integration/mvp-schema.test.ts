@@ -15,7 +15,7 @@ async function insertMapping(login: string, id: string): Promise<void> {
     .run();
 }
 
-describe("nine-table dual-queue schema", () => {
+describe("raid ordering schema", () => {
   it("contains the seven operational tables and two statistics rollup tables", async () => {
     const result = await env.DB.prepare(
       `SELECT name FROM sqlite_schema
@@ -123,34 +123,16 @@ describe("nine-table dual-queue schema", () => {
   });
 
   it("has the required active-request and ordered-group indexes", async () => {
-    const indexes = await env.DB.prepare(
-      `SELECT name FROM sqlite_schema
-       WHERE type = 'index' AND name IN (
-         'help_requests_one_active_map_per_twitch',
-         'help_requests_one_active_mode_map_per_twitch',
-         'help_requests_one_active_mode_map_per_twitch_id',
-         'help_requests_mode_queue_order_idx',
-         'help_requests_queue_order_idx',
-         'help_requests_waiting_order_idx',
-         'help_requests_waiting_mode_order_idx',
-         'raid_groups_outstanding_idx',
-         'raid_groups_open_sort_key_idx',
-         'raid_groups_compatible_idx',
-         'raid_groups_compatible_mode_idx',
-         'raid_groups_pull_source_idx',
-         'raid_groups_outstanding_mode_idx',
-         'raid_group_members_group_idx',
-         'raid_group_members_one_open_request_idx'
-       ) ORDER BY name`,
-    ).all<{ name: string }>();
+    const indexes = await env.DB.prepare("SELECT name FROM sqlite_schema WHERE type='index'").all<{
+      name: string;
+    }>();
     expect(indexes.results.map((index) => index.name)).toEqual(
       expect.arrayContaining([
         "help_requests_one_active_mode_map_per_twitch",
         "help_requests_one_active_mode_map_per_twitch_id",
-        "help_requests_mode_queue_order_idx",
-        "help_requests_waiting_order_idx",
-        "help_requests_waiting_mode_order_idx",
-        "raid_groups_outstanding_mode_idx",
+        "help_requests_waiting_idx",
+        "raid_groups_service_order_idx",
+        "raid_groups_mode_service_order_idx",
         "raid_groups_open_sort_key_idx",
         "raid_groups_compatible_mode_idx",
         "raid_groups_pull_source_idx",
@@ -178,7 +160,7 @@ describe("nine-table dual-queue schema", () => {
     const compatiblePlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM raid_groups
-       WHERE is_priority = 0 AND game_mode = 2 AND map_id = 'customs'
+       WHERE game_mode = 2 AND map_id = 'customs'
          AND state = 0 AND automatic_fill = 1
          AND current_member_count < requester_capacity
        ORDER BY sort_key LIMIT 1`,
@@ -195,15 +177,27 @@ describe("nine-table dual-queue schema", () => {
     );
   });
 
+  it("seeks the next same-mode/map raid without sorting or scanning other work", async () => {
+    const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN
+      SELECT id FROM raid_groups WHERE game_mode=2 AND map_id='customs'
+        AND state IN (0,1) AND sort_key>1000000 ORDER BY sort_key LIMIT 1`).all<{
+      detail: string;
+    }>();
+    const details = plan.results.map((row) => row.detail).join("\n");
+    expect(details).toContain("raid_groups_mode_sort_order_idx");
+    expect(details).toContain("sort_key>?");
+    expect(details).not.toContain("TEMP B-TREE");
+  });
+
   it("uses the ordered pull-source index for full planned raids", async () => {
     const plan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM raid_groups
-       WHERE is_priority = 0 AND game_mode = 2 AND map_id = 'customs'
-         AND state = 0 AND automatic_fill = 1
-         AND leader_discord_user_id IS NULL AND staff_message_id IS NULL
-         AND current_member_count > 0 AND sort_key > 1000000
-       ORDER BY sort_key LIMIT 1`,
+       WHERE game_mode = 2 AND map_id = 'customs'
+         AND state = 0 AND (automatic_fill = 1 OR leader_discord_user_id IS NOT NULL)
+         AND staff_message_id IS NULL
+         AND current_member_count > 0 AND service_key > 1000000
+       ORDER BY service_key LIMIT 1`,
     ).all<{ detail: string }>();
     const details = plan.results.map((row) => row.detail).join(" ");
     expect(details).toContain("raid_groups_pull_source_idx");
@@ -213,33 +207,25 @@ describe("nine-table dual-queue schema", () => {
 
   it("uses ordered indexes for queue ranges and open-queue maxima", async () => {
     const requestPlan = await env.DB.prepare(
-      `EXPLAIN QUERY PLAN
-       SELECT count(*) FROM (
-         SELECT id, is_priority AS isPriority FROM help_requests
-         WHERE state IN (0, 1) AND game_mode = 2 AND is_priority = 1
-         UNION ALL
-         SELECT id, is_priority AS isPriority FROM help_requests
-         WHERE state IN (0, 1) AND game_mode = 2 AND is_priority = 0 AND id < 50000
-         ORDER BY isPriority DESC, id LIMIT 101
-       )`,
+      `EXPLAIN QUERY PLAN SELECT id FROM help_requests WHERE state = 0 ORDER BY id LIMIT 81`,
     ).all<{ detail: string }>();
     const raidRangePlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM raid_groups
-       WHERE state IN (0, 1) AND is_priority = 0 AND game_mode = 2
-       ORDER BY sort_key LIMIT 52`,
+       WHERE state IN (0, 1) AND game_mode = 2
+       ORDER BY service_lane, service_key, id LIMIT 51`,
     ).all<{ detail: string }>();
     const raidMaxPlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT sort_key FROM raid_groups
-       WHERE is_priority = 0 AND state IN (0, 1)
+       WHERE state IN (0, 1)
        ORDER BY sort_key DESC LIMIT 1`,
     ).all<{ detail: string }>();
     expect(requestPlan.results.map((row) => row.detail).join(" ")).toContain(
-      "help_requests_mode_queue_order_idx",
+      "help_requests_waiting_idx",
     );
     expect(raidRangePlan.results.map((row) => row.detail).join(" ")).toContain(
-      "raid_groups_outstanding_mode_idx",
+      "raid_groups_mode_service_order_idx",
     );
     expect(raidMaxPlan.results.map((row) => row.detail).join(" ")).toContain(
       "raid_groups_open_sort_key_idx",
@@ -250,46 +236,37 @@ describe("nine-table dual-queue schema", () => {
     const waitingFifoPlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM help_requests
-       WHERE state = 0 ORDER BY is_priority DESC, id LIMIT 80`,
-    ).all<{ detail: string }>();
-    const waitingModePlan = await env.DB.prepare(
-      `EXPLAIN QUERY PLAN
-       SELECT id FROM help_requests
-       WHERE state = 0 AND is_priority = 0 AND game_mode = 2
-       ORDER BY id LIMIT 1`,
+       WHERE state = 0 ORDER BY id LIMIT 80`,
     ).all<{ detail: string }>();
     const callerPlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM help_requests
        WHERE twitch_login = 'viewer' AND state IN (0, 1)
-       ORDER BY is_priority DESC, id LIMIT 1`,
+       ORDER BY id LIMIT 1`,
     ).all<{ detail: string }>();
     const activeDuplicatePlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM help_requests
        WHERE twitch_login = 'viewer' AND game_mode = 2 AND map_id = 'customs'
          AND state IN (0, 1)
-       ORDER BY is_priority DESC, id LIMIT 1`,
+       ORDER BY id LIMIT 1`,
     ).all<{ detail: string }>();
     const stableCallerPlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM help_requests
        WHERE twitch_user_id = 'stable-viewer' AND state IN (0, 1)
-       ORDER BY is_priority DESC, id LIMIT 1`,
+       ORDER BY id LIMIT 1`,
     ).all<{ detail: string }>();
     const stableDuplicatePlan = await env.DB.prepare(
       `EXPLAIN QUERY PLAN
        SELECT id FROM help_requests
        WHERE twitch_user_id = 'stable-viewer' AND game_mode = 2 AND map_id = 'customs'
          AND state IN (0, 1)
-       ORDER BY is_priority DESC, id LIMIT 1`,
+       ORDER BY id LIMIT 1`,
     ).all<{ detail: string }>();
 
     expect(waitingFifoPlan.results.map((row) => row.detail).join(" ")).toContain(
-      "help_requests_waiting_order_idx",
-    );
-    expect(waitingModePlan.results.map((row) => row.detail).join(" ")).toContain(
-      "help_requests_waiting_mode_order_idx",
+      "help_requests_waiting_idx",
     );
     expect(callerPlan.results.map((row) => row.detail).join(" ")).toContain(
       "help_requests_one_active_mode_map_per_twitch",
@@ -428,7 +405,7 @@ describe("nine-table dual-queue schema", () => {
     await expect(insert("three")).resolves.toBeDefined();
   });
 
-  it("rejects memberships with a different mode, map, or queue kind", async () => {
+  it("rejects memberships with a different mode or map regardless of legacy flags", async () => {
     await insertMapping("compatible", "compatible-id");
     await env.DB.prepare(
       `INSERT INTO help_requests
@@ -444,7 +421,7 @@ describe("nine-table dual-queue schema", () => {
          (id, is_priority, game_mode, sort_key, map_id, requester_capacity, created_at, updated_at)
        VALUES (1, 0, 1, 1000000, 'customs', 3, ?, ?),
               (2, 0, 2, 2000000, 'woods', 3, ?, ?),
-              (3, 1, 2, 1000000, 'customs', 3, ?, ?),
+              (3, 1, 2, 4000000, 'customs', 3, ?, ?),
               (4, 0, 2, 3000000, 'customs', 3, ?, ?)`,
     )
       .bind(nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch, nowEpoch)
@@ -459,7 +436,8 @@ describe("nine-table dual-queue schema", () => {
         .run();
     await expect(insertMembership(1)).rejects.toThrow("raid group membership is incompatible");
     await expect(insertMembership(2)).rejects.toThrow("raid group membership is incompatible");
-    await expect(insertMembership(3)).rejects.toThrow("raid group membership is incompatible");
+    await expect(insertMembership(3)).resolves.toBeDefined();
+    await env.DB.prepare("DELETE FROM raid_group_members WHERE group_id = 3").run();
     await expect(insertMembership(4)).resolves.toBeDefined();
   });
 

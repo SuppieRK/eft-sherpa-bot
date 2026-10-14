@@ -1,6 +1,5 @@
 import { type GameMode, gameModeCode, gameModeLabel } from "../../domain/game-mode";
 import { resolveTarkovMap } from "../../domain/maps/catalog";
-import { orderByModePresence } from "../../domain/mode-presence-order";
 import {
   QUEUE_RAID_EXACT_LIMIT,
   QUEUE_REQUEST_EXACT_LIMIT,
@@ -14,14 +13,16 @@ import {
   RepositoryInvariantError,
   type UserMapping,
 } from "../../domain/sherpa-repository";
-import type {
-  CallStatus,
-  PullRequesterSource,
-  QueueKind,
-  StaffBoardMember,
-  StaffBoardRaid,
-  StaffBoardSnapshot,
+import {
+  BOARD_PAGE_SIZE,
+  type BoardPageTarget,
+  type CallStatus,
+  type PullRequesterSource,
+  type StaffBoardMember,
+  type StaffBoardRaid,
+  type StaffBoardSnapshot,
 } from "../../domain/staff-board";
+
 import type {
   StaffLeaderStatistic,
   StaffStatistics,
@@ -52,14 +53,10 @@ const RECEIPT_CLEANUP_INTERVAL_MS = 15 * 60 * 1_000;
 const DISCORD_MUTATION_CLAIM_MS = 5 * 60 * 1_000;
 const TWITCH_COMMAND_CLAIM_MS = 2 * 60 * 1_000;
 export const BOARD_DRAIN_LEASE_MS = 30 * 1_000;
-const BOARD_PRIORITY_RAID_LIMIT = 3;
-const BOARD_ORDINARY_RAID_LIMIT = 7;
 const MAX_REQUESTERS_PER_RAID = 4;
 const MATERIALIZATION_BOARD_LOOKAHEAD = 2;
 const MATERIALIZATION_BATCH_SIZE =
-  (BOARD_PRIORITY_RAID_LIMIT + BOARD_ORDINARY_RAID_LIMIT) *
-  MAX_REQUESTERS_PER_RAID *
-  MATERIALIZATION_BOARD_LOOKAHEAD;
+  BOARD_PAGE_SIZE * MAX_REQUESTERS_PER_RAID * MATERIALIZATION_BOARD_LOOKAHEAD;
 
 interface RequestRow {
   id: number;
@@ -76,20 +73,22 @@ interface SelectedRequestRow extends RequestRow {
 interface RaidRow {
   gameMode: GameMode;
   id: number;
-  queueKind: QueueKind;
   mapId: string;
   state: "planned" | "active" | "completed" | "canceled";
   outcome: "helped" | "not_run" | null;
   requesterCapacity: number;
   sortKey: number;
+  manualOrder: number;
+  serviceLane: 0 | 1;
+  serviceKey: number;
   leaderDiscordUserId: string | null;
   leaderType: "streamer" | "volunteer" | null;
   automaticFill: number;
-  attemptCount: number;
   startedAt: number | null;
   discordCallStatus: CallStatus;
   twitchCallStatus: CallStatus;
   staffMessageId: string | null;
+  nextMoveRaidId: number | null;
   memberId: number | null;
   memberState: number | null;
   requestId: number | null;
@@ -103,9 +102,10 @@ interface RaidRow {
 
 interface CommunityStateRow {
   staffBoardMessageId: string | null;
-  priorityRaidCount: number;
-  ordinaryRaidCount: number;
+  raidCount: number;
   boardDirtyVersion: number;
+  boardPageNumber: number;
+  boardPageDirection: -1 | 0 | 1;
 }
 
 export interface BoardDrainLease {
@@ -162,14 +162,12 @@ interface WaitingRow {
   gameMode: number;
   requestId: number;
   mapId: string;
-  isPriority: number;
 }
 
 interface OpenGroupRow {
   gameMode: number;
   groupId: number;
   mapId: string;
-  isPriority: number;
   sortKey: number;
   requesterCapacity: number;
   memberCount: number;
@@ -183,7 +181,6 @@ interface MaterializedGroup extends OpenGroupRow {
 interface NewMaterializedGroup {
   anchorRequestId: number;
   actionKey: string;
-  isPriority: number;
   gameMode: number;
   mapId: string;
   capacity: number;
@@ -201,20 +198,18 @@ interface QueueSelectionRow {
   gameMode: GameMode;
   requestId: number;
   mapId: string;
-  isPriority: number;
-  groupId: number | null;
-  sortKey: number | null;
-}
-
-interface QueueRaidOrderRow {
-  gameMode: GameMode;
   groupId: number;
-  isPriority: number;
-  sortKey: number;
+  serviceLane: 0 | 1;
+  serviceKey: number;
+  membersAhead: number;
+}
+interface QueueRaidOrderRow {
+  groupId: number;
+  serviceLane: 0 | 1;
+  serviceKey: number;
 }
 
 interface RequesterFollowUpWindow {
-  isPriority: number;
   sourceSortKey: number;
   anchorSortKey: number;
   nextSortKey: number | null;
@@ -227,6 +222,9 @@ interface PostponeRequesterInput {
   requestId: number;
   actionKey: string;
   changedAt: Date;
+  expectedState?: "planned" | "active";
+  expectedStaffMessageId?: string;
+  expectedDestinationId?: number;
 }
 
 interface ValidatedCreateRequest {
@@ -282,7 +280,6 @@ interface PullRequesterPlan {
   boundary: PullBoundaryRow | null;
   canPush: boolean;
   sourceDisposition: PullRequesterResult["sourceDisposition"];
-  crossQueue: boolean;
   timestamp: number;
 }
 
@@ -316,20 +313,22 @@ function raidFromRow(row: RaidRow): StaffBoardRaid {
   return {
     gameMode: row.gameMode,
     id: row.id,
-    queueKind: row.queueKind,
     mapId: row.mapId,
     state: row.state,
     ...(row.outcome === null ? {} : { outcome: row.outcome }),
     requesterCapacity: row.requesterCapacity,
     sortKey: row.sortKey,
+    manualOrder: row.manualOrder,
+    serviceLane: row.serviceLane,
+    serviceKey: row.serviceKey,
     ...(row.leaderDiscordUserId === null ? {} : { leaderDiscordUserId: row.leaderDiscordUserId }),
     ...(row.leaderType === null ? {} : { leaderType: row.leaderType }),
     automaticFill: row.automaticFill === 1,
-    attemptCount: row.attemptCount,
     ...(row.startedAt === null ? {} : { startedAt: row.startedAt }),
     discordCallStatus: row.discordCallStatus,
     twitchCallStatus: row.twitchCallStatus,
     ...(row.staffMessageId === null ? {} : { staffMessageId: row.staffMessageId }),
+    ...(row.nextMoveRaidId == null ? {} : { nextMoveRaidId: row.nextMoveRaidId }),
     members: [],
   };
 }
@@ -381,26 +380,42 @@ function mapRaidRows(rows: readonly RaidRow[]): StaffBoardRaid[] {
   return [...raids.values()];
 }
 
+function nextMoveRaidSql(source: string): string {
+  return `SELECT destination.id FROM raid_groups AS destination
+    INDEXED BY raid_groups_move_destination_idx
+    WHERE destination.state = 0 AND destination.automatic_fill = 1
+      AND destination.staff_message_id IS NULL
+      AND destination.current_member_count < destination.requester_capacity
+      AND destination.game_mode = ${source}.game_mode AND destination.map_id = ${source}.map_id
+      AND (destination.service_key, destination.id) > (${source}.service_key, ${source}.id)
+    ORDER BY destination.service_key, destination.id LIMIT 1`;
+}
+
 function raidSelectSql(where: string, memberState?: number): string {
-  return `SELECT raid.id,
+  return `/* d1:raid.hydrate */ SELECT raid.id,
                  CASE raid.game_mode WHEN 0 THEN 'pvp-seasonal'
                       WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
-                 CASE raid.is_priority WHEN 1 THEN 'priority' ELSE 'ordinary' END AS queueKind,
                  raid.map_id AS mapId,
                  CASE raid.state WHEN 0 THEN 'planned' WHEN 1 THEN 'active'
                                  WHEN 2 THEN 'completed' ELSE 'canceled' END AS state,
                  CASE raid.outcome WHEN 0 THEN 'helped' WHEN 1 THEN 'not_run' END AS outcome,
                  raid.requester_capacity AS requesterCapacity,
                  raid.sort_key AS sortKey,
+                 raid.manual_order AS manualOrder,
+                 raid.service_lane AS serviceLane, raid.service_key AS serviceKey,
                  raid.leader_discord_user_id AS leaderDiscordUserId,
                  CASE raid.leader_type WHEN 0 THEN 'streamer' WHEN 1 THEN 'volunteer' END AS leaderType,
-                 raid.automatic_fill AS automaticFill, raid.attempt_count AS attemptCount,
+                 raid.automatic_fill AS automaticFill,
                  raid.started_at AS startedAt,
                  CASE raid.discord_call_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
                    WHEN 2 THEN 'failed' ELSE 'not_requested' END AS discordCallStatus,
                  CASE raid.twitch_call_status WHEN 0 THEN 'pending' WHEN 1 THEN 'sent'
                    WHEN 2 THEN 'failed' ELSE 'not_requested' END AS twitchCallStatus,
                  raid.staff_message_id AS staffMessageId,
+                 CASE WHEN raid.state = 0 AND raid.automatic_fill = 0
+                    AND member.position = (SELECT min(current.position) FROM raid_group_members AS current
+                                           WHERE current.group_id = raid.id AND current.state = 0)
+                   THEN (${nextMoveRaidSql("raid")}) END AS nextMoveRaidId,
                  member.id AS memberId, member.state AS memberState,
                  member.request_id AS requestId,
                  coalesce(stable_mapping.twitch_login, request.twitch_login) AS twitchLogin,
@@ -418,85 +433,76 @@ function raidSelectSql(where: string, memberState?: number): string {
           LEFT JOIN user_mappings AS login_mapping
             ON login_mapping.twitch_login = request.twitch_login
           ${where}
-          ORDER BY raid.is_priority DESC, raid.sort_key, member.position`;
-}
-
-function boundedModeRaidSql(isPriority: number, limit: number): string {
-  const perMode = (gameMode: number) => `
-    SELECT id AS groupId,
-           CASE game_mode WHEN 0 THEN 'pvp-seasonal' WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
-           is_priority AS isPriority,
-           sort_key AS sortKey
-    FROM raid_groups
-    WHERE is_priority = ${isPriority} AND game_mode = ${gameMode} AND state IN (0, 1)
-    ORDER BY sort_key LIMIT ${limit}`;
-  return `SELECT groupId, gameMode, isPriority, sortKey FROM (${perMode(0)})
-          UNION ALL SELECT groupId, gameMode, isPriority, sortKey FROM (${perMode(1)})
-          UNION ALL SELECT groupId, gameMode, isPriority, sortKey FROM (${perMode(2)})`;
-}
-
-function boundedGlobalRaidSql(isPriority: number, limit: number): string {
-  return `SELECT id AS groupId,
-                 CASE game_mode WHEN 0 THEN 'pvp-seasonal'
-                      WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
-                 is_priority AS isPriority, sort_key AS sortKey
-          FROM raid_groups
-          WHERE is_priority = ${isPriority} AND state IN (0, 1)
-          ORDER BY sort_key LIMIT ${limit}`;
+          ORDER BY raid.service_lane, raid.service_key, raid.id, member.position`;
 }
 
 function boundedBoardRaidSql(): string {
-  return `SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(1, BOARD_PRIORITY_RAID_LIMIT)})
-          UNION ALL
-          SELECT groupId, gameMode, isPriority, sortKey FROM (${boundedModeRaidSql(0, BOARD_ORDINARY_RAID_LIMIT)})`;
+  const projection = "id AS groupId, service_lane AS serviceLane, service_key AS serviceKey";
+  const limit = BOARD_PAGE_SIZE + 1;
+  const navigation = (reverse: boolean) => {
+    const comparison = reverse ? "<" : ">";
+    const order = reverse ? "DESC" : "ASC";
+    // Explicit lane equality and key range let SQLite seek beyond a deep cursor.
+    // Each range is capped before the small cross-lane merge.
+    return `SELECT * FROM (
+      SELECT * FROM (
+        SELECT ${projection} FROM raid_groups
+        WHERE state IN (0, 1) AND service_lane = (SELECT board_page_lane FROM page)
+          AND service_key ${comparison}= (SELECT board_page_key FROM page)
+          AND (service_key, id) ${comparison} (SELECT board_page_key, board_page_id FROM page)
+        ORDER BY service_key ${order}, id ${order} LIMIT ${limit}
+      )
+      UNION ALL SELECT * FROM (
+        SELECT ${projection} FROM raid_groups
+        WHERE state IN (0, 1) AND service_lane ${comparison} (SELECT board_page_lane FROM page)
+        ORDER BY service_lane ${order}, service_key ${order}, id ${order} LIMIT ${limit}
+      )
+    ) ORDER BY serviceLane ${order}, serviceKey ${order}, groupId ${order}
+      LIMIT CASE WHEN (SELECT board_page_direction FROM page) = ${reverse ? -1 : 1} THEN ${limit} ELSE 0 END`;
+  };
+  // LIMIT zero prevents inactive navigation branches from visiting raid rows.
+  return `/* d1:board.page */ WITH page AS MATERIALIZED (
+    SELECT board_page_direction, board_page_lane, board_page_key, board_page_id
+    FROM community_state WHERE community_id = 'butcoffee'
+  )
+  SELECT * FROM (
+    SELECT ${projection} FROM raid_groups WHERE state IN (0, 1)
+    ORDER BY service_lane, service_key, id
+    LIMIT CASE WHEN coalesce((SELECT board_page_direction FROM page), 0) = 0 THEN ${limit} ELSE 0 END
+  )
+  UNION ALL SELECT * FROM (${navigation(false)})
+  UNION ALL SELECT * FROM (${navigation(true)})`;
 }
-
-function eligiblePullSourceSql(queue: 0 | 1, comparison = "", reverse = false): string {
+function eligiblePullSourceSql(comparison = "", reverse = false): string {
   return `SELECT source.id
           FROM raid_groups AS source INDEXED BY raid_groups_pull_source_idx
-          WHERE source.is_priority = ${queue}
-            AND source.game_mode = destination.game_mode AND source.map_id = destination.map_id
+          WHERE source.game_mode = destination.game_mode AND source.map_id = destination.map_id
             AND source.id <> destination.id
             AND source.state = 0 AND source.staff_message_id IS NULL
             AND (source.automatic_fill = 1 OR source.leader_discord_user_id IS NOT NULL)
             AND source.current_member_count > 0
             ${comparison}
-          ORDER BY source.sort_key ${reverse ? "DESC" : "ASC"} LIMIT 1`;
+          ORDER BY source.service_key ${reverse ? "DESC" : "ASC"} LIMIT 1`;
 }
-
 function pullSourceIdSql(
   requireStaffMessage = true,
   selectedSource = false,
   neighbors = false,
 ): string {
-  const selectedId = selectedSource
-    ? "?"
-    : `coalesce(
-    (${eligiblePullSourceSql(1)}), (${eligiblePullSourceSql(0)})
-  )`;
+  const selectedId = selectedSource ? "?" : `(${eligiblePullSourceSql()})`;
   const navigation = neighbors
     ? `,
-    CASE selected.is_priority WHEN 1 THEN
-      (${eligiblePullSourceSql(1, "AND source.sort_key < selected.sort_key", true)})
-    ELSE coalesce(
-      (${eligiblePullSourceSql(0, "AND source.sort_key < selected.sort_key", true)}),
-      (${eligiblePullSourceSql(1, "", true)})
-    ) END AS previousSourceId,
-    CASE selected.is_priority WHEN 0 THEN
-      (${eligiblePullSourceSql(0, "AND source.sort_key > selected.sort_key")})
-    ELSE coalesce(
-      (${eligiblePullSourceSql(1, "AND source.sort_key > selected.sort_key")}),
-      (${eligiblePullSourceSql(0)})
-    ) END AS nextSourceId`
+    (${eligiblePullSourceSql("AND source.service_key < selected.service_key", true)}) AS previousSourceId,
+    (${eligiblePullSourceSql("AND source.service_key > selected.service_key")}) AS nextSourceId`
     : "";
   return `WITH destination AS (
-            SELECT id, is_priority, game_mode, map_id, sort_key
+            SELECT id, game_mode, map_id
             FROM raid_groups
             WHERE id = ? AND state IN (0, 1) AND automatic_fill = 0
               ${requireStaffMessage ? "AND staff_message_id IS NOT NULL" : ""}
               AND current_member_count < requester_capacity
           ), selected AS (
-            SELECT source.id AS groupId, source.is_priority, source.sort_key
+            SELECT source.id AS groupId, source.service_key
             FROM destination JOIN raid_groups AS source ON source.id = ${selectedId}
             WHERE source.id <> destination.id
               AND source.game_mode = destination.game_mode AND source.map_id = destination.map_id
@@ -515,12 +521,8 @@ function pullSourceWithNavigation(source: StaffBoardRaid, row: PullSourceRow): P
   };
 }
 
-function materializationBucketKey(row: {
-  isPriority: number;
-  gameMode: number;
-  mapId: string;
-}): string {
-  return `${row.isPriority}:${row.gameMode}:${row.mapId}`;
+function materializationBucketKey(row: { gameMode: number; mapId: string }): string {
+  return `${row.gameMode}:${row.mapId}`;
 }
 
 function availableMaterializationGroups(
@@ -537,30 +539,19 @@ function availableMaterializationGroups(
   return buckets;
 }
 
-function nextMaterializationSortKey(
-  request: WaitingRow,
-  maxima: { priority: number; ordinary: number },
-): number {
-  if (request.isPriority === 1) {
-    maxima.priority += SORT_STEP;
-    return maxima.priority;
-  }
-  maxima.ordinary += SORT_STEP;
-  return maxima.ordinary;
-}
-
 function createMaterializedGroup(
   request: WaitingRow,
-  maxima: { priority: number; ordinary: number },
+  maxima: { value: number },
   capacityForMap: (mapId: string) => number,
+  passKey: string,
 ): MaterializedGroup {
+  maxima.value += SORT_STEP;
   return {
     groupId: 0,
-    actionKey: `materialize:${request.requestId}`,
+    actionKey: `materialize:${passKey}:${request.requestId}`,
     gameMode: request.gameMode,
     mapId: request.mapId,
-    isPriority: request.isPriority,
-    sortKey: nextMaterializationSortKey(request, maxima),
+    sortKey: maxima.value,
     requesterCapacity: capacityForMap(request.mapId),
     memberCount: 0,
     plannedAssignmentCount: 0,
@@ -570,11 +561,12 @@ function createMaterializedGroup(
 function planMaterialization(
   waiting: readonly WaitingRow[],
   existing: readonly OpenGroupRow[],
-  initialMaxima: { priority: number; ordinary: number },
+  initialMaximum: number,
   capacityForMap: (mapId: string) => number,
+  passKey: string,
 ): { newGroups: NewMaterializedGroup[]; assignments: MaterializedAssignment[] } {
   const buckets = availableMaterializationGroups(existing);
-  const maxima = { ...initialMaxima };
+  const maxima = { value: initialMaximum };
   const newGroups: NewMaterializedGroup[] = [];
   const assignments: MaterializedAssignment[] = [];
   for (const request of waiting) {
@@ -582,13 +574,12 @@ function planMaterialization(
     const bucket = buckets.get(bucketKey) ?? { groups: [], index: 0 };
     let group = bucket.groups[bucket.index];
     if (group === undefined) {
-      group = createMaterializedGroup(request, maxima, capacityForMap);
+      group = createMaterializedGroup(request, maxima, capacityForMap, passKey);
       bucket.groups.push(group);
       buckets.set(bucketKey, bucket);
       newGroups.push({
         anchorRequestId: request.requestId,
-        actionKey: `materialize:${request.requestId}`,
-        isPriority: request.isPriority,
+        actionKey: `materialize:${passKey}:${request.requestId}`,
         gameMode: request.gameMode,
         mapId: request.mapId,
         capacity: group.requesterCapacity,
@@ -648,25 +639,11 @@ export class D1MvpRepository
          ${values}
          ON CONFLICT(community_id) DO UPDATE SET
            board_dirty_version = community_state.board_dirty_version + 1,
+           board_page_number = 1, board_page_direction = 0,
+           board_page_lane = 0, board_page_key = 0, board_page_id = 0,
            updated_at = excluded.updated_at`,
       )
       .bind(timestamp, timestamp);
-  }
-
-  private async modeFairRaidPrefix(
-    isPriority: number,
-    exactAheadLimit: number,
-  ): Promise<QueueRaidOrderRow[]> {
-    const globalLimit = exactAheadLimit + 4;
-    const [modeHeads, fifoRows] = await this.database.batch<QueueRaidOrderRow>([
-      this.database.prepare(boundedModeRaidSql(isPriority, 1)),
-      this.database.prepare(boundedGlobalRaidSql(isPriority, globalLimit)),
-    ]);
-    const unique = new Map<number, QueueRaidOrderRow>();
-    for (const raid of [...(modeHeads?.results ?? []), ...(fifoRows?.results ?? [])]) {
-      unique.set(raid.groupId, raid);
-    }
-    return orderByModePresence([...unique.values()]).slice(0, exactAheadLimit + 1);
   }
 
   private validateCreateRequest(input: CreateHelpRequest): ValidatedCreateRequest {
@@ -754,13 +731,12 @@ export class D1MvpRepository
         .prepare(
           `/* d1:assignment.intake_group */
            INSERT OR IGNORE INTO raid_groups
-             (is_priority, game_mode, sort_key, map_id, requester_capacity,
+             (game_mode, sort_key, map_id, requester_capacity,
               last_action_key, created_at, updated_at)
-           SELECT request.is_priority, request.game_mode,
+           SELECT request.game_mode,
                   coalesce((
                     SELECT max(existing.sort_key) FROM raid_groups AS existing
-                    WHERE existing.is_priority = request.is_priority
-                      AND existing.state IN (0, 1)
+                    WHERE existing.state IN (0, 1)
                   ), 0) + ?,
                   request.map_id, ?, ?, ?, ?
            FROM help_requests AS request
@@ -772,8 +748,7 @@ export class D1MvpRepository
              )
              AND NOT EXISTS (
                SELECT 1 FROM raid_groups AS eligible
-               WHERE eligible.is_priority = request.is_priority
-                 AND eligible.game_mode = request.game_mode
+               WHERE eligible.game_mode = request.game_mode
                  AND eligible.map_id = request.map_id
                  AND eligible.state = 0 AND eligible.automatic_fill = 1
                  AND eligible.current_member_count < eligible.requester_capacity
@@ -803,8 +778,7 @@ export class D1MvpRepository
                   ?, ?
            FROM help_requests AS request
            JOIN raid_groups AS raid
-             ON raid.is_priority = request.is_priority
-            AND raid.game_mode = request.game_mode
+             ON raid.game_mode = request.game_mode
             AND raid.map_id = request.map_id
             AND raid.state = 0 AND raid.automatic_fill = 1
             AND raid.current_member_count < raid.requester_capacity
@@ -857,7 +831,7 @@ export class D1MvpRepository
                    SELECT twitch_user_id FROM user_mappings WHERE twitch_login = ?
                  ))
              AND game_mode = ? AND map_id = ? AND state IN (0, 1)
-           ORDER BY is_priority DESC, id LIMIT 1`,
+           ORDER BY id LIMIT 1`,
         )
         .bind(input.twitchUserId ?? null, twitchLogin, gameModeCode(input.gameMode), input.mapId),
     );
@@ -869,7 +843,7 @@ export class D1MvpRepository
                   source_delivery_id AS sourceDeliveryId
            FROM help_requests
            WHERE twitch_login = ? AND game_mode = ? AND map_id = ? AND state IN (0, 1)
-           ORDER BY is_priority DESC, id LIMIT 1`,
+           ORDER BY id LIMIT 1`,
         )
         .bind(twitchLogin, gameModeCode(input.gameMode), input.mapId),
     );
@@ -922,96 +896,71 @@ export class D1MvpRepository
         ? { sql: "request.twitch_login = ?", value: identity.twitchLogin }
         : { sql: "request.twitch_user_id = ?", value: identity.twitchUserId };
     const selected = await this.database
-      .prepare(
-        `SELECT request.id AS requestId, request.map_id AS mapId,
-                CASE request.game_mode WHEN 0 THEN 'pvp-seasonal'
-                     WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
-                request.is_priority AS isPriority, raid.id AS groupId, raid.sort_key AS sortKey
-         FROM help_requests AS request
-         LEFT JOIN raid_group_members AS member
-           ON member.request_id = request.id AND member.state = 0
-         LEFT JOIN raid_groups AS raid ON raid.id = member.group_id AND raid.state IN (0, 1)
-         WHERE ${identityPredicate.sql} AND request.state IN (0, 1)
-         ORDER BY request.is_priority DESC, request.id LIMIT 1`,
-      )
+      .prepare(`
+      SELECT request.id AS requestId, request.map_id AS mapId,
+        CASE request.game_mode WHEN 0 THEN 'pvp-seasonal' WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
+        raid.id AS groupId, raid.service_lane AS serviceLane, raid.service_key AS serviceKey,
+        (SELECT count(*) FROM raid_group_members AS earlier
+         WHERE earlier.group_id = raid.id AND earlier.state = 0 AND earlier.position < member.position) AS membersAhead
+      FROM help_requests AS request
+      JOIN raid_group_members AS member ON member.request_id = request.id AND member.state = 0
+      JOIN raid_groups AS raid ON raid.id = member.group_id AND raid.state IN (0, 1)
+      WHERE ${identityPredicate.sql} AND request.state IN (0, 1)
+      ORDER BY raid.service_lane, raid.service_key, raid.id, member.position LIMIT 1`)
       .bind(identityPredicate.value)
       .first<QueueSelectionRow>();
     if (selected === null) return {};
-    const selectedModeCode = gameModeCode(selected.gameMode);
-    const requestPrefix =
-      selected.isPriority === 1
-        ? this.database
-            .prepare(
-              `SELECT count(*) AS count FROM (
-                 SELECT id FROM help_requests
-                 WHERE state IN (0, 1) AND game_mode = ? AND is_priority = 1 AND id < ?
-                 ORDER BY id LIMIT ?
-               )`,
-            )
-            .bind(selectedModeCode, selected.requestId, QUEUE_REQUEST_EXACT_LIMIT + 1)
-            .first<{ count: number }>()
-        : this.database
-            .prepare(
-              `SELECT count(*) AS count FROM (
-                 SELECT id, is_priority AS isPriority FROM help_requests
-                 WHERE state IN (0, 1) AND game_mode = ? AND is_priority = 1
-                 UNION ALL
-                 SELECT id, is_priority AS isPriority FROM help_requests
-                 WHERE state IN (0, 1) AND game_mode = ? AND is_priority = 0 AND id < ?
-                 ORDER BY isPriority DESC, id LIMIT ?
-               )`,
-            )
-            .bind(
-              selectedModeCode,
-              selectedModeCode,
-              selected.requestId,
-              QUEUE_REQUEST_EXACT_LIMIT + 1,
-            )
-            .first<{ count: number }>();
-    const [requestPrefixRow, priorityRaids, otherRows] = await Promise.all([
-      requestPrefix,
-      this.modeFairRaidPrefix(1, QUEUE_RAID_EXACT_LIMIT),
+    const prefix = "(service_lane, service_key, id) < (?, ?, ?)";
+    const results = await this.database.batch([
       this.database
-        .prepare(
-          `SELECT CASE game_mode WHEN 0 THEN 'pvp-seasonal'
-                       WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
-                  map_id AS mapId
-           FROM help_requests
-           WHERE ${identityPredicate.sql.replaceAll("request.", "")} AND state IN (0, 1) AND id <> ?
-           GROUP BY game_mode, map_id ORDER BY min(id)`,
-        )
-        .bind(identityPredicate.value, selected.requestId)
-        .all<{ gameMode: GameMode; mapId: string }>(),
+        .prepare(`SELECT coalesce(sum(current_member_count), 0) AS count FROM (
+        SELECT current_member_count FROM raid_groups
+        WHERE state IN (0, 1) AND game_mode = ? AND current_member_count > 0 AND ${prefix}
+        ORDER BY service_lane, service_key, id LIMIT ?
+      )`)
+        .bind(
+          gameModeCode(selected.gameMode),
+          selected.serviceLane,
+          selected.serviceKey,
+          selected.groupId,
+          QUEUE_REQUEST_EXACT_LIMIT + 1,
+        ),
+      this.database
+        .prepare(`SELECT count(*) AS count FROM (
+        SELECT id FROM raid_groups WHERE state IN (0, 1) AND ${prefix}
+        ORDER BY service_lane, service_key, id LIMIT ?
+      )`)
+        .bind(
+          selected.serviceLane,
+          selected.serviceKey,
+          selected.groupId,
+          QUEUE_RAID_EXACT_LIMIT + 1,
+        ),
+      this.database
+        .prepare(`SELECT CASE game_mode WHEN 0 THEN 'pvp-seasonal' WHEN 1 THEN 'pvp' ELSE 'pve' END AS gameMode,
+        map_id AS mapId FROM help_requests
+        WHERE ${identityPredicate.sql.replaceAll("request.", "")} AND state IN (0, 1) AND id <> ?
+        GROUP BY game_mode, map_id ORDER BY min(id)`)
+        .bind(identityPredicate.value, selected.requestId),
     ]);
-    const requestPrefixCount = Number(requestPrefixRow?.count ?? 0);
-    const ordinaryAheadLimit =
-      selected.isPriority === 1
-        ? 0
-        : Math.max(
-            0,
-            QUEUE_RAID_EXACT_LIMIT - Math.min(priorityRaids.length, QUEUE_RAID_EXACT_LIMIT + 1),
-          );
-    const ordinaryRaids =
-      selected.isPriority === 1 ? [] : await this.modeFairRaidPrefix(0, ordinaryAheadLimit);
-    const orderedRaids = [...priorityRaids, ...ordinaryRaids];
-    const selectedRaidIndex =
-      selected.groupId === null
-        ? 0
-        : orderedRaids.findIndex((raid) => raid.groupId === selected.groupId);
-    const raidPrefixCount = selectedRaidIndex < 0 ? QUEUE_RAID_EXACT_LIMIT + 1 : selectedRaidIndex;
+    const requestCount =
+      Number((results[0]?.results[0] as { count: number } | undefined)?.count ?? 0) +
+      selected.membersAhead;
+    const raidCount = Number((results[1]?.results[0] as { count: number } | undefined)?.count ?? 0);
+    const others = results[2]?.results as { gameMode: GameMode; mapId: string }[];
     return {
       caller: {
         gameMode: selected.gameMode,
         mapName: resolveTarkovMap(selected.mapId)?.name ?? selected.mapId,
         queuePosition:
-          requestPrefixCount > QUEUE_REQUEST_EXACT_LIMIT
+          requestCount > QUEUE_REQUEST_EXACT_LIMIT
             ? { kind: "more_than", requestsAhead: QUEUE_REQUEST_EXACT_LIMIT }
-            : { kind: "exact", ordinal: requestPrefixCount + 1 },
+            : { kind: "exact", ordinal: requestCount + 1 },
         raidsAhead:
-          raidPrefixCount > QUEUE_RAID_EXACT_LIMIT
+          raidCount > QUEUE_RAID_EXACT_LIMIT
             ? { kind: "more_than", count: QUEUE_RAID_EXACT_LIMIT }
-            : { kind: "exact", count: raidPrefixCount },
-        otherActiveModeMapNames: otherRows.results.map(
+            : { kind: "exact", count: raidCount },
+        otherActiveModeMapNames: others.map(
           (row) =>
             `${gameModeLabel(row.gameMode)} · ${resolveTarkovMap(row.mapId)?.name ?? row.mapId}`,
         ),
@@ -1046,257 +995,251 @@ export class D1MvpRepository
   }
 
   private async repairLegacyUnassignedRequestsPass(
-    input: {
-      recipientLimit: number;
-      changedAt: Date;
-    },
+    input: { recipientLimit: number; changedAt: Date },
     batchLimit: number,
   ): Promise<{ materialized: number; shouldRetry: boolean }> {
     const fifo = await this.database
-      .prepare(
-        `SELECT id AS requestId, game_mode AS gameMode, map_id AS mapId,
-                is_priority AS isPriority
-         FROM help_requests
-         WHERE state = 0
-         ORDER BY is_priority DESC, id
-         LIMIT ?`,
-      )
+      .prepare(`SELECT id AS requestId, game_mode AS gameMode, map_id AS mapId
+      FROM help_requests WHERE state = 0 ORDER BY id LIMIT ?`)
       .bind(batchLimit)
       .all<WaitingRow>();
-    if (fifo.results.length === 0) return { materialized: 0, shouldRetry: false };
-
-    let waiting = fifo.results;
-    if (fifo.results.length === batchLimit) {
-      const heads = await this.database
-        .prepare(
-          `SELECT request.id AS requestId, request.game_mode AS gameMode,
-                  request.map_id AS mapId, request.is_priority AS isPriority
-           FROM help_requests AS request
-           JOIN json_each(json_array(
-             (SELECT id FROM help_requests
-              WHERE state = 0 AND is_priority = 1 AND game_mode = 0 ORDER BY id LIMIT 1),
-             (SELECT id FROM help_requests
-              WHERE state = 0 AND is_priority = 1 AND game_mode = 1 ORDER BY id LIMIT 1),
-             (SELECT id FROM help_requests
-              WHERE state = 0 AND is_priority = 1 AND game_mode = 2 ORDER BY id LIMIT 1),
-             (SELECT id FROM help_requests
-              WHERE state = 0 AND is_priority = 0 AND game_mode = 0 ORDER BY id LIMIT 1),
-             (SELECT id FROM help_requests
-              WHERE state = 0 AND is_priority = 0 AND game_mode = 1 ORDER BY id LIMIT 1),
-             (SELECT id FROM help_requests
-              WHERE state = 0 AND is_priority = 0 AND game_mode = 2 ORDER BY id LIMIT 1)
-           )) AS head ON head.value = request.id
-           WHERE head.value IS NOT NULL`,
-        )
-        .all<WaitingRow>();
-      const selected = new Map<number, WaitingRow>();
-      const orderedHeads = [...heads.results].sort(
-        (left, right) => right.isPriority - left.isPriority || left.requestId - right.requestId,
-      );
-      for (const row of orderedHeads) {
-        if (selected.size === batchLimit) break;
-        selected.set(row.requestId, row);
-      }
-      for (const row of fifo.results) {
-        if (selected.size === batchLimit) break;
-        selected.set(row.requestId, row);
-      }
-      waiting = [...selected.values()].sort(
-        (left, right) => right.isPriority - left.isPriority || left.requestId - right.requestId,
-      );
+    const waiting = fifo.results;
+    if (waiting.length === 0) return { materialized: 0, shouldRetry: false };
+    const counts = new Map<string, { gameMode: number; mapId: string; requestCount: number }>();
+    for (const row of waiting) {
+      const key = materializationBucketKey(row);
+      const bucket = counts.get(key);
+      if (bucket === undefined)
+        counts.set(key, { gameMode: row.gameMode, mapId: row.mapId, requestCount: 1 });
+      else bucket.requestCount += 1;
     }
-
-    const demand = [
-      ...waiting
-        .reduce((counts, row) => {
-          const key = `${row.isPriority}:${row.gameMode}:${row.mapId}`;
-          const current = counts.get(key);
-          if (current === undefined) {
-            counts.set(key, {
-              isPriority: row.isPriority,
-              gameMode: row.gameMode,
-              mapId: row.mapId,
-              requestCount: 1,
-            });
-          } else {
-            current.requestCount += 1;
-          }
-          return counts;
-        }, new Map<
-          string,
-          { isPriority: number; gameMode: number; mapId: string; requestCount: number }
-        >())
-        .values(),
-    ];
-    const candidateChunks: (typeof demand)[] = [];
-    for (let index = 0; index < demand.length; index += 4) {
-      candidateChunks.push(demand.slice(index, index + 4));
-    }
-    const [existingResults, maxima] = await Promise.all([
+    const demand = [...counts.values()];
+    const chunks: (typeof demand)[] = [];
+    for (let i = 0; i < demand.length; i += 4) chunks.push(demand.slice(i, i + 4));
+    const [existingResults, maximum] = await Promise.all([
       this.database.batch<OpenGroupRow>(
-        candidateChunks.map((chunk) => {
-          const branches = chunk.map(
-            (bucket) =>
-              `SELECT * FROM (
-                 SELECT id AS groupId, game_mode AS gameMode, map_id AS mapId,
-                        is_priority AS isPriority, sort_key AS sortKey,
-                        requester_capacity AS requesterCapacity,
-                        current_member_count AS memberCount
-                 FROM raid_groups INDEXED BY raid_groups_compatible_mode_idx
-                 WHERE is_priority = ${bucket.isPriority} AND game_mode = ${bucket.gameMode}
-                   AND map_id = ? AND state = 0 AND automatic_fill = 1
-                   AND current_member_count < requester_capacity
-                 ORDER BY sort_key
-                 LIMIT ${bucket.requestCount})`,
-          );
-          return this.database
+        chunks.map((chunk) =>
+          this.database
             .prepare(
-              `/* d1:assignment.legacy_candidates */
-               ${branches.join(" UNION ALL ")}`,
+              `/* d1:assignment.legacy_candidates */ ${chunk
+                .map(
+                  (bucket) => `SELECT * FROM (
+          SELECT id AS groupId, game_mode AS gameMode, map_id AS mapId, sort_key AS sortKey,
+            requester_capacity AS requesterCapacity, current_member_count AS memberCount
+          FROM raid_groups INDEXED BY raid_groups_compatible_mode_idx
+          WHERE game_mode = ${bucket.gameMode} AND map_id = ? AND state = 0 AND automatic_fill = 1
+            AND current_member_count < requester_capacity
+          ORDER BY sort_key LIMIT ${bucket.requestCount}
+        )`,
+                )
+                .join(" UNION ALL ")}`,
             )
-            .bind(...chunk.map((bucket) => bucket.mapId));
-        }),
+            .bind(...chunk.map((bucket) => bucket.mapId)),
+        ),
       ),
       this.database
         .prepare(
-          `SELECT
-             coalesce((SELECT sort_key FROM raid_groups
-                       WHERE is_priority = 1 AND state IN (0, 1)
-                       ORDER BY sort_key DESC LIMIT 1), 0) AS priorityMax,
-             coalesce((SELECT sort_key FROM raid_groups
-                       WHERE is_priority = 0 AND state IN (0, 1)
-                       ORDER BY sort_key DESC LIMIT 1), 0) AS ordinaryMax`,
+          "SELECT coalesce(max(sort_key), 0) AS maximum FROM raid_groups WHERE state IN (0, 1)",
         )
-        .first<{ priorityMax: number; ordinaryMax: number }>(),
+        .first<{ maximum: number }>(),
     ]);
-
     const { newGroups, assignments } = planMaterialization(
       waiting,
       existingResults.flatMap((result) => result.results),
-      {
-        priority: Number(maxima?.priorityMax ?? 0),
-        ordinary: Number(maxima?.ordinaryMax ?? 0),
-      },
+      maximum?.maximum ?? 0,
       (mapId) => this.requesterCapacity(mapId, input.recipientLimit),
+      crypto.randomUUID(),
     );
     const timestamp = epoch(input.changedAt);
-    const groupJson = JSON.stringify(newGroups);
-    const assignmentJson = JSON.stringify(assignments);
-    const results = await this.database.batch([
+    const newGroupJson = JSON.stringify(newGroups);
+    const statements = [
       this.database
-        .prepare(
-          `/* d1:assignment.legacy_group_insert */
-           INSERT OR IGNORE INTO raid_groups
-             (is_priority, game_mode, sort_key, map_id, requester_capacity,
-              last_action_key, created_at, updated_at)
-           SELECT json_extract(value, '$.isPriority'), json_extract(value, '$.gameMode'),
-                  json_extract(value, '$.sortKey'), json_extract(value, '$.mapId'),
-                  json_extract(value, '$.capacity'),
-                  json_extract(value, '$.actionKey'), ?, ?
-           FROM json_each(?) AS item
-           JOIN help_requests AS request
-             ON request.id = json_extract(item.value, '$.anchorRequestId')
-            AND request.state = 0`,
-        )
-        .bind(timestamp, timestamp, groupJson),
+        .prepare(`/* d1:assignment.legacy_group_insert */
+        INSERT OR IGNORE INTO raid_groups
+          (game_mode, sort_key, map_id, requester_capacity, last_action_key, automatic_fill, created_at, updated_at)
+        SELECT json_extract(value, '$.gameMode'), json_extract(value, '$.sortKey'), json_extract(value, '$.mapId'),
+          json_extract(value, '$.capacity'), json_extract(value, '$.actionKey'), 0, ?, ?
+        FROM json_each(?) AS item JOIN help_requests AS request
+          ON request.id = json_extract(item.value, '$.anchorRequestId') AND request.state = 0`)
+        .bind(timestamp, timestamp, newGroupJson),
       this.database
-        .prepare(
-          `/* d1:assignment.legacy_membership_insert */
-           WITH resolved AS MATERIALIZED (
-             SELECT request.id AS request_id,
-                    coalesce(json_extract(item.value, '$.groupId'), raid.id) AS group_id,
-                    cast(json_extract(item.value, '$.positionOffset') AS INTEGER) AS position_offset
-             FROM json_each(?) AS item
-             JOIN help_requests AS request
-               ON request.id = json_extract(item.value, '$.requestId') AND request.state = 0
-             LEFT JOIN raid_groups AS raid
-               ON raid.last_action_key = json_extract(item.value, '$.actionKey')
-           ), destination AS MATERIALIZED (
-             SELECT raid.id, raid.current_member_count, raid.requester_capacity,
-                    (SELECT coalesce(max(member.position), 0)
-                     FROM raid_group_members AS member
-                     WHERE member.group_id = raid.id AND member.state = 0) AS maximum_position
-             FROM raid_groups AS raid
-             JOIN (SELECT DISTINCT group_id FROM resolved) AS selected
-               ON selected.group_id = raid.id
-             WHERE raid.state = 0 AND raid.automatic_fill = 1
-           )
-           INSERT OR IGNORE INTO raid_group_members
-             (group_id, request_id, position, created_at, updated_at)
-           SELECT resolved.group_id, resolved.request_id,
-                  destination.maximum_position + resolved.position_offset, ?, ?
-           FROM resolved
-           JOIN destination ON destination.id = resolved.group_id
-           WHERE resolved.position_offset BETWEEN 1
-                 AND destination.requester_capacity - destination.current_member_count
-           RETURNING request_id`,
+        .prepare(`/* d1:assignment.legacy_membership_insert */
+        WITH resolved AS MATERIALIZED (
+          SELECT request.id AS request_id, coalesce(json_extract(item.value, '$.groupId'), raid.id) AS group_id,
+            cast(json_extract(item.value, '$.positionOffset') AS INTEGER) AS position_offset
+          FROM json_each(?) AS item
+          JOIN help_requests AS request ON request.id = json_extract(item.value, '$.requestId') AND request.state = 0
+          LEFT JOIN raid_groups AS raid ON raid.last_action_key = json_extract(item.value, '$.actionKey')
+        ), destination AS MATERIALIZED (
+          SELECT raid.id, raid.current_member_count, raid.requester_capacity,
+            (SELECT coalesce(max(member.position), 0) FROM raid_group_members AS member
+             WHERE member.group_id = raid.id AND member.state = 0) AS maximum_position
+          FROM raid_groups AS raid JOIN (SELECT DISTINCT group_id FROM resolved) AS selected ON selected.group_id = raid.id
+          WHERE raid.state = 0 AND (raid.automatic_fill = 1 OR raid.last_action_key IN (
+            SELECT json_extract(value, '$.actionKey') FROM json_each(?)
+          ))
         )
-        .bind(assignmentJson, timestamp, timestamp),
+        INSERT OR IGNORE INTO raid_group_members (group_id, request_id, position, created_at, updated_at)
+        SELECT resolved.group_id, resolved.request_id, destination.maximum_position + resolved.position_offset, ?, ?
+        FROM resolved JOIN destination ON destination.id = resolved.group_id
+        WHERE resolved.position_offset BETWEEN 1 AND destination.requester_capacity - destination.current_member_count
+        RETURNING request_id`)
+        .bind(JSON.stringify(assignments), newGroupJson, timestamp, timestamp),
       this.boardDirtyStatement(timestamp, true),
-    ]);
+    ];
+    if (newGroups.length > 0) {
+      // Enable new groups once after bulk filling, instead of rewriting fill/source indexes for every member.
+      // The unique pass key protects groups created or reviewed by a competing recovery invocation.
+      statements.push(
+        this.database
+          .prepare(`/* d1:assignment.legacy_activate_groups */
+        UPDATE raid_groups SET automatic_fill = 1 WHERE state = 0 AND automatic_fill = 0
+          AND current_member_count > 0 AND last_action_key IN (
+            SELECT json_extract(value, '$.actionKey') FROM json_each(?)
+          )`)
+          .bind(newGroupJson),
+      );
+    }
+    const results = await this.database.batch(statements);
     const materialized = results[1]?.results.length ?? 0;
     return { materialized, shouldRetry: materialized < assignments.length };
   }
 
   async getBoardSnapshot(_now?: Date): Promise<StaffBoardSnapshot> {
-    const [stateResult, candidateRows] = await this.database.batch<
+    const [stateResult, candidateResult] = await this.database.batch<
       CommunityStateRow | QueueRaidOrderRow
     >([
-      this.database.prepare(
-        `SELECT staff_board_message_id AS staffBoardMessageId,
-                priority_open_raid_count AS priorityRaidCount,
-                ordinary_open_raid_count AS ordinaryRaidCount,
-                board_dirty_version AS boardDirtyVersion
-         FROM community_state WHERE community_id = 'butcoffee'`,
-      ),
+      this.database.prepare(`SELECT staff_board_message_id AS staffBoardMessageId, raid_count AS raidCount,
+        board_dirty_version AS boardDirtyVersion, board_page_number AS boardPageNumber,
+        board_page_direction AS boardPageDirection FROM community_state WHERE community_id = 'butcoffee'`),
       this.database.prepare(boundedBoardRaidSql()),
     ]);
     const state = stateResult?.results[0] as CommunityStateRow | undefined;
-    const candidates = (candidateRows?.results ?? []) as QueueRaidOrderRow[];
-    const fallbackCounts =
+    const candidates = candidateResult?.results as QueueRaidOrderRow[];
+    const hasMore = candidates.length > BOARD_PAGE_SIZE;
+    const visible = candidates.slice(0, BOARD_PAGE_SIZE);
+    if (state?.boardPageDirection === -1) visible.reverse();
+    const ids = visible.map((row) => row.groupId);
+    const details =
+      ids.length === 0
+        ? []
+        : (
+            await this.database
+              .prepare(raidSelectSql(`WHERE raid.id IN (${ids.map(() => "?").join(", ")})`, 0))
+              .bind(...ids)
+              .all<RaidRow>()
+          ).results;
+    const byId = new Map(mapRaidRows(details).map((raid) => [raid.id, raid]));
+    const raids = visible.flatMap((row) => {
+      const raid = byId.get(row.groupId);
+      return raid === undefined ? [] : [raid];
+    });
+    const pageNumber = raids.length === 0 ? 1 : (state?.boardPageNumber ?? 1);
+    const first = raids[0];
+    const last = raids.at(-1);
+    const boundary = (raid: StaffBoardRaid) => ({
+      lane: raid.serviceLane,
+      key: raid.serviceKey,
+      id: raid.id,
+    });
+    const next = state?.boardPageDirection === -1 || hasMore;
+    const fallback =
       state === undefined
         ? await this.database
-            .prepare(
-              `SELECT
-                 (SELECT count(*) FROM raid_groups
-                  WHERE is_priority = 1 AND state IN (0, 1)) AS priorityRaidCount,
-                 (SELECT count(*) FROM raid_groups
-                  WHERE is_priority = 0 AND state IN (0, 1)) AS ordinaryRaidCount`,
-            )
-            .first<{ priorityRaidCount: number; ordinaryRaidCount: number }>()
+            .prepare("SELECT count(*) AS count FROM raid_groups WHERE state IN (0, 1)")
+            .first<{ count: number }>()
         : undefined;
-    const priorityCandidates = orderByModePresence(
-      candidates.filter((raid) => raid.isPriority === 1),
-    ).slice(0, 3);
-    const ordinaryCandidates = orderByModePresence(
-      candidates.filter((raid) => raid.isPriority === 0),
-    ).slice(0, 7);
-    const visibleIds = [...priorityCandidates, ...ordinaryCandidates].map(
-      (candidate) => candidate.groupId,
-    );
-    const detailRows =
-      visibleIds.length === 0
-        ? { results: [] as RaidRow[] }
-        : await this.database
-            .prepare(raidSelectSql(`WHERE raid.id IN (${visibleIds.map(() => "?").join(", ")})`, 0))
-            .bind(...visibleIds)
-            .all<RaidRow>();
-    const raidsById = new Map(mapRaidRows(detailRows.results).map((raid) => [raid.id, raid]));
-    const hydrate = (candidates: readonly QueueRaidOrderRow[]) =>
-      candidates.flatMap((candidate) => {
-        const raid = raidsById.get(candidate.groupId);
-        return raid === undefined ? [] : [raid];
-      });
     return {
-      boardVersion: Number(state?.boardDirtyVersion ?? 0),
-      priorityRaidCount: Number(state?.priorityRaidCount ?? fallbackCounts?.priorityRaidCount ?? 0),
-      ordinaryRaidCount: Number(state?.ordinaryRaidCount ?? fallbackCounts?.ordinaryRaidCount ?? 0),
+      boardVersion: state?.boardDirtyVersion ?? 0,
+      raidCount: Number(state?.raidCount ?? fallback?.count ?? 0),
+      pageNumber,
       ...(state?.staffBoardMessageId == null
         ? {}
         : { canonicalMessageId: state.staffBoardMessageId }),
-      priorityRaids: hydrate(priorityCandidates),
-      ordinaryRaids: hydrate(ordinaryCandidates),
+      ...(pageNumber > 1 && first !== undefined
+        ? {
+            previousPage: {
+              direction: "previous" as const,
+              boundary: boundary(first),
+              pageNumber: pageNumber - 1,
+            },
+          }
+        : {}),
+      ...(next && last !== undefined
+        ? {
+            nextPage: {
+              direction: "next" as const,
+              boundary: boundary(last),
+              pageNumber: pageNumber + 1,
+            },
+          }
+        : {}),
+      raids,
     };
+  }
+
+  async navigateBoard(input: {
+    target: BoardPageTarget;
+    expectedVersion: number;
+    expectedMessageId: string;
+    changedAt: Date;
+  }): Promise<boolean> {
+    const { target } = input;
+    const direction = target.direction === "next" ? 1 : -1;
+    const result = await this.database
+      .prepare(`UPDATE community_state SET
+      board_page_number = ?, board_page_direction = ?, board_page_lane = ?, board_page_key = ?, board_page_id = ?,
+      board_dirty_version = board_dirty_version + 1, updated_at = ?
+      WHERE community_id = 'butcoffee' AND board_dirty_version = ? AND staff_board_message_id = ?
+        AND board_page_number = ? AND EXISTS (
+          SELECT 1 FROM raid_groups WHERE id = ? AND state IN (0, 1) AND service_lane = ? AND service_key = ?
+        )`)
+      .bind(
+        target.pageNumber,
+        direction,
+        target.boundary.lane,
+        target.boundary.key,
+        target.boundary.id,
+        epoch(input.changedAt),
+        input.expectedVersion,
+        input.expectedMessageId,
+        target.pageNumber - direction,
+        target.boundary.id,
+        target.boundary.lane,
+        target.boundary.key,
+      )
+      .run();
+    return Number(result.meta.changes ?? 0) === 1;
+  }
+
+  async changeRaidPlacement(input: {
+    groupId: number;
+    remove: boolean;
+    expectedVersion: number;
+    expectedMessageId: string;
+    actionKey: string;
+    changedAt: Date;
+  }): Promise<boolean> {
+    const first =
+      "id <> coalesce((SELECT id FROM raid_groups WHERE state IN (0, 1) AND service_lane = 1 ORDER BY service_key, id LIMIT 1), 0)";
+    const results = await this.database.batch([
+      this.database
+        .prepare(`UPDATE raid_groups SET
+        manual_order = ${input.remove ? "0" : "(SELECT board_dirty_version + 1 FROM community_state WHERE community_id = 'butcoffee')"},
+        last_action_key = ?, updated_at = ?
+        WHERE id = ? AND state = 0 AND ${input.remove ? "manual_order > 0" : first}
+          AND EXISTS (SELECT 1 FROM community_state WHERE community_id = 'butcoffee'
+            AND board_dirty_version = ? AND staff_board_message_id = ?)`)
+        .bind(
+          input.actionKey,
+          epoch(input.changedAt),
+          input.groupId,
+          input.expectedVersion,
+          input.expectedMessageId,
+        ),
+      this.boardDirtyStatement(epoch(input.changedAt), true),
+    ]);
+    return Number(results[0]?.meta.changes ?? 0) === 1;
   }
 
   async getRaid(groupId: number): Promise<StaffBoardRaid | undefined> {
@@ -1418,16 +1361,11 @@ export class D1MvpRepository
                 leader_discord_user_id AS leaderDiscordUserId,
                 staff_message_id AS staffMessageId
          FROM raid_groups
-         WHERE is_priority = ? AND game_mode = ? AND map_id = ?
+         WHERE game_mode = ? AND map_id = ?
            AND state IN (0, 1) AND sort_key > ?
          ORDER BY sort_key LIMIT 1`,
       )
-      .bind(
-        source.queueKind === "priority" ? 1 : 0,
-        gameModeCode(source.gameMode),
-        source.mapId,
-        source.sortKey,
-      )
+      .bind(gameModeCode(source.gameMode), source.mapId, source.sortKey)
       .first<PullBoundaryRow>();
   }
 
@@ -1481,35 +1419,8 @@ export class D1MvpRepository
       boundary,
       canPush,
       sourceDisposition,
-      crossQueue: destination.queueKind !== source.queueKind,
       timestamp: epoch(input.changedAt),
     };
-  }
-
-  private pullCrossQueueStatements(
-    input: PullRequesterInput,
-    plan: PullRequesterPlan,
-  ): D1PreparedStatement[] {
-    if (!plan.crossQueue) return [];
-    return [
-      this.database
-        .prepare(
-          `UPDATE help_requests SET is_priority = ?, updated_at = ?
-           WHERE id = ? AND state = 1
-             AND EXISTS (
-               SELECT 1 FROM raid_group_members
-               WHERE group_id = ? AND request_id = ? AND state = 2 AND updated_at = ?
-             )`,
-        )
-        .bind(
-          plan.destination.queueKind === "priority" ? 1 : 0,
-          plan.timestamp,
-          input.requestId,
-          input.sourceGroupId,
-          input.requestId,
-          plan.timestamp,
-        ),
-    ];
   }
 
   private pullPushStatements(
@@ -1533,7 +1444,7 @@ export class D1MvpRepository
              CASE WHEN
                target.id = (
                  SELECT id FROM raid_groups
-                 WHERE is_priority = ? AND game_mode = ? AND map_id = ?
+                 WHERE game_mode = ? AND map_id = ?
                    AND state IN (0, 1) AND sort_key > ?
                  ORDER BY sort_key LIMIT 1
                )
@@ -1558,7 +1469,6 @@ export class D1MvpRepository
            JOIN raid_groups AS target ON target.id = ?`,
         )
         .bind(
-          plan.source.queueKind === "priority" ? 1 : 0,
           gameModeCode(plan.source.gameMode),
           plan.source.mapId,
           plan.source.sortKey,
@@ -1637,15 +1547,13 @@ export class D1MvpRepository
       if (plan.boundary === null) {
         retainedBoundaryAssertion = `AND NOT EXISTS (
           SELECT 1 FROM raid_groups AS next
-          WHERE next.is_priority = source.is_priority
-            AND next.game_mode = source.game_mode AND next.map_id = source.map_id
+          WHERE next.game_mode = source.game_mode AND next.map_id = source.map_id
             AND next.state IN (0, 1) AND next.sort_key > source.sort_key
         )`;
       } else {
         retainedBoundaryAssertion = `AND ? = (
           SELECT id FROM raid_groups AS next
-          WHERE next.is_priority = source.is_priority
-            AND next.game_mode = source.game_mode AND next.map_id = source.map_id
+          WHERE next.game_mode = source.game_mode AND next.map_id = source.map_id
             AND next.state IN (0, 1) AND next.sort_key > source.sort_key
           ORDER BY next.sort_key LIMIT 1
         )
@@ -1680,7 +1588,6 @@ export class D1MvpRepository
              AND destination.map_id = source.map_id
              AND request.state = 1 AND request.game_mode = destination.game_mode
              AND request.map_id = destination.map_id
-             AND request.is_priority = destination.is_priority
              AND ${sourceStateAssertion}
              AND EXISTS (
                SELECT 1 FROM raid_group_members AS removed
@@ -1732,7 +1639,6 @@ export class D1MvpRepository
           input.destinationGroupId,
           input.sourceGroupId,
         ),
-      ...this.pullCrossQueueStatements(input, plan),
       ...this.pullPushStatements(input, plan),
       this.pullSourceStatement(input, plan),
       this.database
@@ -1778,7 +1684,7 @@ export class D1MvpRepository
       this.database
         .prepare(
           `UPDATE raid_groups SET state = 1, leader_discord_user_id = ?, leader_type = ?,
-           attempt_count = 1, discord_call_status = 0, twitch_call_status = ?,
+           manual_order = 0, discord_call_status = 0, twitch_call_status = ?,
            started_at = ?, updated_at = ?
            WHERE id = ? AND state = 0 AND automatic_fill = 0 AND staff_message_id IS NOT NULL
              AND (leader_discord_user_id IS NULL OR leader_discord_user_id = ? OR ? = 1)`,
@@ -1866,89 +1772,54 @@ export class D1MvpRepository
     return Number(result?.meta.changes ?? 0) === 1;
   }
 
-  async recordRaidResult(input: {
+  async completeRaid(input: {
     groupId: number;
-    outcome: "helped" | "unsuccessful";
-    attemptLimit: number;
     actionKey: string;
     changedAt: Date;
-  }): Promise<StaffBoardRaid> {
-    const raid = await this.getRaid(input.groupId);
-    if (raid?.state !== "active")
-      throw new RepositoryInvariantError("That raid is no longer active.");
+  }): Promise<void> {
     const timestamp = epoch(input.changedAt);
-    if (input.outcome === "unsuccessful") {
-      if (raid.attemptCount >= input.attemptLimit)
-        throw new RepositoryInvariantError("Choose Helped or Postpone raid for the final attempt.");
-      const [result] = await this.database.batch([
+    const results = await this.database
+      .batch([
         this.database
-          .prepare(
-            `UPDATE raid_groups SET attempt_count = attempt_count + 1, last_action_key = ?, updated_at = ?
-             WHERE id = ? AND state = 1 AND attempt_count < ?`,
-          )
-          .bind(input.actionKey, timestamp, input.groupId, input.attemptLimit),
+          .prepare(`SELECT json(CASE WHEN EXISTS (
+        SELECT 1 FROM raid_groups WHERE id = ? AND state = 1
+      ) THEN 'true' ELSE 'stale raid result' END)`)
+          .bind(input.groupId),
+        this.database
+          .prepare(`UPDATE raid_group_members SET state = 1, updated_at = ?
+        WHERE group_id = ? AND state = 0`)
+          .bind(timestamp, input.groupId),
+        this.database
+          .prepare(`UPDATE help_requests SET state = 2, updated_at = ?
+        WHERE state = 1 AND id IN (SELECT request_id FROM raid_group_members WHERE group_id = ? AND state = 1)`)
+          .bind(timestamp, input.groupId),
+        this.database
+          .prepare(`UPDATE raid_groups SET state = 2, outcome = 0, staff_message_id = NULL,
+        manual_order = 0, last_action_key = ?, completed_at = ?, updated_at = ?
+        WHERE id = ? AND state = 1`)
+          .bind(input.actionKey, timestamp, timestamp, input.groupId),
         this.boardDirtyStatement(timestamp),
-      ]);
-      if (Number(result?.meta.changes ?? 0) !== 1)
-        throw new RepositoryInvariantError("That attempt was already recorded.");
-    } else {
-      const results = await this.database
-        .batch([
-          this.database
-            .prepare(
-              `SELECT json(CASE WHEN EXISTS (
-             SELECT 1 FROM raid_groups WHERE id = ? AND state = 1
-           ) THEN 'true' ELSE 'stale raid result' END)`,
-            )
-            .bind(input.groupId),
-          this.database
-            .prepare(
-              `UPDATE raid_group_members SET state = 1, updated_at = ? WHERE group_id = ? AND state = 0`,
-            )
-            .bind(timestamp, input.groupId),
-          this.database
-            .prepare(
-              `UPDATE help_requests SET state = 2, updated_at = ?
-           WHERE state = 1 AND id IN (
-             SELECT request_id FROM raid_group_members WHERE group_id = ? AND state = 1
-           )`,
-            )
-            .bind(timestamp, input.groupId),
-          this.database
-            .prepare(
-              `UPDATE raid_groups SET state = 2, outcome = 0, staff_message_id = NULL,
-             last_action_key = ?, completed_at = ?, updated_at = ?
-           WHERE id = ? AND state = 1`,
-            )
-            .bind(input.actionKey, timestamp, timestamp, input.groupId),
-          this.boardDirtyStatement(timestamp),
-        ])
-        .catch(rethrowStaleRaidTransition);
-      if (Number(results[3]?.meta.changes ?? 0) < 1)
-        throw new RepositoryInvariantError("That raid result was already recorded.");
-    }
-    const updated = await this.getRaid(input.groupId);
-    if (updated === undefined)
-      throw new RepositoryInvariantError("The raid result was not stored.");
-    return updated;
+      ])
+      .catch(rethrowStaleRaidTransition);
+    if (Number(results[3]?.meta.changes ?? 0) < 1)
+      throw new RepositoryInvariantError("That raid result was already recorded.");
   }
 
   private async requesterFollowUpWindow(groupId: number): Promise<RequesterFollowUpWindow | null> {
     const window = await this.database
       .prepare(
         `WITH source AS (
-           SELECT id, is_priority, game_mode, sort_key, map_id
+           SELECT id, game_mode, sort_key, map_id
            FROM raid_groups WHERE id = ? AND state IN (0, 1)
          )
-         SELECT source.is_priority AS isPriority, source.sort_key AS sourceSortKey,
+         SELECT source.sort_key AS sourceSortKey,
                 coalesce((
                   SELECT max(target.sort_key)
                   FROM raid_group_follow_ups AS follow_up
                   CROSS JOIN raid_groups AS target
                   WHERE follow_up.source_group_id = source.id
                     AND target.id = follow_up.target_group_id
-                    AND target.is_priority = source.is_priority
-                    AND target.game_mode = source.game_mode
+                                        AND target.game_mode = source.game_mode
                     AND target.map_id = source.map_id AND target.state IN (0, 1)
                 ), source.sort_key) AS anchorSortKey,
                 (SELECT count(*)
@@ -1956,8 +1827,7 @@ export class D1MvpRepository
                  CROSS JOIN raid_groups AS target
                  WHERE follow_up.source_group_id = source.id
                    AND target.id = follow_up.target_group_id
-                   AND target.is_priority = source.is_priority
-                   AND target.game_mode = source.game_mode
+                                      AND target.game_mode = source.game_mode
                    AND target.map_id = source.map_id AND target.state IN (0, 1)
                 ) AS followUpCount,
                 (SELECT target.id
@@ -1965,8 +1835,7 @@ export class D1MvpRepository
                  CROSS JOIN raid_groups AS target
                  WHERE follow_up.source_group_id = source.id
                    AND target.id = follow_up.target_group_id
-                   AND target.is_priority = source.is_priority
-                   AND target.game_mode = source.game_mode
+                                      AND target.game_mode = source.game_mode
                    AND target.map_id = source.map_id AND target.state = 0
                    AND target.automatic_fill = 1
                    AND target.current_member_count < target.requester_capacity
@@ -1980,10 +1849,10 @@ export class D1MvpRepository
       .prepare(
         `SELECT sort_key AS nextSortKey
          FROM raid_groups INDEXED BY raid_groups_open_sort_key_idx
-         WHERE is_priority = ? AND state IN (0, 1) AND sort_key > ?
+         WHERE state IN (0, 1) AND sort_key > ?
          ORDER BY sort_key LIMIT 1`,
       )
-      .bind(window.isPriority, window.anchorSortKey)
+      .bind(window.anchorSortKey)
       .first<Pick<RequesterFollowUpWindow, "nextSortKey">>();
     return { ...window, nextSortKey: next?.nextSortKey ?? null };
   }
@@ -1991,7 +1860,7 @@ export class D1MvpRepository
   private async requirePostponableRequester(input: PostponeRequesterInput): Promise<{
     sourceBecomesEmpty: boolean;
     source: StaffBoardRaid;
-    window: RequesterFollowUpWindow;
+    window: RequesterFollowUpWindow | null;
   }> {
     const source = await this.getRaid(input.groupId);
     const isReviewedPlanned =
@@ -1999,9 +1868,18 @@ export class D1MvpRepository
     if (source === undefined || (source.state !== "active" && !isReviewedPlanned)) {
       throw new RepositoryInvariantError("That raid is no longer available.");
     }
+    if (
+      (input.expectedState !== undefined && source.state !== input.expectedState) ||
+      (input.expectedStaffMessageId !== undefined &&
+        source.staffMessageId !== input.expectedStaffMessageId)
+    ) {
+      throw new RepositoryInvariantError("That action is out of date. Review the raid again.");
+    }
     if (!source.members.some((member) => member.requestId === input.requestId)) {
       throw new RepositoryInvariantError("That requester is no longer in this raid.");
     }
+    if (isReviewedPlanned)
+      return { sourceBecomesEmpty: source.members.length === 1, source, window: null };
     const window = await this.requesterFollowUpWindow(input.groupId);
     if (window === null) {
       throw new RepositoryInvariantError("That raid is no longer available.");
@@ -2027,15 +1905,15 @@ export class D1MvpRepository
            SELECT ? UNION ALL
            SELECT raid.sort_key FROM dense JOIN raid_groups AS raid
              ON raid.sort_key = dense.sort_key + 1
-            AND raid.is_priority = ? AND raid.state IN (0, 1)
+            AND raid.state IN (0, 1)
          )
          SELECT max(sort_key) AS endSortKey,
-           (SELECT max(sort_key) FROM raid_groups WHERE is_priority = ? AND state IN (0, 1)) AS maximum,
-           (SELECT min(sort_key) FROM raid_groups WHERE is_priority = ? AND state IN (0, 1)
+           (SELECT max(sort_key) FROM raid_groups WHERE state IN (0, 1)) AS maximum,
+           (SELECT min(sort_key) FROM raid_groups WHERE state IN (0, 1)
              AND sort_key > (SELECT max(sort_key) FROM dense)) AS nextAfterDense
          FROM dense`,
         )
-        .bind(window.nextSortKey, window.isPriority, window.isPriority, window.isPriority)
+        .bind(window.nextSortKey)
         .first<{ endSortKey: number; maximum: number; nextAfterDense: number | null }>();
       if (gap === null) throw new RepositoryInvariantError("Raid ordering was not found.");
       const { maximum, endSortKey, nextAfterDense } = gap;
@@ -2049,27 +1927,104 @@ export class D1MvpRepository
       orderingStatements.push(
         this.database
           .prepare(`SELECT json(CASE WHEN
-          (SELECT max(sort_key) FROM raid_groups WHERE is_priority = ? AND state IN (0, 1)) = ?
+          (SELECT max(sort_key) FROM raid_groups WHERE state IN (0, 1)) = ?
           THEN 'true' ELSE 'stale raid ordering' END)`)
-          .bind(window.isPriority, maximum),
+          .bind(maximum),
         this.database
           .prepare(`UPDATE raid_groups SET sort_key = sort_key + ?
-          WHERE is_priority = ? AND state IN (0, 1) AND sort_key BETWEEN ? AND ?`)
-          .bind(lift, window.isPriority, window.nextSortKey, endSortKey),
+          WHERE state IN (0, 1) AND sort_key BETWEEN ? AND ?`)
+          .bind(lift, window.nextSortKey, endSortKey),
         this.database
           .prepare(`UPDATE raid_groups SET sort_key = sort_key - ? + ?
-          WHERE is_priority = ? AND state IN (0, 1) AND sort_key > ?`)
-          .bind(lift, shift, window.isPriority, maximum),
+          WHERE state IN (0, 1) AND sort_key > ?`)
+          .bind(lift, shift, maximum),
       );
       followUpSortKey = Math.floor((window.anchorSortKey + window.nextSortKey + shift) / 2);
     }
     return { followUpSortKey, orderingStatements };
   }
 
+  private async moveReviewedRequester(
+    input: PostponeRequesterInput,
+    source: StaffBoardRaid,
+    sourceBecomesEmpty: boolean,
+  ): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
+    const destinationId = source.nextMoveRaidId;
+    if (destinationId === undefined) {
+      throw new RepositoryInvariantError("No later compatible raid has room. Refresh the board.");
+    }
+    if (
+      input.expectedDestinationId !== undefined &&
+      destinationId !== input.expectedDestinationId
+    ) {
+      throw new RepositoryInvariantError("That action is out of date. Review the raid again.");
+    }
+    const timestamp = epoch(input.changedAt);
+    await this.database
+      .batch([
+        this.database
+          .prepare(`/* d1:raid.move.guard */ SELECT json(CASE WHEN EXISTS (
+        SELECT 1 FROM raid_groups AS source
+        WHERE source.id = ? AND source.state = 0 AND source.automatic_fill = 0
+          AND source.staff_message_id = ? AND source.current_member_count = ?
+          AND EXISTS (SELECT 1 FROM raid_group_members
+                      WHERE group_id = source.id AND request_id = ? AND state = 0)
+          AND (${nextMoveRaidSql("source")}) = ?
+        ) THEN 'true' ELSE 'stale reviewed requester move' END)`)
+          .bind(
+            source.id,
+            source.staffMessageId ?? null,
+            source.members.length,
+            input.requestId,
+            destinationId,
+          ),
+        this.database
+          .prepare(`/* d1:raid.move.source */ UPDATE raid_groups SET
+        state = CASE WHEN ? = 1 THEN 3 ELSE state END,
+        outcome = CASE WHEN ? = 1 THEN 1 ELSE outcome END,
+        staff_message_id = CASE WHEN ? = 1 THEN NULL ELSE staff_message_id END,
+        completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END,
+        last_action_key = ?, updated_at = ? WHERE id = ?`)
+          .bind(
+            sourceBecomesEmpty ? 1 : 0,
+            sourceBecomesEmpty ? 1 : 0,
+            sourceBecomesEmpty ? 1 : 0,
+            sourceBecomesEmpty ? 1 : 0,
+            timestamp,
+            input.actionKey,
+            timestamp,
+            source.id,
+          ),
+        this.database
+          .prepare(`/* d1:raid.move.membership */ UPDATE raid_group_members
+        SET state = 2, updated_at = ? WHERE group_id = ? AND request_id = ? AND state = 0`)
+          .bind(timestamp, source.id, input.requestId),
+        this.database
+          .prepare(`/* d1:raid.move.destination */ INSERT INTO raid_group_members
+        (group_id, request_id, position, created_at, updated_at)
+        VALUES (?, ?, (SELECT coalesce(max(position), 0) + 1 FROM raid_group_members
+                       WHERE group_id = ? AND state = 0), ?, ?)`)
+          .bind(destinationId, input.requestId, destinationId, timestamp, timestamp),
+        this.boardDirtyStatement(timestamp),
+      ])
+      .catch(rethrowStaleRaidTransition);
+    const [updatedSource, dedicated] = await Promise.all([
+      this.getRaid(source.id),
+      this.getRaid(destinationId),
+    ]);
+    if (updatedSource === undefined || dedicated === undefined) {
+      throw new RepositoryInvariantError("The moved raid state was not found.");
+    }
+    return { source: updatedSource, dedicated };
+  }
+
   async postponeRequester(
     input: PostponeRequesterInput,
   ): Promise<{ source: StaffBoardRaid; dedicated: StaffBoardRaid }> {
     const { sourceBecomesEmpty, source, window } = await this.requirePostponableRequester(input);
+    if (window === null) {
+      return this.moveReviewedRequester(input, source, sourceBecomesEmpty);
+    }
     const reusableGroupId = window.reusableGroupId;
     const { followUpSortKey, orderingStatements } = await this.requesterFollowUpOrdering(
       sourceBecomesEmpty,
@@ -2113,6 +2068,7 @@ export class D1MvpRepository
         .prepare(
           `SELECT json(CASE WHEN EXISTS (
            SELECT 1 FROM raid_groups WHERE id = ? AND state = ? AND current_member_count = ?
+             AND staff_message_id IS ? AND started_at IS ? AND leader_discord_user_id IS ?
              AND EXISTS (SELECT 1 FROM raid_group_members
                          WHERE group_id = ? AND request_id = ? AND state = 0)
          ) THEN 'true' ELSE 'stale requester postponement' END)`,
@@ -2121,6 +2077,9 @@ export class D1MvpRepository
           input.groupId,
           source.state === "active" ? 1 : 0,
           source.members.length,
+          source.staffMessageId ?? null,
+          source.startedAt ?? null,
+          source.leaderDiscordUserId ?? null,
           input.groupId,
           input.requestId,
         ),
@@ -2132,10 +2091,10 @@ export class D1MvpRepository
         this.database
           .prepare(
             `INSERT INTO raid_groups
-             (is_priority, game_mode, sort_key, map_id, requester_capacity,
+             (game_mode, sort_key, map_id, requester_capacity,
               leader_discord_user_id, leader_type, automatic_fill,
               last_action_key, created_at, updated_at)
-           SELECT is_priority, game_mode, ?, map_id, requester_capacity,
+           SELECT game_mode, ?, map_id, requester_capacity,
                   leader_discord_user_id, leader_type, 1, ?, ?, ?
            FROM raid_groups WHERE id = ? AND last_action_key = ?`,
           )
@@ -2279,41 +2238,21 @@ export class D1MvpRepository
     groupId: number;
     actionKey: string;
     changedAt: Date;
-  }): Promise<StaffBoardRaid> {
-    const source = await this.getRaid(input.groupId);
-    if (source?.state !== "active")
-      throw new RepositoryInvariantError("That raid is no longer active.");
-    if (source.members.length === 0)
-      throw new RepositoryInvariantError("That raid has no requesters to postpone.");
+  }): Promise<void> {
     const timestamp = epoch(input.changedAt);
     const results = await this.database.batch([
       this.database
-        .prepare(
-          `UPDATE help_requests SET is_priority = 1, updated_at = ?
-         WHERE state = 1 AND id IN (
-           SELECT request_id FROM raid_group_members WHERE group_id = ? AND state = 0
-         )`,
-        )
-        .bind(timestamp, input.groupId),
-      this.database
-        .prepare(
-          `UPDATE raid_groups SET is_priority = 1,
-           sort_key = coalesce((SELECT max(target.sort_key) FROM raid_groups AS target
-                                WHERE target.is_priority = 1 AND target.state IN (0, 1)), 0) + ?,
-           state = 0, automatic_fill = 0, attempt_count = 0,
-           discord_call_status = 3, twitch_call_status = 3,
-           staff_message_id = NULL, last_action_key = ?, started_at = NULL, updated_at = ?
-         WHERE id = ? AND state = 1`,
-        )
+        .prepare(`UPDATE raid_groups SET
+        sort_key = coalesce((SELECT max(sort_key) FROM raid_groups WHERE state IN (0, 1)), 0) + ?,
+        state = 0, automatic_fill = 0, manual_order = 0,
+        discord_call_status = 3, twitch_call_status = 3, staff_message_id = NULL,
+        last_action_key = ?, started_at = NULL, updated_at = ?
+        WHERE id = ? AND state = 1 AND current_member_count > 0`)
         .bind(SORT_STEP, input.actionKey, timestamp, input.groupId),
-      this.boardDirtyStatement(timestamp),
+      this.boardDirtyStatement(timestamp, true),
     ]);
-    if (Number(results[1]?.meta.changes ?? 0) < 1)
+    if (Number(results[0]?.meta.changes ?? 0) !== 1)
       throw new RepositoryInvariantError("That raid is no longer active.");
-    const updated = await this.getRaid(input.groupId);
-    if (updated === undefined)
-      throw new RepositoryInvariantError("The postponed raid state was not found.");
-    return updated;
   }
 
   async upsertUserMapping(input: {
@@ -2628,6 +2567,8 @@ export class D1MvpRepository
          VALUES ('butcoffee', 1, ?, ?)
          ON CONFLICT(community_id) DO UPDATE SET
            board_dirty_version = community_state.board_dirty_version + 1,
+           board_page_number = 1, board_page_direction = 0,
+           board_page_lane = 0, board_page_key = 0, board_page_id = 0,
            updated_at = excluded.updated_at
          RETURNING board_dirty_version AS dirtyVersion`,
       )

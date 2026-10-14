@@ -26,7 +26,6 @@
     "DISCORD_VOLUNTEER_ROLE_ID": "<DISCORD_VOLUNTEER_ROLE_ID>",
     "DISCORD_STREAMER_USER_ID": "<DISCORD_STREAMER_USER_ID>",
     "RECIPIENT_LIMIT": "4",
-    "ATTEMPT_LIMIT": "3",
     "DISCORD_API_BASE_URL": "https://discord.com/api/v10",
     "TWITCH_API_BASE_URL": "https://api.twitch.tv/helix",
     "TWITCH_AUTH_BASE_URL": "https://id.twitch.tv/oauth2"

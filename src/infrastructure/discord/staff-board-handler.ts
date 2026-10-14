@@ -37,6 +37,7 @@ import {
   type RaidMessageAction,
   renderPullRequesterSelector,
   renderRaidMessage,
+  type StaffBoardAction,
 } from "./staff-board";
 
 type StaffInteraction = Pick<
@@ -383,14 +384,7 @@ class StaffBoardHandler {
       );
     }
     if (sourceGroupId !== undefined)
-      return update(
-        renderRaidMessage(
-          raid,
-          this.dependencies.communityConfig.policies.attemptLimit,
-          undefined,
-          candidates.source,
-        ),
-      );
+      return update(renderRaidMessage(raid, undefined, candidates.source));
     return ephemeralMessage(renderPullRequesterSelector(raid, candidates.source));
   }
 
@@ -506,10 +500,12 @@ class StaffBoardHandler {
     interaction: DiscordMessageComponentInteraction,
     raid: StaffBoardRaid,
   ): Promise<Response> {
-    const { communityConfig, changedAt } = this.dependencies;
+    const { changedAt } = this.dependencies;
     const result = selectedValue(interaction);
-    if (result !== "helped" && result !== "unsuccessful" && result !== "postpone_raid") {
-      throw new RepositoryInvariantError("Choose an available raid result.");
+    if (result !== "helped" && result !== "postpone_raid") {
+      throw new RepositoryInvariantError(
+        "This result control is out of date. Refresh the raid details.",
+      );
     }
     if (result === "postpone_raid") {
       await this.repository.postponeRaid({
@@ -521,27 +517,16 @@ class StaffBoardHandler {
       return this.deferRestWork(interaction, "discord.postponed_raid_detail", async (handler) => {
         const deleted = await deleteRaidDetailMessage(handler.dependencies, raid.staffMessageId);
         return deleted
-          ? "Raid postponed to the end of the Priority queue."
-          : "Raid postponed to the end of the Priority queue, but its old details message could not be deleted.";
+          ? "Raid postponed to the end of the raid list."
+          : "Raid postponed to the end of the raid list, but its old details message could not be deleted.";
       });
     }
-    const updatedRaid = await this.repository.recordRaidResult({
+    await this.repository.completeRaid({
       groupId: raid.id,
-      outcome: result,
-      attemptLimit: communityConfig.policies.attemptLimit,
       actionKey: interaction.interactionId,
       changedAt,
     });
     this.refreshBoardLater();
-    if (result !== "helped") {
-      return update(
-        await raidDetailMessage({
-          raid: updatedRaid,
-          repository: this.repository,
-          communityConfig,
-        }),
-      );
-    }
     return this.deferRestWork(interaction, "discord.helped_raid_detail", async (handler) => {
       const deleted = await deleteRaidDetailMessage(handler.dependencies, raid.staffMessageId);
       return deleted
@@ -582,6 +567,7 @@ class StaffBoardHandler {
   private async postponeRequester(
     interaction: DiscordMessageComponentInteraction,
     raid: StaffBoardRaid,
+    destinationRaidId?: number,
   ): Promise<Response> {
     const { communityConfig, changedAt } = this.dependencies;
     const postponed = await this.repository.postponeRequester({
@@ -589,6 +575,9 @@ class StaffBoardHandler {
       requestId: this.requesterId(interaction),
       actionKey: interaction.interactionId,
       changedAt,
+      expectedState: destinationRaidId === undefined ? "active" : "planned",
+      ...(destinationRaidId === undefined ? {} : { expectedDestinationId: destinationRaidId }),
+      ...(raid.staffMessageId === undefined ? {} : { expectedStaffMessageId: raid.staffMessageId }),
     });
     this.refreshBoardLater();
     if (postponed.source.state !== "canceled") {
@@ -605,9 +594,10 @@ class StaffBoardHandler {
       "discord.postponed_requester_detail",
       async (handler) => {
         const deleted = await deleteRaidDetailMessage(handler.dependencies, raid.staffMessageId);
+        const verb = raid.state === "planned" ? "moved" : "postponed";
         return deleted
-          ? "Requester postponed to the next raid. The empty raid was closed."
-          : "Requester postponed and the empty raid was closed, but its old details message could not be deleted.";
+          ? `Requester ${verb} to the next raid. The empty raid was closed.`
+          : `Requester ${verb} and the empty raid was closed, but its old details message could not be deleted.`;
       },
     );
   }
@@ -639,7 +629,67 @@ class StaffBoardHandler {
     }
     if (action.action === "result") return this.recordRaidResult(interaction, raid);
     if (action.action === "remove") return this.removeRequester(interaction, raid);
+    if (action.action === "move")
+      return this.postponeRequester(interaction, raid, action.destinationRaidId);
     return this.postponeRequester(interaction, raid);
+  }
+
+  private async handleBoardOrdering(
+    interaction: DiscordMessageComponentInteraction,
+    boardAction: Extract<StaffBoardAction, { action: "page" | "move" | "unmove" }>,
+  ): Promise<Response> {
+    const { communityConfig, changedAt } = this.dependencies;
+    if (interaction.discordUserId !== communityConfig.discord.streamerUserId) {
+      return ephemeral("Only the streamer can change pages or raid order.");
+    }
+    if (interaction.messageId === undefined)
+      return ephemeral("This board is out of date. Use Refresh.");
+    if (boardAction.action === "page") {
+      const changed = await this.repository.navigateBoard({
+        target: boardAction.target,
+        expectedVersion: boardAction.version,
+        expectedMessageId: interaction.messageId,
+        changedAt,
+      });
+      if (changed) this.refreshBoardLater();
+      return ephemeral(
+        changed
+          ? "Updating the raid board page."
+          : "This page control is out of date. Use Refresh.",
+      );
+    }
+    const groupId = Number(selectedValue(interaction));
+    if (!Number.isSafeInteger(groupId) || groupId < 1)
+      return ephemeral("Choose a current planned raid.");
+    const placement = await executeDiscordMutation(
+      {
+        ...this.dependencies,
+        repository: this.repository,
+        deliveryId: interaction.interactionId,
+        eventType: `board:${boardAction.action}`,
+      },
+      async () => {
+        const changed = await this.repository.changeRaidPlacement({
+          groupId,
+          remove: boardAction.action === "unmove",
+          expectedVersion: boardAction.version,
+          expectedMessageId: interaction.messageId ?? "",
+          actionKey: interaction.interactionId,
+          changedAt,
+        });
+        if (changed) this.refreshBoardLater();
+        const confirmation =
+          boardAction.action === "unmove" ? "Raid unpinned." : "Raid pinned to the top.";
+        return ephemeral(
+          changed
+            ? confirmation
+            : "Raid order is unchanged. Refresh the board before trying again.",
+        );
+      },
+    );
+    return placement.outcome === "duplicate"
+      ? ephemeral("That action was already received.")
+      : placement.value;
   }
 
   async handle(interaction: DiscordMessageComponentInteraction): Promise<Response> {
@@ -659,6 +709,13 @@ class StaffBoardHandler {
       await this.repository.markBoardDirty(changedAt);
       this.refreshAndReconcileBoardLater();
       return ephemeral("Refreshing the sherpa board.");
+    }
+    if (
+      boardAction?.action === "page" ||
+      boardAction?.action === "move" ||
+      boardAction?.action === "unmove"
+    ) {
+      return this.handleBoardOrdering(interaction, boardAction);
     }
     const mutation = await executeDiscordMutation(
       {

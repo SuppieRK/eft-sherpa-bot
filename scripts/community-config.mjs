@@ -29,7 +29,6 @@ export function loadCommunityConfig(environment = process.env) {
     },
     policies: {
       recipientLimit: integer(environment, "RECIPIENT_LIMIT"),
-      attemptLimit: integer(environment, "ATTEMPT_LIMIT"),
     },
   };
 }
@@ -74,7 +73,7 @@ export function validateCommunityConfig(config) {
   ) {
     errors.push("discord.publicKey must be configured");
   }
-  for (const policy of ["recipientLimit", "attemptLimit"]) {
+  for (const policy of ["recipientLimit"]) {
     const value = config?.policies?.[policy];
     if (!Number.isInteger(value) || value <= 0) {
       errors.push(`policies.${policy} must be a positive integer`);

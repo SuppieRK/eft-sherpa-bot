@@ -223,7 +223,7 @@ function operationDefinitions(input: {
       memberCount: 2,
       state: "planned",
       streamerDiscordUserId: streamerId,
-      isPriority: true,
+      manualOrder: 1,
       staffMessageId: `${OPERATION_PREFIX}detail-pull`,
     });
     const source = await seedOperationRaid({
@@ -256,13 +256,15 @@ function operationDefinitions(input: {
         const requestId = queueRequestId(seed.scale, percentile);
         const queuePosition = await env.DB.prepare(
           `WITH target AS (
-             SELECT id, game_mode, is_priority FROM help_requests WHERE id = ?
+             SELECT raid.game_mode, raid.service_lane, raid.service_key, raid.id, member.position
+             FROM raid_group_members AS member JOIN raid_groups AS raid ON raid.id = member.group_id
+             WHERE member.request_id = ? AND member.state = 0
            )
            SELECT count(*) AS ordinal
-           FROM help_requests AS request, target
-           WHERE request.state IN (0, 1) AND request.game_mode = target.game_mode
-             AND (request.is_priority > target.is_priority OR
-                  (request.is_priority = target.is_priority AND request.id <= target.id))`,
+           FROM raid_group_members AS member JOIN raid_groups AS raid ON raid.id = member.group_id, target
+           WHERE member.state = 0 AND raid.state IN (0, 1) AND raid.game_mode = target.game_mode
+             AND ((raid.service_lane, raid.service_key, raid.id) < (target.service_lane, target.service_key, target.id)
+                  OR (raid.id = target.id AND member.position <= target.position))`,
         )
           .bind(requestId)
           .first<{ ordinal: number }>();
@@ -668,6 +670,125 @@ function operationDefinitions(input: {
         };
       },
     },
+    ...(["first", "middle", "deep", "previous"] as const).map<OperationDefinition>((position) => ({
+      id: `discord.board.page.${position}`,
+      label: `Discord board navigation ${position}`,
+      async prepare(seed, sample) {
+        const currentPage =
+          position === "first"
+            ? 1
+            : position === "middle"
+              ? Math.max(2, Math.floor(seed.groupCount / 20))
+              : Math.max(2, Math.floor(seed.groupCount / 10));
+        const previous = position === "previous";
+        const boundaryId = previous ? (currentPage - 1) * 10 + 1 : currentPage * 10;
+        const boundary = await env.DB.prepare(
+          "SELECT service_key AS key FROM raid_groups WHERE id = ?",
+        )
+          .bind(boundaryId)
+          .first<{ key: number }>();
+        if (boundary === null) throw new Error("Missing benchmark page boundary");
+        await env.DB.prepare(
+          "UPDATE community_state SET board_page_number = ? WHERE community_id='butcoffee'",
+        )
+          .bind(currentPage)
+          .run();
+        const snapshot = await new D1MvpRepository(env.DB).getBoardSnapshot();
+        const pageNumber = currentPage + (previous ? -1 : 1);
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}page-${position}-${sample}`,
+            messageId: "benchmark-canonical-board",
+            customId: `board:v7:page:${snapshot.boardVersion}:${previous ? "previous" : "next"}:1:${boundary.key}:${boundaryId}:${pageNumber}`,
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            const current = await new D1MvpRepository(env.DB).getBoardSnapshot();
+            expect(current.pageNumber).toBe(pageNumber);
+            expect(current.raids[0]?.id).toBe((pageNumber - 1) * 10 + 1);
+            expect(
+              discordMock.calls.some(
+                (call) => call.method === "PATCH" && call.url.endsWith("benchmark-canonical-board"),
+              ),
+            ).toBe(true);
+          },
+        };
+      },
+    })),
+    ...(["move", "unmove", "move.no-op", "move.stale"] as const).map<OperationDefinition>(
+      (action) => ({
+        id: `discord.board.${action}`,
+        label: `Discord raid ordering ${action}`,
+        async prepare(seed, sample) {
+          const raid = await seedOperationRaid({
+            seed,
+            suffix: "ordering",
+            memberCount: 3,
+            state: "planned",
+            streamerDiscordUserId: streamerId,
+            ...(action === "unmove" || action === "move.no-op" ? { manualOrder: 1 } : {}),
+          });
+          const repo = new D1MvpRepository(env.DB);
+          const snapshot = await repo.getBoardSnapshot();
+          const version = (snapshot.boardVersion ?? 0) + (action === "move.stale" ? 1 : 0);
+          return {
+            request: await component({
+              id: `${OPERATION_PREFIX}ordering-${action}-${sample}`,
+              messageId: "benchmark-canonical-board",
+              customId: `board:v7:${action === "unmove" ? "unmove" : "move"}:${version}`,
+              values: [String(raid.groupId)],
+            }),
+            async verify(response) {
+              expect(response.status).toBe(200);
+              const current = await repo.getRaid(raid.groupId);
+              expect(current?.members).toHaveLength(3);
+              expect(current?.manualOrder).toBe(
+                action === "move" ? version + 1 : action === "move.no-op" ? 1 : 0,
+              );
+              expect(
+                discordMock.calls.some(
+                  (call) =>
+                    call.method === "PATCH" && call.url.endsWith("benchmark-canonical-board"),
+                ),
+              ).toBe(action === "move" || action === "unmove");
+            },
+          };
+        },
+      }),
+    ),
+    {
+      id: "discord.raid.postpone.whole",
+      label: "Discord whole raid postponement",
+      async prepare(seed, sample) {
+        const raid = await seedOperationRaid({
+          seed,
+          suffix: "whole_postpone",
+          memberCount: 3,
+          state: "active",
+          streamerDiscordUserId: streamerId,
+          visibleFirst: true,
+        });
+        const messageId = `${OPERATION_PREFIX}detail-whole_postpone`;
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}whole-postpone-${sample}`,
+            customId: `raid:v4:result:${raid.groupId}`,
+            messageId,
+            values: ["postpone_raid"],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            expect(await new D1MvpRepository(env.DB).getRaid(raid.groupId)).toMatchObject({
+              state: "planned",
+              manualOrder: 0,
+              leaderDiscordUserId: streamerId,
+              discordCallStatus: "not_requested",
+              twitchCallStatus: "not_requested",
+            });
+          },
+        };
+      },
+    },
     {
       id: "discord.board.refresh",
       label: "Discord board Refresh",
@@ -678,7 +799,7 @@ function operationDefinitions(input: {
           memberCount: 2,
           state: "active",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
         });
         return {
@@ -758,20 +879,19 @@ function operationDefinitions(input: {
           memberCount: 3,
           state: "planned",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
         });
         return {
           request: await component({
             id: `${OPERATION_PREFIX}raid-review-${sample}`,
-            customId: "board:v6:review",
+            customId: "board:v7:review",
             values: [String(raid.groupId)],
           }),
           async verify(response) {
             expect(response.status).toBe(200);
             const row = await env.DB.prepare(
-              `SELECT state, automatic_fill AS automaticFill, attempt_count AS attemptCount,
-                      leader_discord_user_id AS leaderId,
+              `SELECT state, automatic_fill AS automaticFill,                       leader_discord_user_id AS leaderId,
                       discord_call_status AS discordCallStatus,
                       twitch_call_status AS twitchCallStatus, staff_message_id AS staffMessageId
                FROM raid_groups WHERE id = ?`,
@@ -781,7 +901,6 @@ function operationDefinitions(input: {
             expect(row).toEqual({
               state: 0,
               automaticFill: 0,
-              attemptCount: 0,
               leaderId: null,
               discordCallStatus: 3,
               twitchCallStatus: 3,
@@ -805,7 +924,7 @@ function operationDefinitions(input: {
               memberCount: 1,
               state: "planned",
               streamerDiscordUserId: streamerId,
-              isPriority: true,
+              manualOrder: 1,
               visibleFirst: true,
             }),
           ),
@@ -826,7 +945,7 @@ function operationDefinitions(input: {
           raids.map((raid, index) =>
             component({
               id: deliveryIds[index] as string,
-              customId: "board:v6:review",
+              customId: "board:v7:review",
               values: [String(raid.groupId)],
             }),
           ),
@@ -860,14 +979,14 @@ function operationDefinitions(input: {
           memberCount: 3,
           state: "planned",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
           staffMessageId: messageId,
         });
         return {
           request: await component({
             id: interactionId,
-            customId: `raid:v3:cancel:${raid.groupId}`,
+            customId: `raid:v4:cancel:${raid.groupId}`,
             messageId,
           }),
           async verify(response) {
@@ -875,7 +994,7 @@ function operationDefinitions(input: {
             expect(completedInteractionText(discordMock, interactionId)).toContain("Review closed");
             const row = await env.DB.prepare(
               `SELECT state, automatic_fill AS automaticFill,
-                      attempt_count AS attemptCount, staff_message_id AS staffMessageId
+                      staff_message_id AS staffMessageId
                FROM raid_groups WHERE id = ?`,
             )
               .bind(raid.groupId)
@@ -883,7 +1002,6 @@ function operationDefinitions(input: {
             expect(row).toEqual({
               state: 0,
               automaticFill: 0,
-              attemptCount: 0,
               staffMessageId: null,
             });
             expect(
@@ -906,7 +1024,7 @@ function operationDefinitions(input: {
           memberCount: 3,
           state: "planned",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
           staffMessageId: `${OPERATION_PREFIX}detail-call-start`,
         });
@@ -940,7 +1058,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}pull-candidates-${sample}`,
-            customId: "board:v6:review",
+            customId: "board:v7:review",
             values: [String(fixture.destination.groupId)],
           }),
           verify(response) {
@@ -950,7 +1068,7 @@ function operationDefinitions(input: {
                 call.method === "PATCH" && call.url.endsWith(`/${OPERATION_PREFIX}detail-pull`),
             );
             expect(detailUpdate?.body).toContain(
-              `raid:v3:pull:${fixture.destination.groupId}:${initialSource.id}`,
+              `raid:v4:pull:${fixture.destination.groupId}:${initialSource.id}`,
             );
             expect(detailUpdate?.body).toContain(`@${initialSource.members[0]?.twitchLogin}`);
             expect(detailUpdate?.body).toContain(initialSource.members[0]?.objective);
@@ -967,7 +1085,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}pull-with-push-${sample}`,
-            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            customId: `raid:v4:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
             values: [String(selectedRequestId)],
           }),
           async verify(response) {
@@ -989,7 +1107,7 @@ function operationDefinitions(input: {
             )
               .bind(selectedRequestId)
               .first<{ isPriority: number }>();
-            expect(selected?.isPriority).toBe(1);
+            expect(selected?.isPriority).toBe(0);
             expect(twitchCalls.some((call) => call.url.includes("/chat/messages"))).toBe(false);
           },
         };
@@ -997,7 +1115,7 @@ function operationDefinitions(input: {
     },
     {
       id: "discord.requester.pull.active",
-      label: "Discord pull requester into an active Priority raid",
+      label: "Discord pull requester into an active raid",
       async prepare(seed, sample) {
         const fixture = await seedPullFixture(seed);
         const repository = new D1MvpRepository(env.DB);
@@ -1012,7 +1130,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}active-pull-${sample}`,
-            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            customId: `raid:v4:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
             values: [String(selected)],
           }),
           async verify(response) {
@@ -1021,7 +1139,6 @@ function operationDefinitions(input: {
             expect(updated).toMatchObject({
               state: "active",
               startedAt: active.startedAt,
-              attemptCount: active.attemptCount,
               leaderDiscordUserId: streamerId,
             });
             expect(updated?.members.map((member) => member.requestId)).toContain(selected);
@@ -1042,7 +1159,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}reserved-source-pull-${sample}`,
-            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            customId: `raid:v4:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
             values: [String(fixture.source.requestIds[0])],
           }),
           async verify(response) {
@@ -1066,12 +1183,12 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}navigate-pull-${sample}`,
-            customId: `raid:v3:pull_page:${fixture.destination.groupId}:${fixture.pushTarget.groupId}`,
+            customId: `raid:v4:pull_page:${fixture.destination.groupId}:${fixture.pushTarget.groupId}`,
           }),
           async verify(response) {
             const body = await responseText(response);
             expect(body).toContain(
-              `raid:v3:pull:${fixture.destination.groupId}:${fixture.pushTarget.groupId}`,
+              `raid:v4:pull:${fixture.destination.groupId}:${fixture.pushTarget.groupId}`,
             );
             expect(body).toContain("@op_pull_target_1");
             expect(body).toContain("Benchmark goal 1");
@@ -1090,7 +1207,7 @@ function operationDefinitions(input: {
         return {
           request: await component({
             id: `${OPERATION_PREFIX}pull-history-${sample}`,
-            customId: `raid:v3:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
+            customId: `raid:v4:pull:${fixture.destination.groupId}:${fixture.source.groupId}`,
             values: [String(selectedRequestId)],
           }),
           async verify(response) {
@@ -1116,7 +1233,7 @@ function operationDefinitions(input: {
           memberCount: 3,
           state: "active",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
         });
         return {
@@ -1135,6 +1252,73 @@ function operationDefinitions(input: {
         };
       },
     },
+    ...(["reviewed", "no-destination", "stale"] as const).map<OperationDefinition>((kind) => ({
+      id: `discord.requester.move.${kind}`,
+      label: `Discord reviewed requester move (${kind})`,
+      async prepare(seed, sample) {
+        const source = await seedOperationRaid({
+          seed,
+          suffix: "reviewed_move_source",
+          fixtureOrdinal: 1,
+          memberCount: 2,
+          state: "planned",
+          streamerDiscordUserId: streamerId,
+          manualOrder: 1,
+          visibleFirst: true,
+          staffMessageId: `${OPERATION_PREFIX}detail-reviewed-move`,
+        });
+        let destinationId: number | undefined;
+        if (kind !== "no-destination") {
+          const destination = await seedOperationRaid({
+            seed,
+            suffix: "reviewed_move_destination",
+            fixtureOrdinal: 2,
+            memberCount: 1,
+            state: "planned",
+            streamerDiscordUserId: streamerId,
+            automaticFill: true,
+          });
+          destinationId = destination.groupId;
+          if (kind === "stale")
+            await env.DB.prepare("UPDATE raid_groups SET automatic_fill=0 WHERE id=?")
+              .bind(destinationId)
+              .run();
+        }
+        return {
+          request: await component({
+            id: `${OPERATION_PREFIX}reviewed-move-${kind}-${sample}`,
+            customId: `raid:v4:move:${source.groupId}:${destinationId ?? seed.groupCount + 2}`,
+            values: [String(source.requestIds[0])],
+          }),
+          async verify(response) {
+            expect(response.status).toBe(200);
+            if (kind === "reviewed") {
+              expect(
+                await env.DB.prepare(
+                  "SELECT group_id AS id FROM raid_group_members WHERE request_id=? AND state=0",
+                )
+                  .bind(source.requestIds[0])
+                  .first(),
+              ).toEqual({ id: destinationId });
+              expect(
+                await env.DB.prepare("SELECT count(*) AS count FROM raid_groups WHERE id>?")
+                  .bind(seed.groupCount)
+                  .first(),
+              ).toEqual({ count: 2 });
+            } else {
+              expect(await responseText(response)).toContain("No later compatible raid has room");
+              expect(
+                await env.DB.prepare(
+                  "SELECT group_id AS id FROM raid_group_members WHERE request_id=? AND state=0",
+                )
+                  .bind(source.requestIds[0])
+                  .first(),
+              ).toEqual({ id: source.groupId });
+            }
+          },
+        };
+      },
+    })),
     ...([false, true] as const).map<OperationDefinition>((last) => ({
       id: last ? "discord.requester.postpone.last" : "discord.requester.postpone.remaining",
       label: `Discord postpone requester (${last ? "last requester" : "source remains"})`,
@@ -1145,7 +1329,7 @@ function operationDefinitions(input: {
           memberCount: last ? 1 : 2,
           state: "active",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
         });
         const requestId = raid.requestIds[0] as number;
@@ -1184,7 +1368,7 @@ function operationDefinitions(input: {
           memberCount: 2,
           state: "active",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
         });
         if (history === "removed-members") {
@@ -1195,8 +1379,8 @@ function operationDefinitions(input: {
             (_, index) => seed.groupCount + 100_000 + index,
           );
           await env.DB.prepare(`INSERT INTO raid_groups
-            (id, is_priority, game_mode, sort_key, map_id, requester_capacity, created_at, updated_at)
-            SELECT value, 1, 2, value * 1000000, 'customs', 4, 10, 10 FROM json_each(?)`)
+            (id, game_mode, sort_key, map_id, requester_capacity, created_at, updated_at)
+            SELECT value, 2, value * 1000000, 'customs', 4, 10, 10 FROM json_each(?)`)
             .bind(JSON.stringify(ids))
             .run();
           await env.DB.prepare(`INSERT INTO raid_group_follow_ups
@@ -1238,7 +1422,7 @@ function operationDefinitions(input: {
           memberCount: last ? 1 : 2,
           state: "active",
           streamerDiscordUserId: streamerId,
-          isPriority: true,
+          manualOrder: 1,
           visibleFirst: true,
         });
         const requestId = raid.requestIds[0] as number;
@@ -1361,23 +1545,23 @@ function operationDefinitions(input: {
     },
     {
       id: "operator.legacy-repair.max-buckets",
-      label: "Operator legacy repair with all 78 demand buckets",
+      label: "Operator legacy repair with all 39 mode/map demand buckets",
       async prepare(seed, sample) {
-        const buckets = [0, 1].flatMap((isPriority) =>
-          [0, 1, 2].flatMap((gameMode) =>
-            TARKOV_MAPS.map((map) => ({ isPriority, gameMode, mapId: map.id })),
-          ),
+        // Statistics fixtures deliberately change request states. This recovery fixture starts from assigned seed members.
+        await env.DB.prepare("UPDATE help_requests SET state = 1 WHERE id <= ? AND state = 0")
+          .bind(seed.scale)
+          .run();
+        const buckets = [0, 1, 2].flatMap((gameMode) =>
+          TARKOV_MAPS.map((map) => ({ gameMode, mapId: map.id })),
         );
-        const rows = [
-          ...buckets,
-          buckets[0] as (typeof buckets)[number],
-          buckets[1] as (typeof buckets)[number],
-        ].map((bucket, index) => ({
-          isPriority: bucket.isPriority,
-          gameMode: bucket.gameMode,
-          mapId: bucket.mapId,
-          index: index + 1,
-        }));
+        const rows = Array.from({ length: 81 }, (_, index) => {
+          const bucket = buckets[index % buckets.length] as (typeof buckets)[number];
+          return {
+            gameMode: bucket.gameMode,
+            mapId: bucket.mapId,
+            index: index + 1,
+          };
+        });
         await env.DB.prepare(
           `UPDATE raid_groups
            SET state = 2, outcome = 0, completed_at = ?, updated_at = ?
@@ -1397,14 +1581,14 @@ function operationDefinitions(input: {
           env.DB.prepare(
             `INSERT INTO help_requests
                (source_platform, source_delivery_id, twitch_user_id, twitch_login, in_game_name,
-                game_mode, map_id, objective, is_priority, state, created_at, updated_at)
+                game_mode, map_id, objective, state, created_at, updated_at)
              SELECT 1, printf('bench-op-repair-%d', json_extract(value, '$.index')),
                     printf('op-repair-twitch-%d', json_extract(value, '$.index')),
                     printf('op_repair_%d', json_extract(value, '$.index')),
                     printf('Repair PMC %d', json_extract(value, '$.index')),
                     json_extract(value, '$.gameMode'), json_extract(value, '$.mapId'),
                     printf('Repair goal %d', json_extract(value, '$.index')),
-                    json_extract(value, '$.isPriority'), 0, ?, ?
+                    0, ?, ?
              FROM json_each(?)`,
           ).bind(Date.now(), Date.now(), JSON.stringify(rows)),
         ]);
@@ -1427,7 +1611,7 @@ function operationDefinitions(input: {
               .bind(Date.now(), seed.groupCount)
               .run();
             expect(result).toMatchObject({ hasMore: true });
-            expect((result as { repaired: number }).repaired).toBeGreaterThan(0);
+            expect(result).toEqual({ repaired: 80, hasMore: true });
           },
         };
       },
@@ -1441,12 +1625,12 @@ function operationDefinitions(input: {
         const groupIds = [...sourceIds, targetId];
         await env.DB.prepare(
           `INSERT INTO raid_groups
-             (id, is_priority, game_mode, sort_key, map_id, requester_capacity,
+             (id, game_mode, sort_key, map_id, requester_capacity,
               automatic_fill, state, created_at, updated_at)
-           SELECT value, 1, 2, ? + (key + 1) * 1000000, 'customs', 4, 0, 1, ?, ?
+           SELECT value, 2, ? + (key + 1) * 1000000, 'customs', 4, 0, 1, ?, ?
            FROM json_each(?)`,
         )
-          .bind(seed.priorityMaxSortKey, Date.now(), Date.now(), JSON.stringify(groupIds))
+          .bind(seed.maxSortKey, Date.now(), Date.now(), JSON.stringify(groupIds))
           .run();
         await env.DB.prepare(
           `INSERT INTO raid_group_follow_ups
