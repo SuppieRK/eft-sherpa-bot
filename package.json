@@ -52,16 +52,16 @@
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm run check:deadcode && npm run check:migrations && npm run check:docs && npm run check:workflows && npm run test:deployment && npm run test && npm run build && npm run check:secrets"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.15",
+    "@biomejs/biome": "2.6.2",
     "@cloudflare/vitest-pool-workers": "0.23.0",
     "@types/node": "26.6.5",
     "@vitest/coverage-istanbul": "4.1.12",
     "knip": "6.42.1",
     "oxlint": "1.89.0",
-    "oxlint-tsgolint": "7.0.2004",
+    "oxlint-tsgolint": "7.0.2005",
     "typescript": "7.0.2",
     "vitest": "4.1.12",
-    "wrangler": "4.151.3",
+    "wrangler": "4.152.0",
     "yaml": "2.9.1"
   },
   "allowScripts": {
